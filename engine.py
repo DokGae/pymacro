@@ -2049,7 +2049,7 @@ class MacroEngine:
         if self.running:
             return
         self.running = True
-        self.active = False
+        self.active = True
         self.paused = False
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._loop, name="MacroEngine", daemon=True)
