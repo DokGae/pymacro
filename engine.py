@@ -1,0 +1,3135 @@
+from __future__ import annotations
+
+import copy
+import ctypes
+import io
+import queue
+import random
+import re
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
+
+import numpy as np
+from PIL import Image
+
+from lib.interception import Interception, KeyFilter, KeyState
+from lib.input_backend import InterceptionBackend, KeyboardBackendStatus, KeyDelayConfig, SoftwareBackend
+from lib.keyboard import get_interception, get_keystate, to_scan_code
+from lib.pixel import RGB, Region, capture_region, capture_region_np, find_color_in_region
+
+ConditionType = Literal["key", "pixel", "all", "any", "var", "timer"]
+KeyMode = Literal["press", "down", "up", "hold"]
+ActionType = Literal[
+    "press",
+    "down",
+    "up",
+    "mouse_click",
+    "mouse_down",
+    "mouse_up",
+    "mouse_move",
+    "sleep",
+    "if",
+    "label",
+    "goto",
+    "return",
+    "continue",
+    "break",
+    "pixel_get",
+    "group",
+    "noop",
+    "set_var",
+    "timer",
+]
+GroupMode = Literal["all", "first_true", "first_true_continue", "first_true_return", "while", "repeat_n"]
+StepType = Literal["press", "down", "up", "sleep", "if", "loop_while"]  # legacy 호환용
+MacroMode = Literal["hold", "toggle"]
+VarCategory = Literal["sleep", "region", "color", "key", "var"]
+DEFAULT_BASE_RESOLUTION: tuple[int, int] = (1920, 1080)
+DEFAULT_BASE_SCALE: float = 100.0
+
+
+def _is_admin() -> bool:
+    if not sys.platform.startswith("win"):
+        return True
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+@dataclass
+class MacroVariables:
+    sleep: Dict[str, str] = field(default_factory=dict)
+    region: Dict[str, str] = field(default_factory=dict)
+    color: Dict[str, str] = field(default_factory=dict)
+    key: Dict[str, str] = field(default_factory=dict)
+    var: Dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MacroVariables":
+        return cls(
+            sleep=dict(data.get("sleep", {}) or {}),
+            region=dict(data.get("region", {}) or {}),
+            color=dict(data.get("color", {}) or {}),
+            key=dict(data.get("key", {}) or {}),
+            var=dict(data.get("var", {}) or {}),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "sleep": dict(self.sleep),
+            "region": dict(self.region),
+            "color": dict(self.color),
+            "key": dict(self.key),
+            "var": dict(self.var),
+        }
+
+
+class VariableResolver:
+    """
+    Resolves /name placeholders using category-specific variables.
+    """
+
+    def __init__(self, vars: MacroVariables):
+        self.vars = vars
+
+    # 변수 이름에 한글 등 유니코드 문자를 허용하고, 공백/구분자만 막는다.
+    _pattern = re.compile(r"/(?P<name>[^\s/{}@$]+)|\$\{(?P<name2>[^\s/{}@$]+)\}|@(?P<name3>[^\s/{}@$]+)")
+
+    def resolve(self, text: str, category: VarCategory, *, stack: Optional[Tuple[str, ...]] = None) -> str:
+        if text is None:
+            return text
+        text = str(text).strip()
+        if text == "":
+            return text
+        stack = stack or ()
+
+        def replacer(match: re.Match[str]) -> str:
+            name = match.group("name") or match.group("name2") or match.group("name3") or ""
+            if name in stack:
+                raise ValueError(f"변수 순환 참조: {' -> '.join(stack + (name,))}")
+            value_map = getattr(self.vars, category, {}) or {}
+            if name not in value_map and category not in ("var",):
+                value_map = getattr(self.vars, "var", {}) or {}
+            if name not in value_map:
+                raise ValueError(f"{category} 변수 '{name}'를 찾을 수 없습니다.")
+            raw_val = str(value_map[name])
+            return self.resolve(raw_val, category, stack=stack + (name,))
+
+        return self._pattern.sub(replacer, str(text))
+
+
+def _split_region_offset(raw: str) -> tuple[str, str]:
+    if "+" not in raw:
+        return raw.strip(), ""
+    base, offset = raw.split("+", 1)
+    return base.strip(), offset.strip()
+
+
+def _normalize_region_tuple(region: Any) -> Optional[Tuple[int, int, int, int]]:
+    if region is None:
+        return None
+    try:
+        reg_tuple = tuple(region)
+    except Exception as exc:
+        raise ValueError(f"Region 파싱 실패: {region}") from exc
+    if len(reg_tuple) not in (2, 4):
+        raise ValueError(f"Region 길이는 2 또는 4여야 합니다: {region}")
+    try:
+        reg_tuple = tuple(int(v) for v in reg_tuple)  # type: ignore[assignment]
+    except Exception as exc:
+        raise ValueError(f"Region 정수 변환 실패: {region}") from exc
+    if len(reg_tuple) == 2:
+        reg_tuple = (reg_tuple[0], reg_tuple[1], 1, 1)
+    return reg_tuple  # type: ignore[return-value]
+
+
+def _parse_mouse_pos(raw: Any, resolver: Optional[VariableResolver]) -> tuple[Optional[tuple[int, int]], Optional[str]]:
+    """
+    마우스 좌표 문자열/튜플을 (x, y), raw 텍스트 형태로 파싱한다.
+    빈값/None이면 (None, None)을 반환한다.
+    """
+    if raw is None:
+        return None, None
+    if isinstance(raw, str):
+        text_raw = raw.strip()
+        if not text_raw:
+            return None, None
+        resolved = resolver.resolve(text_raw, "var") if resolver else text_raw
+        parts = [p.strip() for p in str(resolved).split(",") if p.strip()]
+        if len(parts) != 2:
+            raise ValueError("마우스 좌표는 x,y 형식이어야 합니다.")
+        try:
+            x, y = (int(parts[0]), int(parts[1]))
+        except Exception as exc:
+            raise ValueError("마우스 좌표는 정수여야 합니다.") from exc
+        return (x, y), text_raw
+    try:
+        tup = tuple(raw)
+        if len(tup) != 2:
+            raise ValueError("마우스 좌표는 x,y 형식이어야 합니다.")
+        return (int(tup[0]), int(tup[1])), None
+    except Exception as exc:
+        raise ValueError("마우스 좌표 파싱 실패") from exc
+
+
+@dataclass
+class Condition:
+    type: ConditionType
+    name: Optional[str] = None
+    key: Optional[str] = None
+    key_mode: Optional[KeyMode] = None
+    var_name: Optional[str] = None
+    var_value: Optional[str] = None
+    var_value_raw: Optional[str] = None
+    var_operator: str = "eq"
+    region: Optional[Region] = None
+    region_raw: Optional[str] = None
+    color: Optional[RGB] = None
+    color_raw: Optional[str] = None
+    tolerance: int = 0
+    pixel_exists: bool = True
+    conditions: List["Condition"] = field(default_factory=list)
+    on_true: List["Condition"] = field(default_factory=list)
+    on_false: List["Condition"] = field(default_factory=list)
+    timer_index: Optional[int] = None
+    timer_value: Optional[float] = None
+    timer_operator: str = "ge"
+
+    @classmethod
+    def _parse_region(cls, raw: Any, resolver: Optional[VariableResolver]) -> tuple[Region, Optional[str]]:
+        if raw is None:
+            return None, None  # type: ignore[return-value]
+        region_raw: Optional[str] = None
+        value = raw
+        if isinstance(raw, str):
+            region_raw = raw.strip()
+            value = resolver.resolve(region_raw, "region") if resolver else region_raw
+        if isinstance(value, str):
+            base_text, offset_text = _split_region_offset(value)
+            parts = [p.strip() for p in base_text.split(",") if p.strip()]
+            if len(parts) not in (2, 4):
+                raise ValueError("Region은 x,y(,w,h) 정수여야 합니다.")
+            if len(parts) == 2:
+                parts.extend(["1", "1"])
+            base_nums = [int(p) for p in parts]
+            offset_nums = [0, 0, 0, 0]
+            if offset_text:
+                offset_parts = [p.strip() for p in offset_text.split(",") if p.strip()]
+                if len(offset_parts) != 4:
+                    raise ValueError("Region 덧셈은 +dx,dy,dw,dh 형식이어야 합니다.")
+                offset_nums = [int(p) for p in offset_parts]
+            merged = tuple(base_nums[i] + offset_nums[i] for i in range(4))
+            return merged, region_raw  # type: ignore[return-value]
+        return _normalize_region_tuple(value), region_raw  # type: ignore[arg-type,return-value]
+
+    @classmethod
+    def _parse_color(cls, raw: Any, resolver: Optional[VariableResolver]) -> tuple[RGB, Optional[str]]:
+        if raw is None:
+            return None, None  # type: ignore[return-value]
+        color_raw: Optional[str] = None
+        value = raw
+        if isinstance(raw, str):
+            color_raw = raw.strip()
+            # 변수 참조는 저장 시 즉시 검증하지 않고 런타임에 해석
+            if color_raw.startswith(("/", "$", "@")):
+                return None, color_raw  # type: ignore[return-value]
+            value = resolver.resolve(color_raw, "color") if resolver else color_raw
+        if isinstance(value, str):
+            text = value.strip().lstrip("#")
+            if len(text) != 6 or not all(c in "0123456789abcdefABCDEF" for c in text):
+                raise ValueError("색상은 16진수 6자리(RRGGBB)여야 합니다.")
+            return tuple(int(text[i : i + 2], 16) for i in (0, 2, 4)), color_raw  # type: ignore[return-value]
+        try:
+            return tuple(value), color_raw  # type: ignore[arg-type,return-value]
+        except Exception as exc:
+            raise ValueError(f"색상 파싱 실패: {raw}") from exc
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "Condition":
+        ctype = data.get("type", "key")
+        conds = [Condition.from_dict(c, resolver) for c in data.get("conditions", [])] if ctype in ("all", "any") else []
+        true_branch = [Condition.from_dict(c, resolver) for c in data.get("on_true", [])]
+        false_branch = [Condition.from_dict(c, resolver) for c in data.get("on_false", [])]
+        key_mode_raw = data.get("key_mode")
+        key_mode = str(key_mode_raw).lower() if key_mode_raw else None
+        if key_mode and key_mode not in ("press", "down", "up", "hold"):
+            key_mode = None
+        pixel_exists_raw = data.get("pixel_exists", True)
+        if isinstance(pixel_exists_raw, str):
+            pixel_exists = pixel_exists_raw.strip().lower() not in ("false", "0", "no")
+        else:
+            pixel_exists = bool(pixel_exists_raw)
+        region, region_raw = cls._parse_region(data.get("region"), resolver)
+        color, color_raw = cls._parse_color(data.get("color"), resolver)
+        var_name = data.get("var_name")
+        var_value_raw = data.get("var_value_raw", data.get("var_value"))
+        var_value = None
+        if var_value_raw is not None:
+            try:
+                var_value = resolver.resolve(str(var_value_raw), "var") if resolver else str(var_value_raw)
+            except Exception:
+                var_value = str(var_value_raw)
+        var_operator_raw = str(data.get("var_operator", "eq")).lower()
+        var_operator = "ne" if var_operator_raw == "ne" else "eq"
+        timer_idx_raw = data.get("timer_index", data.get("timer_slot"))
+        timer_index = None
+        try:
+            if timer_idx_raw not in (None, ""):
+                timer_index = int(timer_idx_raw)
+        except Exception:
+            timer_index = None
+        if timer_index is not None and (timer_index < 1 or timer_index > 20):
+            timer_index = None
+        timer_value_raw = data.get("timer_value")
+        timer_value: Optional[float] = None
+        if timer_value_raw not in (None, ""):
+            try:
+                resolved = resolver.resolve(str(timer_value_raw), "var") if resolver and isinstance(timer_value_raw, str) else timer_value_raw
+                timer_value = float(resolved)
+            except Exception:
+                try:
+                    timer_value = float(timer_value_raw)
+                except Exception:
+                    timer_value = None
+        timer_op_raw = str(data.get("timer_operator", data.get("timer_op", "ge"))).lower()
+        timer_operator = timer_op_raw if timer_op_raw in ("ge", "gt", "le", "lt", "eq", "ne") else "ge"
+        cond = cls(
+            type=ctype,
+            name=data.get("name"),
+            key=data.get("key"),
+            key_mode=key_mode,
+            var_name=var_name,
+            var_value=var_value,
+            var_value_raw=str(var_value_raw) if var_value_raw is not None else None,
+            var_operator=var_operator,
+            region=region,
+            region_raw=region_raw,
+            color=color,
+            color_raw=color_raw,
+            tolerance=int(data.get("tolerance", 0) or 0),
+            pixel_exists=pixel_exists,
+            conditions=conds,
+            on_true=true_branch,
+            on_false=false_branch,
+            timer_index=timer_index,
+            timer_value=timer_value,
+            timer_operator=timer_operator,
+        )
+        enabled_raw = data.get("enabled")
+        if isinstance(enabled_raw, str):
+            enabled_val = enabled_raw.strip().lower() not in ("false", "0", "no")
+        else:
+            enabled_val = bool(enabled_raw) if enabled_raw is not None else True
+        try:
+            setattr(cond, "enabled", enabled_val)
+        except Exception:
+            pass
+        return cond
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "type": self.type,
+            "name": self.name,
+            "key": self.key,
+            "key_mode": self.key_mode,
+            "var_name": self.var_name,
+            "var_value_raw": self.var_value_raw if self.var_value_raw is not None else self.var_value,
+            "var_operator": self.var_operator,
+            "region": self.region_raw if self.region_raw is not None else (list(self.region) if self.region else None),
+            "color": self.color_raw if self.color_raw is not None else (list(self.color) if self.color else None),
+            "tolerance": self.tolerance,
+            "pixel_exists": self.pixel_exists,
+            "timer_index": self.timer_index,
+            "timer_value": self.timer_value,
+            "timer_operator": self.timer_operator,
+            "enabled": getattr(self, "enabled", True),
+        }
+        payload["enabled"] = getattr(self, "enabled", True)
+        if self.type in ("all", "any"):
+            payload["conditions"] = [c.to_dict() for c in self.conditions]
+        if self.on_true:
+            payload["on_true"] = [c.to_dict() for c in self.on_true]
+        if self.on_false:
+            payload["on_false"] = [c.to_dict() for c in self.on_false]
+        return payload
+
+
+@dataclass
+class Action:
+    type: ActionType
+    name: Optional[str] = None
+    description: Optional[str] = None
+    enabled: bool = True
+    once_per_macro: bool = False
+    key: Optional[str] = None
+    key_raw: Optional[str] = None
+    repeat: int = 1
+    repeat_raw: Optional[str] = None
+    repeat_range: Optional[tuple[int, int]] = None
+    var_name: Optional[str] = None
+    var_value: Optional[str] = None
+    var_value_raw: Optional[str] = None
+    confirm_fails: int = 1
+    sleep_ms: int = 0
+    sleep_range: Optional[tuple[int, int]] = None
+    sleep_raw: Optional[str] = None
+    condition: Optional[Condition] = None
+    elif_blocks: List[tuple[Condition, List["Action"]]] = field(default_factory=list)
+    actions: List["Action"] = field(default_factory=list)
+    else_actions: List["Action"] = field(default_factory=list)
+    label: Optional[str] = None
+    goto_label: Optional[str] = None
+    mouse_button: Optional[str] = None
+    mouse_pos: Optional[tuple[int, int]] = None
+    mouse_pos_raw: Optional[str] = None
+    pixel_region: Optional[Region] = None
+    pixel_region_raw: Optional[str] = None
+    pixel_target: Optional[str] = None
+    group_mode: Optional[GroupMode] = None
+    group_repeat: Optional[int] = None
+    timer_index: Optional[int] = None
+    timer_value: Optional[float] = None
+    key_delay_override_enabled: bool = False
+    key_delay_override: Optional[KeyDelayConfig] = None
+
+    @staticmethod
+    def parse_sleep(raw: Any) -> tuple[int, Optional[tuple[int, int]]]:
+        text = str(raw).strip() if raw is not None else ""
+        if text == "":
+            return 0, None
+        if "~" in text:
+            parts = [p.strip() for p in text.split("~")]
+            if len(parts) != 2 or any(not p for p in parts):
+                raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.")
+            try:
+                first, second = (int(parts[0]), int(parts[1]))
+            except Exception as exc:
+                raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.") from exc
+            low, high = sorted((first, second))
+            low = max(0, low)
+            high = max(0, high)
+            if low == high:
+                return low, None
+            return low, (low, high)
+        try:
+            val = int(text)
+        except Exception as exc:
+            raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.") from exc
+        return max(0, val), None
+
+    @staticmethod
+    def parse_repeat(raw: Any) -> tuple[int, Optional[tuple[int, int]], Optional[str]]:
+        """
+        반복 횟수 파서. 정수 또는 \"a-b\" 범위를 허용한다.
+        returns: (repeat_value, repeat_range, repeat_raw)
+        """
+        text = str(raw).strip() if raw is not None else ""
+        if text == "":
+            return 1, None, None
+        if "-" in text:
+            parts = [p.strip() for p in text.split("-")]
+            if len(parts) != 2 or any(not p for p in parts):
+                raise ValueError("반복은 정수 또는 범위(예: 1-3)여야 합니다.")
+            try:
+                first, second = (int(parts[0]), int(parts[1]))
+            except Exception as exc:
+                raise ValueError("반복은 정수 또는 범위(예: 1-3)여야 합니다.") from exc
+            low, high = sorted((first, second))
+            low = max(1, low)
+            high = max(1, high)
+            if low == high:
+                return low, None, text
+            return low, (low, high), text
+        try:
+            val = int(text)
+        except Exception as exc:
+            raise ValueError("반복은 정수 또는 범위(예: 1-3)여야 합니다.") from exc
+        return max(1, val), None, None
+
+    def sleep_value_text(self) -> str:
+        if self.sleep_range:
+            low, high = self.sleep_range
+            return f"{low}~{high}"
+        if self.sleep_raw is not None:
+            return self.sleep_raw
+        return str(self.sleep_ms)
+
+    def sleep_value_for_export(self) -> int | str:
+        if self.sleep_range:
+            low, high = self.sleep_range
+            return f"{low}~{high}"
+        if self.sleep_raw is not None:
+            return self.sleep_raw
+        return self.sleep_ms
+
+    def resolve_sleep_ms(self) -> int:
+        if self.sleep_range:
+            low, high = self.sleep_range
+            return random.randint(low, high)
+        return max(0, int(self.sleep_ms or 0))
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "Action":
+        typ = data.get("type", "press")
+        cond_data = data.get("condition")
+        cond = Condition.from_dict(cond_data, resolver) if cond_data else None
+        actions = [Action.from_dict(s, resolver) for s in data.get("actions", data.get("steps", []))]
+        else_actions = [Action.from_dict(s, resolver) for s in data.get("else_actions", [])]
+        elif_blocks: List[tuple[Condition, List["Action"]]] = []
+        for blk in data.get("elif_blocks", []) or []:
+            try:
+                econd = Condition.from_dict(blk.get("condition", {}), resolver)
+                eacts = [Action.from_dict(a, resolver) for a in blk.get("actions", [])]
+                elif_blocks.append((econd, eacts))
+            except Exception:
+                continue
+        sleep_ms_raw = data.get("sleep_ms", data.get("sleep", 0))
+        sleep_raw: Optional[str] = None
+        sleep_value_for_parse = sleep_ms_raw
+        if isinstance(sleep_ms_raw, str):
+            sleep_raw = sleep_ms_raw.strip()
+            sleep_value_for_parse = resolver.resolve(sleep_raw, "sleep") if resolver else sleep_raw
+        sleep_ms, sleep_range = cls.parse_sleep(sleep_value_for_parse)
+        region_raw = data.get("pixel_region_raw")
+        region_val = data.get("pixel_region")
+        region = None
+        if region_raw is not None:
+            region = Condition._parse_region(region_raw, resolver)[0]
+        elif region_val is not None:
+            region = _normalize_region_tuple(region_val)
+        var_value_raw = data.get("var_value_raw", data.get("var_value"))
+        var_value = None
+        if var_value_raw is not None:
+            try:
+                var_value = resolver.resolve(str(var_value_raw), "var") if resolver else str(var_value_raw)
+            except Exception:
+                var_value = str(var_value_raw)
+        timer_idx_raw = data.get("timer_index", data.get("timer_slot"))
+        timer_index = None
+        try:
+            if timer_idx_raw not in (None, ""):
+                timer_index = int(timer_idx_raw)
+        except Exception:
+            timer_index = None
+        if timer_index is not None and (timer_index < 1 or timer_index > 20):
+            timer_index = None
+        timer_value_raw = data.get("timer_value")
+        timer_value: Optional[float] = None
+        if timer_value_raw not in (None, ""):
+            try:
+                resolved_timer_val = resolver.resolve(str(timer_value_raw), "var") if resolver and isinstance(timer_value_raw, str) else timer_value_raw
+                timer_value = float(resolved_timer_val)
+            except Exception:
+                try:
+                    timer_value = float(timer_value_raw)
+                except Exception:
+                    timer_value = None
+        confirm_raw = data.get("confirm_fails", 1)
+        try:
+            confirm_fails = int(confirm_raw)
+        except Exception:
+            confirm_fails = 1
+        confirm_fails = max(1, confirm_fails)
+        override_enabled = bool(data.get("key_delay_override_enabled", False))
+        key_delay_override = None
+        try:
+            if isinstance(data.get("key_delay_override"), dict):
+                key_delay_override = KeyDelayConfig.from_dict(data.get("key_delay_override"))
+        except Exception:
+            key_delay_override = None
+        repeat_raw_data = data.get("repeat_raw", data.get("repeat", 1))
+        try:
+            repeat_val, repeat_range, repeat_raw = cls.parse_repeat(repeat_raw_data)
+        except Exception:
+            repeat_val, repeat_range, repeat_raw = 1, None, None
+        mouse_pos_raw_val = data.get("mouse_pos_raw", data.get("mouse_pos"))
+        mouse_pos: Optional[tuple[int, int]] = None
+        mouse_pos_raw: Optional[str] = None
+        if mouse_pos_raw_val is not None:
+            try:
+                mouse_pos, mouse_pos_raw = _parse_mouse_pos(mouse_pos_raw_val, resolver)
+            except Exception:
+                mouse_pos = None
+                mouse_pos_raw = str(mouse_pos_raw_val).strip() if mouse_pos_raw_val is not None else None
+        group_repeat_raw = data.get("group_repeat")
+        try:
+            group_repeat = max(1, int(group_repeat_raw)) if group_repeat_raw not in (None, "") else None
+        except Exception:
+            group_repeat = None
+        key_raw = data.get("key")
+        key_resolved = key_raw
+        if resolver and isinstance(key_raw, str) and key_raw.strip():
+            try:
+                key_resolved = resolver.resolve(key_raw, "key")
+            except Exception:
+                key_resolved = key_raw
+        return cls(
+            type=typ,
+            name=data.get("name"),
+            description=data.get("description"),
+            enabled=bool(data.get("enabled", True)),
+            once_per_macro=bool(data.get("once_per_macro", False)),
+            key=key_resolved,
+            key_raw=str(key_raw) if key_raw is not None else None,
+            repeat=repeat_val,
+            repeat_range=repeat_range,
+            repeat_raw=str(repeat_raw) if repeat_raw is not None else None,
+            var_name=data.get("var_name"),
+            var_value=var_value,
+            var_value_raw=str(var_value_raw) if var_value_raw is not None else None,
+            confirm_fails=confirm_fails,
+            sleep_ms=sleep_ms,
+            sleep_range=sleep_range,
+            sleep_raw=sleep_raw,
+            condition=cond,
+            elif_blocks=elif_blocks,
+            actions=actions,
+            else_actions=else_actions,
+            label=data.get("label"),
+            goto_label=data.get("goto_label"),
+            mouse_button=data.get("mouse_button") or data.get("button"),
+            mouse_pos=mouse_pos,
+            mouse_pos_raw=mouse_pos_raw,
+            pixel_region=region,
+            pixel_region_raw=region_raw,
+            pixel_target=data.get("pixel_target"),
+            group_mode=data.get("group_mode"),
+            group_repeat=group_repeat,
+            timer_index=timer_index,
+            timer_value=timer_value,
+            key_delay_override_enabled=override_enabled,
+            key_delay_override=key_delay_override,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "type": self.type,
+            "name": self.name,
+            "description": self.description,
+            "enabled": self.enabled,
+            "once_per_macro": self.once_per_macro,
+            "key": self.key_raw if self.key_raw is not None else self.key,
+            "repeat": self.repeat,
+            "repeat_raw": self.repeat_raw if self.repeat_raw is not None else None,
+            "var_name": self.var_name,
+            "var_value_raw": self.var_value_raw if self.var_value_raw is not None else self.var_value,
+            "confirm_fails": self.confirm_fails,
+            "sleep_ms": self.sleep_value_for_export(),
+            "condition": self.condition.to_dict() if self.condition else None,
+            "label": self.label,
+            "goto_label": self.goto_label,
+            "mouse_button": self.mouse_button,
+            "mouse_pos": list(self.mouse_pos) if self.mouse_pos is not None else None,
+            "mouse_pos_raw": self.mouse_pos_raw,
+            "pixel_region": list(self.pixel_region) if self.pixel_region is not None else None,
+            "pixel_region_raw": self.pixel_region_raw,
+            "pixel_target": self.pixel_target,
+            "group_mode": self.group_mode,
+            "group_repeat": self.group_repeat,
+            "timer_index": self.timer_index,
+            "timer_value": self.timer_value,
+            "key_delay_override_enabled": getattr(self, "key_delay_override_enabled", False),
+            "key_delay_override": self.key_delay_override.to_dict() if getattr(self, "key_delay_override", None) else None,
+        }
+        if self.actions:
+            payload["actions"] = [a.to_dict() for a in self.actions]
+        if self.elif_blocks:
+            payload["elif_blocks"] = [
+                {"condition": cond.to_dict(), "actions": [a.to_dict() for a in acts]} for cond, acts in self.elif_blocks
+            ]
+        if self.else_actions:
+            payload["else_actions"] = [a.to_dict() for a in self.else_actions]
+        return payload
+
+
+@dataclass
+class Step:
+    type: StepType
+    key: Optional[str] = None
+    sleep_ms: int = 0
+    sleep_range: Optional[tuple[int, int]] = None
+    sleep_raw: Optional[str] = None
+    condition: Optional[Condition] = None
+    steps: List["Step"] = field(default_factory=list)
+    else_steps: List["Step"] = field(default_factory=list)
+
+    @staticmethod
+    def parse_sleep(raw: Any) -> tuple[int, Optional[tuple[int, int]]]:
+        text = str(raw).strip() if raw is not None else ""
+        if text == "":
+            return 0, None
+        if "~" in text:
+            parts = [p.strip() for p in text.split("~")]
+            if len(parts) != 2 or any(not p for p in parts):
+                raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.")
+            try:
+                first, second = (int(parts[0]), int(parts[1]))
+            except Exception as exc:
+                raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.") from exc
+            low, high = sorted((first, second))
+            low = max(0, low)
+            high = max(0, high)
+            if low == high:
+                return low, None
+            return low, (low, high)
+        try:
+            val = int(text)
+        except Exception as exc:
+            raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.") from exc
+        return max(0, val), None
+
+    def sleep_value_text(self) -> str:
+        if self.sleep_range:
+            low, high = self.sleep_range
+            return f"{low}~{high}"
+        if self.sleep_raw is not None:
+            return self.sleep_raw
+        return str(self.sleep_ms)
+
+    def sleep_value_for_export(self) -> int | str:
+        if self.sleep_range:
+            low, high = self.sleep_range
+            return f"{low}~{high}"
+        if self.sleep_raw is not None:
+            return self.sleep_raw
+        return self.sleep_ms
+
+    def resolve_sleep_ms(self) -> int:
+        if self.sleep_range:
+            low, high = self.sleep_range
+            return random.randint(low, high)
+        return max(0, int(self.sleep_ms or 0))
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "Step":
+        cdata = data.get("condition")
+        cond = Condition.from_dict(cdata, resolver) if cdata else None
+        steps = [Step.from_dict(s, resolver) for s in data.get("steps", [])]
+        else_steps = [Step.from_dict(s, resolver) for s in data.get("else_steps", [])]
+        sleep_ms_raw = data.get("sleep_ms", 0)
+        sleep_raw: Optional[str] = None
+        sleep_value_for_parse = sleep_ms_raw
+        if isinstance(sleep_ms_raw, str):
+            sleep_raw = sleep_ms_raw.strip()
+            sleep_value_for_parse = resolver.resolve(sleep_raw, "sleep") if resolver else sleep_raw
+        sleep_ms, sleep_range = cls.parse_sleep(sleep_value_for_parse)
+        return cls(
+            type=data.get("type", "press"),
+            key=data.get("key"),
+            sleep_ms=sleep_ms,
+            sleep_range=sleep_range,
+            sleep_raw=sleep_raw,
+            condition=cond,
+            steps=steps,
+            else_steps=else_steps,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "type": self.type,
+            "key": self.key,
+            "sleep_ms": self.sleep_value_for_export(),
+            "condition": self.condition.to_dict() if self.condition else None,
+        }
+        if self.steps:
+            payload["steps"] = [s.to_dict() for s in self.steps]
+        if self.else_steps:
+            payload["else_steps"] = [s.to_dict() for s in self.else_steps]
+        return payload
+
+
+@dataclass
+class MacroCondition:
+    condition: Condition
+    actions: List[Step] = field(default_factory=list)
+    else_actions: List[Step] = field(default_factory=list)
+    name: Optional[str] = None
+    enabled: bool = True
+    confirm_fails: int = 1
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "MacroCondition":
+        cond = Condition.from_dict(data.get("condition", {}), resolver)
+        actions = [Step.from_dict(s, resolver) for s in data.get("actions", data.get("steps", []))]
+        else_actions = [Step.from_dict(s, resolver) for s in data.get("else_actions", data.get("false_actions", []))]
+        enabled_raw = data.get("enabled", True)
+        enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).strip().lower() not in ("false", "0", "no")
+        confirm_fails = int(data.get("confirm_fails", 1) or 1)
+        if confirm_fails < 1:
+            confirm_fails = 1
+        return cls(
+            condition=cond,
+            actions=actions,
+            else_actions=else_actions,
+            name=data.get("name"),
+            enabled=enabled,
+            confirm_fails=confirm_fails,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "condition": self.condition.to_dict(),
+            "actions": [s.to_dict() for s in self.actions],
+            "else_actions": [s.to_dict() for s in self.else_actions],
+            "name": self.name,
+            "enabled": self.enabled,
+            "confirm_fails": self.confirm_fails,
+        }
+
+
+@dataclass
+class Macro:
+    trigger_key: str
+    mode: MacroMode = "hold"
+    actions: List[Action] = field(default_factory=list)
+    stop_actions: List[Action] = field(default_factory=list)
+    suppress_trigger: bool = True
+    enabled: bool = True
+    name: Optional[str] = None
+    cycle_count: Optional[int] = None
+    description: Optional[str] = None
+    stop_others_on_trigger: bool = False
+    suspend_others_while_running: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "Macro":
+        actions_data = data.get("actions")
+        stop_actions_data = data.get("stop_actions")
+        cycle_count_raw = data.get("cycle_count", None)
+        if actions_data is None:
+            actions = cls._from_legacy(data, resolver)
+        else:
+            actions = [Action.from_dict(a, resolver) for a in actions_data or []]
+        stop_actions = [Action.from_dict(a, resolver) for a in stop_actions_data or []]
+        cycle_count = None
+        if cycle_count_raw not in (None, ""):
+            try:
+                cycle_count = int(cycle_count_raw)
+                if cycle_count < 0:
+                    cycle_count = None
+            except Exception:
+                cycle_count = None
+        enabled_raw = data.get("enabled", True)
+        enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).strip().lower() not in ("false", "0", "no")
+        return cls(
+            trigger_key=str(data.get("trigger_key") or data.get("key") or ""),
+            mode=data.get("mode", "hold"),
+            actions=actions,
+            stop_actions=stop_actions,
+            suppress_trigger=bool(data.get("suppress_trigger", True)),
+            enabled=enabled,
+            name=data.get("name"),
+            cycle_count=cycle_count,
+            description=data.get("description"),
+            stop_others_on_trigger=bool(data.get("stop_others_on_trigger", False)),
+            suspend_others_while_running=bool(data.get("suspend_others_while_running", False)),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "trigger_key": self.trigger_key,
+            "mode": self.mode,
+            "name": self.name,
+            "description": self.description,
+            "suppress_trigger": self.suppress_trigger,
+            "enabled": self.enabled,
+            "cycle_count": self.cycle_count,
+            "actions": [a.to_dict() for a in self.actions],
+            "stop_actions": [a.to_dict() for a in getattr(self, "stop_actions", [])],
+            "stop_others_on_trigger": getattr(self, "stop_others_on_trigger", False),
+            "suspend_others_while_running": getattr(self, "suspend_others_while_running", False),
+        }
+
+    @staticmethod
+    def _step_to_action(step: Step) -> Action:
+        return Action.from_dict(step.to_dict())
+
+    @classmethod
+    def _conditions_to_actions(cls, conds: List[MacroCondition]) -> List[Action]:
+        actions: List[Action] = []
+        for cond in conds:
+            actions.append(
+                Action(
+                    type="if",
+                    condition=cond.condition,
+                    actions=[cls._step_to_action(s) for s in cond.actions],
+                    else_actions=[cls._step_to_action(s) for s in cond.else_actions],
+                    name=cond.name,
+                    enabled=getattr(cond, "enabled", True),
+                    confirm_fails=getattr(cond, "confirm_fails", 1),
+                )
+            )
+        return actions
+
+    @classmethod
+    def _from_legacy(cls, data: Dict[str, Any], resolver: Optional[VariableResolver]) -> List[Action]:
+        base_actions_data = data.get("base_actions", data.get("steps", []))
+        conditions_data = data.get("conditions", [])
+        base_steps = [Step.from_dict(s, resolver) for s in base_actions_data or []]
+        cond_blocks = [MacroCondition.from_dict(c, resolver) for c in conditions_data or []]
+        actions = [cls._step_to_action(s) for s in base_steps if s.type in ("press", "down", "up", "sleep", "if")]
+        actions.extend(cls._conditions_to_actions(cond_blocks))
+        return actions
+
+
+@dataclass
+class MacroProfile:
+    macros: List[Macro] = field(default_factory=list)
+    pixel_region: Region = (0, 0, 100, 100)
+    pixel_region_raw: Optional[str] = None
+    pixel_color: RGB = (255, 0, 0)
+    pixel_color_raw: Optional[str] = None
+    pixel_tolerance: int = 10
+    pixel_expect_exists: bool = True
+    keyboard_device_id: Optional[int] = None
+    keyboard_hardware_id: Optional[str] = None
+    mouse_device_id: Optional[int] = None
+    mouse_hardware_id: Optional[str] = None
+    keyboard_test_key: str = "f24"
+    input_mode: str = "hardware"
+    key_delay: KeyDelayConfig = field(default_factory=KeyDelayConfig)
+    mouse_delay: KeyDelayConfig = field(default_factory=KeyDelayConfig)
+    variables: MacroVariables = field(default_factory=MacroVariables)
+    base_resolution: tuple[int, int] = DEFAULT_BASE_RESOLUTION
+    base_scale_percent: float = DEFAULT_BASE_SCALE
+    transform_matrix: Optional[Dict[str, Any]] = None
+
+    @staticmethod
+    def _parse_resolution(raw: Any, default: tuple[int, int] = DEFAULT_BASE_RESOLUTION) -> tuple[int, int]:
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            try:
+                w, h = int(raw[0]), int(raw[1])
+                if w > 0 and h > 0:
+                    return (w, h)
+            except Exception:
+                pass
+        if isinstance(raw, str):
+            text = raw.strip().lower().replace("×", "x").replace(" ", "")
+            for sep in ("x", ",", "*"):
+                if sep in text:
+                    parts = [p for p in text.split(sep) if p]
+                    if len(parts) >= 2:
+                        try:
+                            w, h = int(parts[0]), int(parts[1])
+                            if w > 0 and h > 0:
+                                return (w, h)
+                        except Exception:
+                            pass
+            try:
+                nums = [int(n) for n in re.findall(r"\d+", text)]
+                if len(nums) >= 2 and nums[0] > 0 and nums[1] > 0:
+                    return (nums[0], nums[1])
+            except Exception:
+                pass
+        return default
+
+    @staticmethod
+    def _parse_scale_percent(raw: Any, default: float = DEFAULT_BASE_SCALE) -> float:
+        try:
+            if isinstance(raw, str):
+                text = raw.strip().lower().replace("%", "").replace("배", "").replace("x", "")
+                if not text:
+                    return default
+                value = float(text)
+            else:
+                value = float(raw)
+            if value <= 0:
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MacroProfile":
+        variables = MacroVariables.from_dict(data.get("variables", {}) or {})
+        resolver = VariableResolver(variables)
+        base_resolution = cls._parse_resolution(data.get("base_resolution"), DEFAULT_BASE_RESOLUTION)
+        base_scale = cls._parse_scale_percent(data.get("base_scale_percent"), DEFAULT_BASE_SCALE)
+
+        region_raw = data.get("pixel_region")
+        region_val = region_raw if region_raw is not None else (0, 0, 100, 100)
+        if isinstance(region_val, str):
+            resolved_region = resolver.resolve(region_val, "region")
+            parts = [p.strip() for p in resolved_region.split(",") if p.strip()]
+            if len(parts) != 4:
+                raise ValueError("pixel_region은 x,y,w,h 네 개의 정수여야 합니다.")
+            region = tuple(int(p) for p in parts)
+        else:
+            region = tuple(region_val)
+
+        color_raw = data.get("pixel_color")
+        color_val = color_raw if color_raw is not None else (255, 0, 0)
+        if isinstance(color_val, str):
+            resolved_color = resolver.resolve(color_val, "color")
+            color_text = resolved_color.strip().lstrip("#")
+            if len(color_text) != 6 or not all(c in "0123456789abcdefABCDEF" for c in color_text):
+                raise ValueError("pixel_color는 16진수 6자리(RRGGBB)여야 합니다.")
+            color = tuple(int(color_text[i : i + 2], 16) for i in (0, 2, 4))
+        else:
+            color = tuple(color_val)
+
+        tol = int(data.get("pixel_tolerance", 10) or 0)
+        expect_raw = data.get("pixel_expect_exists", True)
+        if isinstance(expect_raw, str):
+            expect_exists = expect_raw.strip().lower() not in ("false", "0", "no")
+        else:
+            expect_exists = bool(expect_raw)
+        device_id_raw = data.get("keyboard_device_id")
+        try:
+            device_id = int(device_id_raw)
+        except Exception:
+            device_id = None
+        hwid_raw = data.get("keyboard_hardware_id")
+        hwid = str(hwid_raw) if hwid_raw else None
+        mouse_device_raw = data.get("mouse_device_id")
+        try:
+            mouse_device_id = int(mouse_device_raw)
+        except Exception:
+            mouse_device_id = None
+        mouse_hwid_raw = data.get("mouse_hardware_id")
+        mouse_hwid = str(mouse_hwid_raw) if mouse_hwid_raw else None
+        input_mode = str(data.get("input_mode", "hardware") or "hardware").lower()
+        if input_mode not in ("hardware", "software"):
+            input_mode = "hardware"
+        test_key_raw = data.get("keyboard_test_key", "f24") or "f24"
+        test_key = str(test_key_raw).lower()
+        transform_meta = data.get("transform_matrix")
+        if not isinstance(transform_meta, dict):
+            transform_meta = None
+        return cls(
+            macros=[Macro.from_dict(m, resolver) for m in data.get("macros", [])],
+            pixel_region=region,  # type: ignore[arg-type]
+            pixel_region_raw=region_raw if isinstance(region_raw, str) else None,
+            pixel_color=color,  # type: ignore[arg-type]
+            pixel_color_raw=color_raw if isinstance(color_raw, str) else None,
+            pixel_tolerance=tol,
+            pixel_expect_exists=expect_exists,
+            keyboard_device_id=device_id,
+            keyboard_hardware_id=hwid,
+            mouse_device_id=mouse_device_id,
+            mouse_hardware_id=mouse_hwid,
+            keyboard_test_key=test_key,
+            input_mode=input_mode,
+            key_delay=KeyDelayConfig.from_dict(data.get("key_delay", {}) if isinstance(data, dict) else {}),
+            mouse_delay=KeyDelayConfig.from_dict(data.get("mouse_delay", {}) if isinstance(data, dict) else {}),
+            variables=variables,
+            base_resolution=base_resolution,
+            base_scale_percent=base_scale,
+            transform_matrix=transform_meta,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        try:
+            base_res = self._parse_resolution(self.base_resolution, DEFAULT_BASE_RESOLUTION)
+        except Exception:
+            base_res = DEFAULT_BASE_RESOLUTION
+        try:
+            base_scale = float(self._parse_scale_percent(self.base_scale_percent, DEFAULT_BASE_SCALE))
+        except Exception:
+            base_scale = DEFAULT_BASE_SCALE
+        data: Dict[str, Any] = {
+            "macros": [m.to_dict() for m in self.macros],
+            "pixel_region": self.pixel_region_raw if self.pixel_region_raw is not None else list(self.pixel_region),
+            "pixel_color": self.pixel_color_raw if self.pixel_color_raw is not None else list(self.pixel_color),
+            "pixel_tolerance": self.pixel_tolerance,
+            "pixel_expect_exists": self.pixel_expect_exists,
+            "keyboard_device_id": self.keyboard_device_id,
+            "keyboard_hardware_id": self.keyboard_hardware_id,
+            "mouse_device_id": self.mouse_device_id,
+            "mouse_hardware_id": self.mouse_hardware_id,
+            "keyboard_test_key": self.keyboard_test_key,
+            "input_mode": self.input_mode,
+            "key_delay": self.key_delay.to_dict(),
+            "mouse_delay": self.mouse_delay.to_dict(),
+            "variables": self.variables.to_dict(),
+            "base_resolution": [int(v) for v in base_res],
+            "base_scale_percent": float(base_scale),
+        }
+        if self.transform_matrix:
+            try:
+                data["transform_matrix"] = copy.deepcopy(self.transform_matrix)
+            except Exception:
+                data["transform_matrix"] = self.transform_matrix
+        return data
+
+
+class KeySwallower:
+    """트리거 키를 OS에 전달하지 않도록 삼킴."""
+
+    def __init__(self, inter: Optional[Interception] = None):
+        self._stop = threading.Event()
+        self._enabled = False
+        self._keys: Set[int] = set()
+        self._pressed: Set[int] = set()
+        self._pressed_ts: Dict[int, float] = {}
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        # 가능한 한 전역 Interception 인스턴스를 재사용해 필터 적용이 동일한 디바이스에
+        # 걸리도록 한다.
+        self._inter: Optional[Interception] = inter
+
+    def set_keys(self, keys: List[str]):
+        scs: Set[int] = set()
+        for k in keys:
+            try:
+                sc = to_scan_code(k)
+            except Exception:
+                continue
+            if sc > 0:
+                scs.add(sc)
+        with self._lock:
+            if scs == self._keys:
+                return
+            self._keys = scs
+            self._pressed.clear()
+            self._pressed_ts.clear()
+
+    def set_enabled(self, enabled: bool):
+        with self._lock:
+            self._enabled = enabled
+            if not enabled:
+                self._pressed.clear()
+                self._pressed_ts.clear()
+
+    def is_enabled(self) -> bool:
+        with self._lock:
+            return self._enabled
+
+    def is_alive(self) -> bool:
+        t = self._thread
+        return bool(t and t.is_alive())
+
+    def is_tracked(self, key: str) -> bool:
+        try:
+            sc = to_scan_code(key)
+        except Exception:
+            return False
+        with self._lock:
+            return sc > 0 and sc in self._keys
+
+    def is_pressed(self, key: str, *, max_age: Optional[float] = None) -> bool:
+        try:
+            sc = to_scan_code(key)
+        except Exception:
+            return False
+        with self._lock:
+            if sc not in self._pressed:
+                return False
+            if max_age is not None:
+                ts = self._pressed_ts.get(sc)
+                if ts is None or (time.monotonic() - ts) > max_age:
+                    # up 이벤트를 놓친 경우를 대비해 일정 시간 지나면 강제로 해제
+                    self._pressed.discard(sc)
+                    self._pressed_ts.pop(sc, None)
+                    return False
+            return True
+
+    def last_pressed_at(self, key: str) -> Optional[float]:
+        try:
+            sc = to_scan_code(key)
+        except Exception:
+            return None
+        with self._lock:
+            return self._pressed_ts.get(sc)
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="KeySwallower", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+        with self._lock:
+            self._pressed.clear()
+            self._pressed_ts.clear()
+        if self._inter:
+            try:
+                self._inter.set_keyboard_filter(KeyFilter(0))
+            except Exception:
+                pass
+            self._inter = None
+
+    def _run(self):
+        try:
+            inter = self._inter or Interception()
+        except Exception:
+            return
+        self._inter = inter
+        current_enabled = None
+        while not self._stop.is_set():
+            try:
+                with self._lock:
+                    enabled = self._enabled
+                    codes = set(self._keys)
+
+                if enabled != current_enabled:
+                    try:
+                        inter.set_keyboard_filter(KeyFilter.All if enabled else KeyFilter(0))
+                    except Exception:
+                        pass
+                    current_enabled = enabled
+
+                if not enabled:
+                    time.sleep(0.05)
+                    continue
+
+                device = inter.wait_receive(50)
+                if not device:
+                    continue
+                stroke = device.stroke
+                tracked_key = device.is_keyboard and stroke.code in codes
+                if tracked_key:
+                    is_down = stroke.state in (KeyState.Down, KeyState.E0Down, KeyState.E1Down)
+                    is_up = stroke.state in (KeyState.Up, KeyState.E0Up, KeyState.E1Up)
+                    now = time.monotonic()
+                    with self._lock:
+                        if is_down:
+                            self._pressed.add(stroke.code)
+                            self._pressed_ts[stroke.code] = now
+                        elif is_up:
+                            self._pressed.discard(stroke.code)
+                            self._pressed_ts.pop(stroke.code, None)
+
+                swallow = tracked_key
+                if not swallow:
+                    device.send()
+            except Exception:
+                # 예외 발생 시 필터를 해제하고 종료
+                with self._lock:
+                    self._enabled = False
+                    self._pressed.clear()
+                    self._pressed_ts.clear()
+                try:
+                    inter.set_keyboard_filter(KeyFilter(0))
+                except Exception:
+                    pass
+                break
+
+
+class MacroRunner:
+    def __init__(self, macro: Macro, engine: "MacroEngine", index: Optional[int] = None):
+        self.macro = macro
+        self.engine = engine
+        self.index = index
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._cond_key_states: Dict[str, bool] = {}
+        self._vars = copy.deepcopy(getattr(engine._profile, "variables", MacroVariables()))
+        self._resolver = VariableResolver(self._vars)
+        self._sent_stop_event = False
+        self._seq_map: Dict[tuple[int, ...], int] = {}
+        self._seq_counter = 1
+        self._build_seq_map(self.macro.actions, [])
+        self._held_keys: Set[str] = set()
+        self._held_mouse: Set[str] = set()
+        self._held_lock = threading.Lock()
+        self._if_false_streaks: Dict[tuple[int, ...], int] = {}
+        self._running_stop_actions = False
+
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    class _Result:
+        def __init__(self, signal: str = "none", goto_label: Optional[str] = None, condition_hit: bool = False, repeat: bool = False):
+            self.signal = signal
+            self.goto_label = goto_label
+            self.condition_hit = condition_hit
+            self.repeat = repeat
+
+    def _macro_label(self) -> str:
+        if self.macro.name:
+            return self.macro.name
+        base = f"{self.macro.trigger_key}"
+        return base if self.index is None else f"{base}#{self.index}"
+
+    def _macro_context(self) -> Dict[str, Any]:
+        return {
+            "index": self.index,
+            "name": self.macro.name,
+            "trigger_key": self.macro.trigger_key,
+            "mode": self.macro.mode,
+        }
+
+    def _build_seq_map(self, actions: List[Action], prefix: List[int]):
+        for idx, act in enumerate(actions):
+            path_key = tuple(prefix + [idx])
+            self._seq_map[path_key] = self._seq_counter
+            self._seq_counter += 1
+            children: List[Action] = []
+            if act.type == "if":
+                children.extend(act.actions)
+                for _, eacts in getattr(act, "elif_blocks", []):
+                    children.extend(eacts)
+                children.extend(getattr(act, "else_actions", []))
+            elif act.type == "group":
+                children.extend(act.actions)
+            if children:
+                child_prefix = prefix + [idx]
+                self._build_seq_map(children, child_prefix)
+
+    def _seq_chain(self, idx_path: List[int]) -> List[int]:
+        chain: List[int] = []
+        for i in range(1, len(idx_path) + 1):
+            key = tuple(idx_path[:i])
+            num = self._seq_map.get(key)
+            if num is not None:
+                chain.append(num)
+        return chain
+
+    def _emit_macro_event(self, etype: str, **extra):
+        payload = {"type": etype, "macro": self._macro_context()}
+        payload.update(extra)
+        self.engine._emit_event(payload)
+
+    def _action_label(self, action: Action, idx: int) -> str:
+        label = action.name or action.description or action.type
+        return f"{idx}:{label}"
+
+    def _emit_action_event(self, stage: str, action: Action, path: List[str], idx_path: List[int], **extra):
+        detail: Dict[str, Any] = {}
+        if action.type == "pixel_get":
+            region = action.pixel_region
+            if region is None and action.pixel_region_raw is not None:
+                try:
+                    region = Condition._parse_region(action.pixel_region_raw, self._resolver)[0]
+                except Exception:
+                    region = None
+            if region is not None:
+                try:
+                    region = _normalize_region_tuple(region)
+                except Exception:
+                    region = None
+            detail["pixel_get"] = {
+                "region": tuple(region) if region else None,
+                "target": action.pixel_target,
+            }
+        if action.type == "timer":
+            detail["timer"] = {"slot": action.timer_index, "value": action.timer_value}
+        payload = {
+            "type": stage,
+            "macro": self._macro_context(),
+            "action_type": action.type,
+            "action_name": action.name,
+            "description": action.description,
+            "path": path,
+            "path_text": " > ".join(path),
+            "cycle": getattr(self, "_current_cycle", 0),
+            "detail": detail,
+            "seq_chain": self._seq_chain(idx_path),
+        }
+        payload.update(extra)
+        self.engine._emit_event(payload)
+
+    def _notify_macro_stop(self, reason: str):
+        if getattr(self, "_sent_stop_event", False):
+            return
+        self._sent_stop_event = True
+        self._emit_macro_event("macro_stop", reason=reason, cycle=getattr(self, "_current_cycle", 0))
+
+    def _release_held_keys(self):
+        with self._held_lock:
+            keys = list(self._held_keys)
+            mouse_buttons = list(self._held_mouse)
+            self._held_keys.clear()
+            self._held_mouse.clear()
+        for key in keys:
+            try:
+                self.engine._send_key("up", key, hold_ms=0)
+            except Exception:
+                pass
+        for btn in mouse_buttons:
+            try:
+                self.engine._send_mouse("mouse_up", btn, hold_ms=0)
+            except Exception:
+                pass
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._sent_stop_event = False
+        self._current_cycle = 0
+        self._thread = threading.Thread(target=self._run, name=f"Macro-{self.macro.trigger_key}", daemon=True)
+        self._thread.start()
+        limit = self.macro.cycle_count
+        if limit == 0:
+            limit = None
+        limit_text = "inf" if limit is None else str(limit)
+        self.engine._emit_log(f"매크로 시작: {self.macro.trigger_key} (cycle_limit={limit_text})")
+        self._emit_macro_event("macro_start", cycle=0)
+
+    def stop(self):
+        self._stop_event.set()
+        # on_stop 액션이 있으면 먼저 실행한다.
+        self._run_stop_actions()
+        # 중단 요청이 들어오면 바로 입력을 풀어준다.
+        self._release_held_keys()
+        if self._thread and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+            if self._thread.is_alive():
+                self.engine._emit_log(f"매크로 정지 대기 초과: {self.macro.trigger_key}")
+        # 스레드가 끝난 뒤에도 혹시 남아 있을 입력을 한 번 더 해제한다.
+        self._release_held_keys()
+        self.engine._emit_log(f"매크로 정지: {self.macro.trigger_key}")
+        self._notify_macro_stop("stopped")
+
+    def _run_stop_actions(self):
+        actions = getattr(self.macro, "stop_actions", []) or []
+        if not actions:
+            return
+        labels = self._label_index(actions)
+        self._running_stop_actions = True
+        try:
+            self._run_actions(copy.deepcopy(actions), labels, root=True, path=[f"{self._macro_label()}-on_stop"])
+        finally:
+            self._running_stop_actions = False
+
+    def _run(self):
+        labels = self._label_index(self.macro.actions)
+        cycle = 0
+        self._current_cycle = 0
+        try:
+            # cycle_count가 0이면 무한 반복, None이면 제한 없음.
+            max_cycles = self.macro.cycle_count
+            if max_cycles == 0:
+                max_cycles = None
+
+            while not self._stop_event.is_set():
+                if max_cycles is not None and cycle >= max_cycles:
+                    break
+                self._current_cycle = cycle
+                result = self._run_actions(self.macro.actions, labels, root=True, path=[self._macro_label()])
+                if self._stop_event.is_set():
+                    break
+                cycle += 1
+                if result.signal == "return":
+                    break
+                self._stop_event.wait(self.engine.tick)
+            self._notify_macro_stop("finished")
+        finally:
+            self._release_held_keys()
+
+    def _label_index(self, actions: List[Action]) -> Dict[str, int]:
+        labels: Dict[str, int] = {}
+        for idx, act in enumerate(actions):
+            if act.type == "label" and act.label:
+                labels[act.label] = idx
+        return labels
+
+    def _run_actions(
+        self,
+        actions: List[Action],
+        labels: Dict[str, int],
+        *,
+        root: bool = False,
+        path: Optional[List[str]] = None,
+        idx_path: Optional[List[int]] = None,
+        base_offset: int = 0,
+    ) -> "MacroRunner._Result":
+        idx = 0
+        base_path = list(path or [])
+        base_idx_path = list(idx_path or [])
+        while idx < len(actions) and (self._running_stop_actions or not self._stop_event.is_set()):
+            act = actions[idx]
+            act_path = base_path + [self._action_label(act, idx)]
+            act_idx_path = base_idx_path + [base_offset + idx]
+            if not getattr(act, "enabled", True):
+                self._emit_action_event("action_end", act, act_path, act_idx_path, status="disabled")
+                idx += 1
+                continue
+            res = self._exec_action(act, labels, act_path, act_idx_path)
+            if self._stop_event.is_set() and not self._running_stop_actions:
+                return self._Result(signal="break")
+            if getattr(res, "repeat", False):
+                # 대기 없이 너무 빠르게 반복되지 않도록 tick만큼 대기
+                self._stop_event.wait(self.engine.tick)
+                continue
+            if res.signal == "goto":
+                if root and res.goto_label and res.goto_label in labels:
+                    idx = labels[res.goto_label]
+                    continue
+                if root:
+                    self.engine._emit_log(f"라벨을 찾을 수 없습니다: {res.goto_label}")
+                return res
+            if res.signal in ("return", "continue", "break"):
+                return res
+            idx += 1
+        return self._Result()
+
+    def _sleep_with_condition_poll(self, sleep_ms: int, *, allow_condition: bool):
+        """sleep 동안에도 조건 평가가 돌도록 짧게 쪼개 대기."""
+        if sleep_ms <= 0:
+            return
+        deadline = time.perf_counter() + (sleep_ms / 1000.0)
+        while self._running_stop_actions or not self._stop_event.is_set():
+            now = time.perf_counter()
+            remaining = deadline - now
+            if remaining <= 0:
+                break
+            slice_len = min(self.engine.tick, remaining)
+            self._stop_event.wait(slice_len)
+            if allow_condition and not self._stop_event.is_set():
+                # allow nested condition polls if needed later
+                pass
+
+    def _exec_action(self, action: Action, labels: Dict[str, int], path: List[str], idx_path: List[int]) -> "MacroRunner._Result":
+        def end_result(
+            signal: str = "none",
+            status: str = "ok",
+            goto_label: Optional[str] = None,
+            condition_hit: bool = False,
+            repeat: bool = False,
+            **extra,
+        ):
+            self._emit_action_event(
+                "action_end",
+                action,
+                path,
+                idx_path,
+                status=status,
+                goto_label=goto_label,
+                condition_hit=condition_hit,
+                **extra,
+            )
+            return self._Result(signal=signal, goto_label=goto_label, condition_hit=condition_hit, repeat=repeat)
+
+        if self._stop_event.is_set() and not self._running_stop_actions:
+            return self._Result(signal="break")
+
+        # once_per_macro 액션은 첫 사이클 이후에는 바로 스킵 처리하고 로그를 남기지 않는다.
+        if getattr(action, "once_per_macro", False) and getattr(self, "_current_cycle", 0) > 0:
+            return end_result(status="skip_once")
+
+        self._emit_action_event("action_start", action, path, idx_path)
+
+        if action.type == "noop":
+            return end_result(status="noop")
+
+        if action.type == "sleep":
+            sleep_ms = action.resolve_sleep_ms()
+            if sleep_ms > 0:
+                self._sleep_with_condition_poll(sleep_ms, allow_condition=False)
+            return end_result(status="sleep", duration=sleep_ms)
+
+        def _resolve_repeat_val(act: Action) -> int:
+            if getattr(act, "repeat_range", None):
+                try:
+                    low, high = act.repeat_range
+                    return max(1, random.randint(int(low), int(high)))
+                except Exception:
+                    pass
+            try:
+                return max(1, int(getattr(act, "repeat", 1) or 1))
+            except Exception:
+                return 1
+
+        if action.type in ("press", "down", "up"):
+            if not action.key:
+                self.engine._emit_log(f"키 없음: {action.type} 스킵")
+                return end_result(status="error", error="missing_key")
+            press_delay, gap_delay = self.engine._resolve_key_delays(action)
+            repeat = _resolve_repeat_val(action)
+            for i in range(repeat):
+                if self._stop_event.is_set() and not self._running_stop_actions:
+                    return end_result(status="stopped", signal="break")
+                ok = self.engine._send_key(action.type, action.key, hold_ms=press_delay if action.type == "press" else 0)
+                if not ok:
+                    return end_result(status="error", error="send_failed")
+                if action.type == "down":
+                    with self._held_lock:
+                        self._held_keys.add(action.key)
+                elif action.type == "up":
+                    with self._held_lock:
+                        self._held_keys.discard(action.key)
+                self.engine._emit_event({"type": "action", "action": action.type, "key": action.key})
+                if gap_delay > 0 and i < repeat - 1:
+                    self._sleep_with_condition_poll(gap_delay, allow_condition=False)
+            if gap_delay > 0:
+                self._sleep_with_condition_poll(gap_delay, allow_condition=False)
+            return end_result()
+
+        if action.type in ("mouse_click", "mouse_down", "mouse_up", "mouse_move"):
+            button = (action.mouse_button or action.key or "mouse1").strip() if (action.mouse_button or action.key) else "mouse1"
+            pos = action.mouse_pos
+            if pos is None and getattr(action, "mouse_pos_raw", None):
+                try:
+                    pos, _ = _parse_mouse_pos(action.mouse_pos_raw, self._resolver)
+                except Exception:
+                    pos = None
+            if action.type == "mouse_move" and pos is None:
+                self.engine._emit_log("마우스 이동 좌표가 비어 있습니다.")
+                return end_result(status="error", error="missing_mouse_pos")
+            press_delay, gap_delay = self.engine._resolve_mouse_delays(action)
+            repeat = _resolve_repeat_val(action)
+            event_target = "move" if action.type == "mouse_move" else button
+            for i in range(repeat):
+                if self._stop_event.is_set() and not self._running_stop_actions:
+                    return end_result(status="stopped", signal="break")
+                ok = self.engine._send_mouse(
+                    action.type,
+                    button,
+                    hold_ms=press_delay if action.type == "mouse_click" else 0,
+                    pos=pos,
+                )
+                if not ok:
+                    return end_result(status="error", error="send_failed")
+                if action.type == "mouse_down":
+                    with self._held_lock:
+                        self._held_mouse.add(button)
+                elif action.type in ("mouse_up",):
+                    with self._held_lock:
+                        self._held_mouse.discard(button)
+                self.engine._emit_event({"type": "action", "action": action.type, "button": event_target, "pos": pos})
+                if gap_delay > 0 and i < repeat - 1:
+                    self._sleep_with_condition_poll(gap_delay, allow_condition=False)
+            if gap_delay > 0:
+                self._sleep_with_condition_poll(gap_delay, allow_condition=False)
+            return end_result()
+
+        if action.type == "label":
+            return end_result(status="label")
+
+        if action.type == "goto":
+            return end_result(signal="goto", status="goto", goto_label=action.goto_label or action.label)
+
+        if action.type == "return":
+            return end_result(signal="return", status="return")
+
+        if action.type == "continue":
+            return end_result(signal="continue", status="continue")
+
+        if action.type == "break":
+            return end_result(signal="break", status="break")
+
+        if action.type == "pixel_get":
+            region = action.pixel_region
+            if action.pixel_region_raw:
+                region = Condition._parse_region(action.pixel_region_raw, self._resolver)[0]
+            if not region:
+                self.engine._emit_log("픽셀겟 영역이 비어 있습니다.")
+                return end_result(status="error", error="empty_region")
+            try:
+                region = _normalize_region_tuple(region)
+            except Exception as exc:
+                self.engine._emit_log(f"픽셀겟 영역 파싱 실패: {exc}")
+                return end_result(status="error", error=str(exc))
+            x, y, w, h = region
+            if w <= 0 or h <= 0:
+                self.engine._emit_log("픽셀겟 영역 크기가 0 이하입니다.")
+                return end_result(status="error", error="invalid_region_size")
+            try:
+                img = capture_region(region)
+                color = img.convert("RGB").getpixel((0, 0))
+                var_name = (action.pixel_target or "pixel").strip() or "pixel"
+                self._vars.color[var_name] = f"{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+                ts = time.time()
+                self.engine._emit_event(
+                    {
+                        "type": "variable_update",
+                        "category": "color",
+                        "name": var_name,
+                        "value": self._vars.color[var_name],
+                        "macro": self._macro_context(),
+                        "source": "pixel_get",
+                        "timestamp": ts,
+                    }
+                )
+                self.engine._emit_log(f"픽셀겟 ({x},{y},{w},{h}) -> {var_name}={self._vars.color[var_name]}")
+            except Exception as exc:
+                self.engine._emit_log(f"픽셀겟 실패: {exc}")
+                return end_result(status="error", error=str(exc))
+            return end_result(status="ok", updated_var=var_name)
+
+        if action.type == "set_var":
+            name = (action.var_name or "").strip()
+            if not name:
+                self.engine._emit_log("변수 설정 실패: 이름이 없습니다.")
+                return end_result(status="error", error="missing_var_name")
+            raw_val = action.var_value_raw if action.var_value_raw is not None else action.var_value
+            value = "" if raw_val is None else str(raw_val)
+            if self._resolver and raw_val is not None:
+                try:
+                    value = self._resolver.resolve(str(raw_val), "var")
+                except Exception as exc:
+                    self.engine._emit_log(f"변수 설정 실패: {exc}")
+                    return end_result(status="error", error=str(exc))
+            self._vars.var[name] = str(value)
+            ts = time.time()
+            self.engine._emit_event(
+                {
+                    "type": "variable_update",
+                    "category": "var",
+                    "name": name,
+                    "value": self._vars.var[name],
+                    "macro": self._macro_context(),
+                    "source": "set_var",
+                    "timestamp": ts,
+                }
+            )
+            self.engine._emit_log(f"변수 설정: {name}={self._vars.var[name]}")
+            return end_result(status="ok", updated_var=name, value=self._vars.var[name])
+
+        if action.type == "timer":
+            slot = int(action.timer_index or 0)
+            value = float(action.timer_value) if action.timer_value is not None else 0.0
+            if slot < 1 or slot > 20:
+                self.engine._emit_log("타이머 설정 실패: 1~20 슬롯만 가능합니다.")
+                return end_result(status="error", error="invalid_timer_slot")
+            if value < 0:
+                value = 0.0
+            self.engine._set_timer(slot, value)
+            self.engine._emit_log(f"타이머{slot} = {value:.3f}초로 설정")
+            self.engine._emit_event(
+                {"type": "timer_update", "slot": slot, "value": value, "macro": self._macro_context(), "timestamp": time.time()}
+            )
+            return end_result(status="timer", timer_slot=slot, timer_value=value)
+
+        if action.type == "if":
+            cond = action.condition
+            if not cond:
+                self.engine._emit_log("if 조건이 없습니다.")
+                return end_result(status="error", error="missing_condition")
+            path_key = tuple(idx_path)
+            confirm_fails = max(1, getattr(action, "confirm_fails", 1))
+            pixel_cache: Dict[Tuple[int, int, int, int], Any] = {}
+            cond_true = self.engine._evaluate_condition(
+                cond,
+                key_states=self._cond_key_states,
+                resolver=self._resolver,
+                macro_ctx=self._macro_context(),
+                path=path + ["if"],
+                vars_ctx=self._vars,
+                pixel_cache=pixel_cache,
+            )
+            if cond_true:
+                self._if_false_streaks[path_key] = 0
+                res = self._run_actions(action.actions, labels, path=path + ["if_true"], idx_path=idx_path)
+                res.condition_hit = True
+                self._emit_action_event("action_end", action, path, idx_path, status="branch_true", condition_hit=True, branch="if_true")
+                return res
+            offset = len(action.actions or [])
+            elif_offset = offset
+            for idx, (elif_cond, elif_actions) in enumerate(getattr(action, "elif_blocks", []) or []):
+                if getattr(elif_cond, "enabled", True) is False:
+                    elif_offset += len(elif_actions or [])
+                    continue
+                if self.engine._evaluate_condition(
+                    elif_cond,
+                    key_states=self._cond_key_states,
+                    resolver=self._resolver,
+                    macro_ctx=self._macro_context(),
+                    path=path + [f"elif[{idx}]"],
+                    vars_ctx=self._vars,
+                    pixel_cache=pixel_cache,
+                ):
+                    self._if_false_streaks[path_key] = 0
+                    res = self._run_actions(elif_actions, labels, path=path + [f"elif[{idx}]"], idx_path=idx_path, base_offset=elif_offset)
+                    res.condition_hit = True
+                    self._emit_action_event(
+                        "action_end", action, path, idx_path, status="branch_elif", condition_hit=True, branch=f"elif[{idx}]"
+                    )
+                    return res
+                elif_offset += len(elif_actions or [])
+            streak = self._if_false_streaks.get(path_key, 0) + 1
+            self._if_false_streaks[path_key] = streak
+            if streak < confirm_fails:
+                # 연속 실패 횟수 도달 전에는 기다렸다가 다시 평가
+                return self._Result(repeat=True)
+            self._if_false_streaks[path_key] = 0
+            res = self._run_actions(
+                action.else_actions,
+                labels,
+                path=path + ["else"],
+                idx_path=idx_path,
+                base_offset=offset + sum(len(ea or []) for _, ea in getattr(action, "elif_blocks", []) or []),
+            )
+            self._emit_action_event(
+                "action_end", action, path, idx_path, status="branch_else", condition_hit=getattr(res, "condition_hit", False), branch="else"
+            )
+            return res
+
+        if action.type == "group":
+            mode = action.group_mode or "all"
+            if mode == "while":
+                iteration = 0
+                while self._running_stop_actions or not self._stop_event.is_set():
+                    res = self._run_actions(action.actions, labels, path=path + ["while"], idx_path=idx_path)
+                    if res.signal == "continue":
+                        iteration += 1
+                        self._stop_event.wait(self.engine.tick)
+                        continue
+                    if res.signal == "break":
+                        self._emit_action_event(
+                            "action_end", action, path, idx_path, status="break", branch="while", condition_hit=res.condition_hit
+                        )
+                        return self._Result()
+                    if res.signal in ("return", "goto"):
+                        self._emit_action_event(
+                            "action_end", action, path, idx_path, status=res.signal, branch="while", condition_hit=res.condition_hit
+                        )
+                        return res
+                    iteration += 1
+                    self._stop_event.wait(self.engine.tick)
+                return end_result(status="stopped" if self._stop_event.is_set() else "while_done", branch="while")
+            if mode == "repeat_n":
+                repeat_limit_raw = getattr(action, "group_repeat", None)
+                try:
+                    repeat_limit = max(1, int(repeat_limit_raw)) if repeat_limit_raw not in (None, "") else 1
+                except Exception:
+                    repeat_limit = 1
+                iteration = 0
+                while iteration < repeat_limit and (self._running_stop_actions or not self._stop_event.is_set()):
+                    res = self._run_actions(
+                        action.actions,
+                        labels,
+                        path=path + [f"repeat[{iteration}]"],
+                        idx_path=idx_path,
+                    )
+                    if res.signal == "continue":
+                        iteration += 1
+                        self._stop_event.wait(self.engine.tick)
+                        continue
+                    if res.signal == "break":
+                        self._emit_action_event(
+                            "action_end", action, path, idx_path, status="break", branch="repeat_n", condition_hit=res.condition_hit
+                        )
+                        return self._Result()
+                    if res.signal in ("return", "goto"):
+                        self._emit_action_event(
+                            "action_end", action, path, idx_path, status=res.signal, branch="repeat_n", condition_hit=res.condition_hit
+                        )
+                        return res
+                    iteration += 1
+                    self._stop_event.wait(self.engine.tick)
+                return end_result(status="stopped" if self._stop_event.is_set() else "repeat_n_done", branch="repeat_n")
+            for child_idx, child in enumerate(action.actions):
+                res = self._exec_action(
+                    child,
+                    labels,
+                    path=path + [f"group[{child_idx}]", self._action_label(child, child_idx)],
+                    idx_path=idx_path + [child_idx],
+                )
+                if res.signal in ("return", "continue", "break", "goto"):
+                    self._emit_action_event(
+                        "action_end", action, path, idx_path, status=res.signal, branch="group", condition_hit=res.condition_hit
+                    )
+                    return res
+                if res.condition_hit and mode in ("first_true", "first_true_continue", "first_true_return"):
+                    branch_status = "first_true"
+                    if mode == "first_true_continue":
+                        self._emit_action_event(
+                            "action_end", action, path, idx_path, status="continue", branch=branch_status, condition_hit=True
+                        )
+                        return self._Result(signal="continue", condition_hit=True)
+                    if mode == "first_true_return":
+                        self._emit_action_event(
+                            "action_end", action, path, idx_path, status="return", branch=branch_status, condition_hit=True
+                        )
+                        return self._Result(signal="return", condition_hit=True)
+                    self._emit_action_event(
+                        "action_end", action, path, idx_path, status="ok", branch=branch_status, condition_hit=True
+                    )
+                    return self._Result(condition_hit=True)
+            return end_result(status="ok", branch="group")
+
+        self.engine._emit_log(f"알 수 없는 액션 타입: {action.type}")
+        return end_result(status="error", error="unknown_action")
+
+
+class MacroEngine:
+    """
+    트리거 키를 누르는 동안 기본 액션을 반복 실행하고 조건별로 참/거짓 액션을 추가로 실행하는 엔진.
+    글로벌 키: Home(활성), Insert(일시정지 토글), End(종료), PageUp(픽셀 테스트)
+    """
+
+    def __init__(self, profile: Optional[MacroProfile] = None, *, tick: float = 0.02):
+        self.tick = tick
+        self.running = False
+        self.active = False
+        self.paused = False
+
+        self._profile = profile or MacroProfile()
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._events: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+        self._hotkey_states: Dict[str, bool] = {}
+        self._hotkey_pressed_at: Dict[str, float] = {}
+        self._cond_key_states: Dict[str, bool] = {}
+        self._cond_lock = threading.Lock()
+        self._macro_runners: Dict[int, MacroRunner] = {}
+        self._hold_release_since: Dict[int, float] = {}
+        self._recent_sends: Dict[str, float] = {}
+        self._guard_macro_idx: Optional[int] = None
+        self._suspended_toggle_indices: Set[int] = set()
+        # 홀드 상태가 일시적으로 끊겼을 때 재시작을 막기 위해 약간 여유를 둔다.
+        self._hold_release_debounce = max(self.tick * 2, 0.05)
+        # 매크로가 스스로 트리거 키를 입력했을 때 토글이 바로 꺼지는 것을 막기 위한 완충 시간.
+        self._edge_block_window = max(self.tick * 5, 0.1)
+        self._swallower = KeySwallower(get_interception())
+        self._swallower.set_keys(self._swallow_keys())
+        self._timer_lock = threading.Lock()
+        self._timers: List[Dict[str, Any]] = []
+        self._reset_timers()
+
+        self._pixel_test_region: Region = (0, 0, 1, 1)
+        self._pixel_test_color: RGB = (0, 0, 0)
+        self._pixel_test_tolerance: int = 0
+        self._pixel_test_expect_exists: bool = True
+        self._keyboard_device_id: Optional[int] = self._profile.keyboard_device_id
+        self._keyboard_hardware_id: Optional[str] = self._profile.keyboard_hardware_id
+        self._mouse_device_id: Optional[int] = getattr(self._profile, "mouse_device_id", None)
+        self._mouse_hardware_id: Optional[str] = getattr(self._profile, "mouse_hardware_id", None)
+        self._keyboard_test_key: str = getattr(self._profile, "keyboard_test_key", "f24") or "f24"
+        self._input_mode: str = getattr(self._profile, "input_mode", "hardware") or "hardware"
+        self._key_delay: KeyDelayConfig = copy.deepcopy(getattr(self._profile, "key_delay", KeyDelayConfig()))
+        self._mouse_delay: KeyDelayConfig = copy.deepcopy(getattr(self._profile, "mouse_delay", KeyDelayConfig()))
+        self._hardware_backend = InterceptionBackend(is_admin=_is_admin())
+        self._software_backend = SoftwareBackend()
+        self._backend = None
+        self._active_backend_mode: Optional[str] = None
+        self._backend_status: Optional[Dict[str, Any]] = None
+        self._select_backend(self._input_mode, log=True, allow_fallback=True)
+        # 키 반복(초기 지연) 동안 눌림 상태가 끊겨 보이지 않도록 여유를 둔다.
+        self._swallow_stale_sec = max(self.tick * 25, 1.0)
+
+    @property
+    def events(self) -> "queue.Queue[Dict[str, Any]]":
+        return self._events
+
+    def drain_events(
+        self,
+        *,
+        drop_types: Optional[Set[str]] = None,
+        max_events: Optional[int] = None,
+        max_time: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        이벤트 큐를 비우면서 필요한 이벤트만 반환한다.
+        drop_types에 포함된 타입은 제거만 하고 무시하며,
+        max_events / max_time으로 한 번에 처리량을 제한해 GUI 스레드 정지를 방지한다.
+        """
+        drained: List[Dict[str, Any]] = []
+        drop = set(drop_types or [])
+        start = time.perf_counter() if max_time not in (None, 0) else None
+        while True:
+            if max_events is not None and len(drained) >= max_events:
+                break
+            if start is not None and (time.perf_counter() - start) >= max_time:
+                break
+            try:
+                event = self._events.get_nowait()
+            except queue.Empty:
+                break
+            if drop and event.get("type") in drop:
+                continue
+            drained.append(event)
+        return drained
+
+    def _reset_timers(self):
+        with self._timer_lock:
+            self._timers = [{"start": None, "offset": 0.0} for _ in range(20)]
+
+    def _set_timer(self, slot: int, seconds: float):
+        idx = max(0, min(len(self._timers) - 1, slot - 1))
+        value = max(0.0, float(seconds))
+        now = time.monotonic()
+        with self._timer_lock:
+            self._timers[idx] = {"start": now, "offset": value}
+
+    def _get_timer_value(self, slot: int) -> float:
+        idx = slot - 1
+        with self._timer_lock:
+            if idx < 0 or idx >= len(self._timers):
+                return 0.0
+            state = self._timers[idx]
+            offset = float(state.get("offset", 0.0))
+            start = state.get("start")
+        if start is None:
+            return max(0.0, offset)
+        return max(0.0, offset + (time.monotonic() - start))
+
+    def update_profile(self, profile: MacroProfile):
+        with self._lock:
+            self._profile = copy.deepcopy(profile)
+            swallow_keys = self._swallow_keys_locked()
+            device_id = self._profile.keyboard_device_id
+            hardware_id = self._profile.keyboard_hardware_id
+            mouse_device_id = getattr(self._profile, "mouse_device_id", None)
+            mouse_hardware_id = getattr(self._profile, "mouse_hardware_id", None)
+            self._input_mode = getattr(self._profile, "input_mode", self._input_mode) or "hardware"
+            self._key_delay = copy.deepcopy(getattr(self._profile, "key_delay", self._key_delay))
+            self._mouse_delay = copy.deepcopy(getattr(self._profile, "mouse_delay", getattr(self, "_mouse_delay", KeyDelayConfig())))
+            self._keyboard_test_key = getattr(self._profile, "keyboard_test_key", self._keyboard_test_key)
+        self._stop_all_macros()
+        self._reset_condition_states()
+        self._reset_timers()
+        self._swallower.set_keys(swallow_keys)
+        self._apply_keyboard_device(device_id, hardware_id, log=False)
+        self._apply_mouse_device(mouse_device_id, mouse_hardware_id, log=False)
+        self._select_backend(self._input_mode, allow_fallback=True, log=True)
+        self._refresh_swallow()
+        # 픽셀 테스트 설정도 프로필에서 동기화
+        try:
+            expect_exists = True
+            if hasattr(profile, "pixel_expect_exists"):
+                expect_exists = bool(getattr(profile, "pixel_expect_exists"))
+            self.update_pixel_test(profile.pixel_region, profile.pixel_color, profile.pixel_tolerance, expect_exists)
+        except Exception:
+            pass
+        self._emit_state()
+
+    def update_pixel_test(self, region: Region, color: RGB, tolerance: int, expect_exists: bool = True):
+        self._pixel_test_region = tuple(int(v) for v in region)
+        self._pixel_test_color = tuple(int(c) for c in color)  # type: ignore[assignment]
+        self._pixel_test_tolerance = int(tolerance)
+        self._pixel_test_expect_exists = bool(expect_exists)
+
+    def run_pixel_test(self, *, source: Optional[str] = None):
+        self._run_pixel_test(source=source)
+
+    def run_pixel_check(
+        self,
+        *,
+        region: Region,
+        color: RGB,
+        tolerance: int,
+        expect_exists: bool = True,
+        source: Optional[str] = None,
+        label: Optional[str] = None,
+    ):
+        self._run_pixel_test(
+            region=region,
+            color=color,
+            tolerance=tolerance,
+            expect_exists=expect_exists,
+            source=source,
+            label=label,
+        )
+
+    def activate(self):
+        with self._lock:
+            self.active = True
+            self.paused = False
+        self._emit_log("GUI: 활성화")
+        self._refresh_swallow()
+        self._emit_state()
+
+    def deactivate(self):
+        with self._lock:
+            self.active = False
+            self.paused = False
+        self._stop_all_macros()
+        self._reset_condition_states()
+        self._emit_log("GUI: 비활성화")
+        self._refresh_swallow()
+        self._emit_state()
+
+    def toggle_pause(self):
+        with self._lock:
+            if not self.active:
+                return
+            self.paused = not self.paused
+            paused = self.paused
+        if paused:
+            self._stop_all_macros()
+        self._emit_log(f"GUI: {'일시정지' if paused else '재개'}")
+        self._refresh_swallow()
+        self._emit_state()
+
+    def start(self):
+        if self.running:
+            return
+        self.running = True
+        self.active = False
+        self.paused = False
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._loop, name="MacroEngine", daemon=True)
+        self._thread.start()
+        self._swallower.start()
+        self._emit_state()
+
+    def stop(self):
+        self.running = False
+        self.active = False
+        self.paused = False
+        self._stop_event.set()
+        self._stop_all_macros()
+        self._reset_condition_states()
+        self._reset_timers()
+        self._swallower.set_enabled(False)
+        self._swallower.stop()
+        if self._thread and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+        self._emit_state()
+
+    def snapshot_state(self) -> Dict[str, Any]:
+        return {"running": self.running, "active": self.active, "paused": self.paused}
+
+    def _emit_event(self, payload: Dict[str, Any]):
+        self._events.put(payload)
+
+    def _emit_log(self, message: str):
+        self._emit_event({"type": "log", "message": message})
+
+    def _emit_state(self):
+        payload = {"type": "state", **self.snapshot_state(), "backend": self._backend_state_payload()}
+        self._emit_event(payload)
+
+    def _swallow_keys_locked(self) -> List[str]:
+        return [m.trigger_key for m in self._profile.macros if getattr(m, "enabled", True) and m.trigger_key and m.suppress_trigger]
+
+    def _swallow_keys(self) -> List[str]:
+        with self._lock:
+            return self._swallow_keys_locked()
+
+    def _refresh_swallow(self):
+        keys = self._swallow_keys()
+        self._swallower.set_keys(keys)
+        # 스레드가 예외로 죽었을 때 자동으로 다시 올려준다.
+        self._swallower.start()
+        self._swallower.set_enabled(bool(keys) and self.active and not self.paused and self._active_backend_mode == "hardware")
+
+    def _backend_state_payload(self, *, refresh: bool = False) -> Dict[str, Any]:
+        if refresh or self._backend_status is None:
+            cold_start = self._backend_status is None
+            # 첫 호출에서는 FriendlyName 조회를 건너뛰어 시작 속도를 우선한다.
+            friendly_lookup = not cold_start
+            hardware_status = self._hardware_backend.status(friendly=friendly_lookup) if self._hardware_backend else None
+            software_status = self._software_backend.status() if self._software_backend else None
+            self._backend_status = {
+                "requested_mode": self._input_mode,
+                "active_mode": self._active_backend_mode,
+                "keyboard_device_id": self._profile.keyboard_device_id,
+                "keyboard_hardware_id": self._profile.keyboard_hardware_id,
+                "mouse_device_id": getattr(self._profile, "mouse_device_id", None),
+                "mouse_hardware_id": getattr(self._profile, "mouse_hardware_id", None),
+                "keyboard_test_key": self._keyboard_test_key,
+                "hardware": hardware_status.to_dict() if hardware_status else None,
+                "software": software_status.to_dict() if software_status else None,
+            }
+        return dict(self._backend_status)
+
+    def _select_backend(self, requested_mode: Optional[str], *, allow_fallback: bool = True, log: bool = True):
+        mode = (requested_mode or "hardware").lower()
+        if mode not in ("hardware", "software"):
+            mode = "hardware"
+        self._input_mode = mode
+        if mode == "hardware":
+            self._apply_keyboard_device(self._keyboard_device_id, self._keyboard_hardware_id, log=False, refresh_status=False)
+            self._apply_mouse_device(self._mouse_device_id, self._mouse_hardware_id, log=False, refresh_status=False)
+        hw_status = self._hardware_backend.status() if self._hardware_backend else None
+        sw_status = self._software_backend.status() if self._software_backend else None
+        chosen = self._hardware_backend if mode == "hardware" else self._software_backend
+        chosen_status = hw_status if mode == "hardware" else sw_status
+        if chosen_status and not chosen_status.available and allow_fallback and mode == "hardware":
+            if sw_status and sw_status.available:
+                if log:
+                    msg = chosen_status.message or "Interception 미설치/권한 부족. 소프트웨어 입력으로 전환합니다."
+                    self._emit_log(msg)
+                chosen = self._software_backend
+                self._active_backend_mode = "software"
+            else:
+                self._active_backend_mode = chosen.mode if chosen else None
+        else:
+            self._active_backend_mode = chosen.mode if chosen else None
+        self._backend = chosen
+        self._backend_status = self._backend_state_payload(refresh=True)
+        return self._backend_status
+
+    def _apply_keyboard_device(self, device_id: Optional[int], hardware_id: Optional[str], *, log: bool = True, refresh_status: bool = True):
+        if not self._hardware_backend:
+            return {}
+        status = self._hardware_backend.set_device(device_id=device_id, hardware_id=hardware_id)
+        current = status.current_device or {}
+        with self._lock:
+            self._profile.keyboard_device_id = current.get("id")
+            self._profile.keyboard_hardware_id = current.get("hardware_id")
+            self._keyboard_device_id = self._profile.keyboard_device_id
+            self._keyboard_hardware_id = self._profile.keyboard_hardware_id
+
+        if log:
+            if status.available and current.get("id"):
+                friendly = current.get("friendly_name") or (current.get("hardware_id") or "알 수 없음")
+                self._emit_log(f"키보드 장치 설정: #{current.get('id')} ({friendly})")
+            elif not status.installed:
+                self._emit_log(f"키보드 장치 설정 실패: {status.message or 'Interception 미설치'}")
+            else:
+                self._emit_log(f"키보드 장치 설정 실패: {status.message or 'Interception 키보드 미검출'}")
+        if refresh_status:
+            self._backend_status = self._backend_state_payload(refresh=True)
+        return current
+
+    def _apply_mouse_device(self, device_id: Optional[int], hardware_id: Optional[str], *, log: bool = True, refresh_status: bool = True):
+        if not self._hardware_backend:
+            return {}
+        status = self._hardware_backend.set_mouse_device(device_id=device_id, hardware_id=hardware_id)
+        current = status.current_mouse or {}
+        with self._lock:
+            self._profile.mouse_device_id = current.get("id")
+            self._profile.mouse_hardware_id = current.get("hardware_id")
+            self._mouse_device_id = self._profile.mouse_device_id
+            self._mouse_hardware_id = self._profile.mouse_hardware_id
+
+        if log:
+            if status.available and current.get("id"):
+                friendly = current.get("friendly_name") or (current.get("hardware_id") or "알 수 없음")
+                self._emit_log(f"마우스 장치 설정: #{current.get('id')} ({friendly})")
+            elif not status.installed:
+                self._emit_log(f"마우스 장치 설정 실패: {status.message or 'Interception 미설치'}")
+            else:
+                self._emit_log(f"마우스 장치 설정 실패: {status.message or 'Interception 마우스 미검출'}")
+        if refresh_status:
+            self._backend_status = self._backend_state_payload(refresh=True)
+        return current
+
+    def set_keyboard_device(self, device_id: Optional[int] = None, hardware_id: Optional[str] = None) -> Dict[str, Any]:
+        """UI에서 선택한 장치를 적용."""
+        status = self._apply_keyboard_device(device_id, hardware_id, log=True, refresh_status=True)
+        self._select_backend(self._input_mode, allow_fallback=True, log=False)
+        return status or {}
+
+    def current_keyboard_device(self) -> Dict[str, Any]:
+        backend = self._backend
+        if backend:
+            current = backend.current_device()
+            return current or {}
+        return {}
+
+    def current_mouse_device(self) -> Dict[str, Any]:
+        backend = self._backend
+        if backend and hasattr(backend, "current_mouse"):
+            try:
+                current = backend.current_mouse()
+            except Exception:
+                current = None
+            return current or {}
+        return {}
+
+    def keyboard_status(self, *, refresh: bool = True) -> Dict[str, Any]:
+        return self._backend_state_payload(refresh=refresh)
+
+    def apply_keyboard_settings(
+        self,
+        *,
+        mode: str,
+        device_id: Optional[int] = None,
+        hardware_id: Optional[str] = None,
+        mouse_device_id: Optional[int] = None,
+        mouse_hardware_id: Optional[str] = None,
+        key_delay: Optional[KeyDelayConfig] = None,
+        mouse_delay: Optional[KeyDelayConfig] = None,
+        test_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        key_delay_cfg = copy.deepcopy(key_delay or self._key_delay or KeyDelayConfig())
+        mouse_delay_cfg = copy.deepcopy(mouse_delay or self._mouse_delay or KeyDelayConfig())
+        with self._lock:
+            self._input_mode = mode or self._input_mode
+            self._profile.input_mode = self._input_mode
+            self._key_delay = key_delay_cfg
+            self._profile.key_delay = copy.deepcopy(key_delay_cfg)
+            self._mouse_delay = mouse_delay_cfg
+            self._profile.mouse_delay = copy.deepcopy(mouse_delay_cfg)
+            if test_key:
+                self._keyboard_test_key = test_key
+                self._profile.keyboard_test_key = test_key
+            self._profile.keyboard_device_id = device_id
+            self._profile.keyboard_hardware_id = hardware_id
+            self._keyboard_device_id = device_id
+            self._keyboard_hardware_id = hardware_id
+            self._profile.mouse_device_id = mouse_device_id
+            self._profile.mouse_hardware_id = mouse_hardware_id
+            self._mouse_device_id = mouse_device_id
+            self._mouse_hardware_id = mouse_hardware_id
+        self._apply_keyboard_device(device_id, hardware_id, log=False)
+        self._apply_mouse_device(mouse_device_id, mouse_hardware_id, log=False)
+        self._select_backend(self._input_mode, allow_fallback=True, log=True)
+        self._emit_state()
+        return self._backend_state_payload(refresh=False)
+
+    def test_keyboard(self, key: str) -> tuple[bool, str]:
+        press_delay = self._key_delay.resolved_press_delay() if self._key_delay else 0
+        ok = self._send_key("press", key, hold_ms=press_delay)
+        msg = f"테스트 {'성공' if ok else '실패'}: {key.upper()}"
+        self._emit_log(msg)
+        return ok, msg
+
+    def test_mouse(self, button: str = "mouse1") -> tuple[bool, str]:
+        hold_ms, _ = self._resolve_mouse_delays(None)
+        ok = self._send_mouse("mouse_click", button, hold_ms=hold_ms)
+        msg = f"마우스 테스트 {'성공' if ok else '실패'}: {button}"
+        self._emit_log(msg)
+        return ok, msg
+
+    def _resolve_key_delays(self, action: Action | None = None) -> tuple[int, int]:
+        cfg = self._key_delay if self._key_delay else KeyDelayConfig()
+        use_override = bool(getattr(action, "key_delay_override_enabled", False))
+        override = getattr(action, "key_delay_override", None) if use_override else None
+        if isinstance(override, KeyDelayConfig):
+            cfg = override
+        press_delay = cfg.resolved_press_delay()
+        gap_delay = cfg.resolved_gap_delay()
+        return press_delay, gap_delay
+
+    def _resolve_mouse_delays(self, action: Action | None = None) -> tuple[int, int]:
+        cfg = self._mouse_delay if getattr(self, "_mouse_delay", None) else KeyDelayConfig()
+        use_override = bool(getattr(action, "key_delay_override_enabled", False))
+        override = getattr(action, "key_delay_override", None) if use_override else None
+        if isinstance(override, KeyDelayConfig):
+            cfg = override
+        press_delay = cfg.resolved_press_delay()
+        gap_delay = cfg.resolved_gap_delay()
+        return press_delay, gap_delay
+
+    def _parse_combo_keys(self, key: str) -> list[str]:
+        """
+        `ctrl+shift+a` 형태의 콤보 문자열을 리스트로 풀어준다.
+        구분자가 없으면 단일 키로 간주한다.
+        """
+        raw = str(key or "").strip()
+        if not raw:
+            return []
+        cleaned = raw.replace(" ", "")
+        parts = [p.strip().lower() for p in cleaned.split("+") if p.strip()]
+        if len(parts) <= 1:
+            single = cleaned.lower()
+            return [single] if single else []
+        return parts
+
+    def _send_keys_with_backend(self, backend, action_type: str, keys: list[str], hold_ms: int = 0):
+        if action_type == "press":
+            for k in keys:
+                backend.down(k)
+            if hold_ms > 0:
+                time.sleep(hold_ms / 1000.0)
+            for k in reversed(keys):
+                backend.up(k)
+            return
+        if action_type == "down":
+            for k in keys:
+                backend.down(k)
+            return
+        if action_type == "up":
+            for k in reversed(keys):
+                backend.up(k)
+            return
+        raise ValueError(f"Unknown key action type: {action_type}")
+
+    def _send_key(self, action_type: str, key: str, *, hold_ms: int = 0) -> bool:
+        backend = self._backend or self._software_backend
+        if backend is None:
+            return False
+        combo_keys = self._parse_combo_keys(key)
+        if not combo_keys:
+            return False
+        try:
+            self._send_keys_with_backend(backend, action_type, combo_keys, hold_ms=hold_ms)
+            for k in combo_keys:
+                self._mark_sent(k)
+            return True
+        except Exception as exc:
+            self._emit_log(f"키 입력 실패({backend.mode}): {exc}")
+            if getattr(backend, "mode", None) == "hardware":
+                self._select_backend("software", allow_fallback=True, log=True)
+                self._emit_state()
+                fb = self._backend
+                if fb and fb is not backend:
+                    try:
+                        self._send_keys_with_backend(fb, action_type, combo_keys, hold_ms=hold_ms)
+                        for k in combo_keys:
+                            self._mark_sent(k)
+                        return True
+                    except Exception as exc2:
+                        self._emit_log(f"소프트웨어 입력 실패: {exc2}")
+            return False
+
+    def _send_mouse(self, action_type: str, button: str, *, hold_ms: int = 0, pos: Optional[tuple[int, int]] = None) -> bool:
+        backend = self._backend or self._software_backend
+        if backend is None:
+            return False
+        x = pos[0] if pos else None
+        y = pos[1] if pos else None
+        try:
+            if action_type == "mouse_move":
+                if x is None or y is None:
+                    return False
+                backend.mouse_move(x, y)
+            elif action_type == "mouse_down":
+                backend.mouse_down(button, x=x, y=y)
+            elif action_type == "mouse_up":
+                backend.mouse_up(button, x=x, y=y)
+            elif action_type == "mouse_click":
+                backend.mouse_click(button, hold_ms=hold_ms, x=x, y=y)
+            else:
+                return False
+            if action_type in ("mouse_down", "mouse_up", "mouse_click"):
+                self._mark_sent(button)
+            return True
+        except Exception as exc:
+            self._emit_log(f"마우스 입력 실패({getattr(backend, 'mode', 'unknown')}): {exc}")
+            fb = self._software_backend
+            if fb and fb is not backend:
+                try:
+                    if action_type == "mouse_move":
+                        if x is None or y is None:
+                            return False
+                        fb.mouse_move(x, y)
+                    elif action_type == "mouse_down":
+                        fb.mouse_down(button, x=x, y=y)
+                    elif action_type == "mouse_up":
+                        fb.mouse_up(button, x=x, y=y)
+                    elif action_type == "mouse_click":
+                        fb.mouse_click(button, hold_ms=hold_ms, x=x, y=y)
+                    else:
+                        return False
+                    if action_type in ("mouse_down", "mouse_up", "mouse_click"):
+                        self._mark_sent(button)
+                    return True
+                except Exception as exc2:
+                    self._emit_log(f"소프트웨어 마우스 입력 실패: {exc2}")
+            return False
+
+    def _key_state_detail(self, key: str) -> tuple[bool, Dict[str, Any]]:
+        tracked = self._swallower.is_tracked(key)
+        sw_enabled = tracked and self._swallower.is_enabled() and self._swallower.is_alive()
+        sw_pressed = False
+        sw_age: Optional[float] = None
+        os_pressed = False
+        if sw_enabled:
+            sw_pressed = self._swallower.is_pressed(key, max_age=self._swallow_stale_sec)
+            ts = self._swallower.last_pressed_at(key)
+            if ts is not None:
+                sw_age = time.monotonic() - ts
+        try:
+            os_pressed = bool(get_keystate(key, async_=True))
+        except Exception:
+            os_pressed = False
+        pressed = bool(sw_pressed or os_pressed)
+        detail = {
+            "tracked": tracked,
+            "sw_enabled": sw_enabled,
+            "sw_pressed": sw_pressed,
+            "sw_age": sw_age,
+            "sw_stale": sw_age is not None and sw_age > self._swallow_stale_sec,
+            "os_pressed": os_pressed,
+        }
+        return pressed, detail
+
+    def _key_pressed(self, key: str) -> bool:
+        """
+        트리거 키를 삼키는 경우 OS에 전달되지 않으므로 swallower가 추적한 상태로 판단.
+        그 외에는 OS 키 상태를 사용.
+        """
+        pressed, _ = self._key_state_detail(key)
+        return pressed
+
+    def _mark_sent(self, key: str):
+        if not key:
+            return
+        try:
+            norm = str(key).lower()
+        except Exception:
+            norm = str(key)
+        self._recent_sends[norm] = time.monotonic()
+
+    def _sent_recent(self, key: str, window: float) -> bool:
+        if window <= 0:
+            return False
+        try:
+            norm = str(key).lower()
+        except Exception:
+            norm = str(key)
+        ts = self._recent_sends.get(norm)
+        return ts is not None and (time.monotonic() - ts) <= window
+
+    def _edge(self, key: str, *, ignore_recent_sec: float = 0.0) -> bool:
+        pressed = self._key_pressed(key)
+        prev = self._hotkey_states.get(key, False)
+
+        # 매크로가 방금 보낸 입력이면 토글로 취급하지 않는다.
+        if ignore_recent_sec > 0 and self._sent_recent(key, ignore_recent_sec):
+            self._hotkey_states[key] = pressed
+            return False
+
+        edge = pressed and not prev
+        self._hotkey_states[key] = pressed
+        return edge
+
+    def _log_hold_transition(
+        self,
+        macro: Macro,
+        idx: int,
+        stage: str,
+        state: Dict[str, Any],
+        *,
+        elapsed: Optional[float] = None,
+        note: Optional[str] = None,
+    ):
+        parts = [f"[hold:{stage}]", f"key={macro.trigger_key}", f"idx={idx}"]
+        src = "sw" if state.get("sw_pressed") else ("os" if state.get("os_pressed") else "-")
+        parts.append(f"src={src}")
+        if state.get("sw_age") is not None:
+            parts.append(f"sw_age={state['sw_age']:.3f}s")
+        if state.get("sw_stale"):
+            parts.append("stale")
+        if macro.cycle_count not in (None, 0):
+            parts.append(f"cycle_limit={macro.cycle_count}")
+        if elapsed is not None:
+            parts.append(f"elapsed={elapsed:.3f}s")
+        if note:
+            parts.append(str(note))
+        self._emit_log(" ".join(parts))
+
+    def _handle_hotkeys(self):
+        if self._edge("home"):
+            self.active = True
+            self.paused = False
+            self._emit_log("Home: 활성화")
+            self._emit_state()
+        if self._edge("insert"):
+            if self.active:
+                self.paused = not self.paused
+                self._emit_log(f"Insert: {'일시정지' if self.paused else '재개'}")
+                if self.paused:
+                    self._stop_all_macros()
+                self._emit_state()
+        if self._edge("end"):
+            self.active = False
+            self.paused = False
+            self._stop_all_macros()
+            self._reset_condition_states()
+            self._emit_log("End: 비활성화")
+            self._emit_state()
+        if self._edge("pageup"):
+            self._run_pixel_test(source="hotkey")
+
+    def _loop(self):
+        self._emit_state()
+        while not self._stop_event.is_set():
+            self._handle_hotkeys()
+            self._refresh_swallow()
+            if not self.running:
+                break
+
+            if not self.active or self.paused:
+                time.sleep(self.tick)
+                continue
+
+            with self._lock:
+                macros = list(self._profile.macros)
+
+            for idx, macro in enumerate(macros):
+                if self._guard_macro_idx is not None and idx != self._guard_macro_idx:
+                    # 가드 매크로가 동작 중이면 다른 매크로는 대기
+                    continue
+                if not getattr(macro, "enabled", True):
+                    runner = self._macro_runners.pop(idx, None)
+                    if runner:
+                        runner.stop()
+                    self._hold_release_since.pop(idx, None)
+                    continue
+                runner = self._macro_runners.get(idx)
+                if macro.mode == "hold":
+                    pressed, state_detail = self._key_state_detail(macro.trigger_key)
+                    if pressed:
+                        self._hold_release_since.pop(idx, None)
+                        if runner is None:
+                            if getattr(macro, "stop_others_on_trigger", False):
+                                self._stop_other_macros(except_idx=idx)
+                            elif getattr(macro, "suspend_others_while_running", False):
+                                self._suspend_other_macros(except_idx=idx)
+                            runner = MacroRunner(macro, self, idx)
+                            self._macro_runners[idx] = runner
+                            self._log_hold_transition(macro, idx, "start", state_detail)
+                            runner.start()
+                    else:
+                        if runner is not None:
+                            now = time.monotonic()
+                            first_false = self._hold_release_since.get(idx)
+                            if first_false is None:
+                                self._hold_release_since[idx] = now
+                                self._log_hold_transition(macro, idx, "release_detected", state_detail)
+                            elif (now - first_false) >= self._hold_release_debounce:
+                                elapsed = now - first_false
+                                self._log_hold_transition(macro, idx, "stop", state_detail, elapsed=elapsed, note="key_up")
+                                runner.stop()
+                                self._macro_runners.pop(idx, None)
+                                self._hold_release_since.pop(idx, None)
+                        else:
+                            self._hold_release_since.pop(idx, None)
+                else:  # toggle
+                    ignore_window = self._edge_block_window if runner is not None else 0.0
+                    if self._edge(macro.trigger_key, ignore_recent_sec=ignore_window):
+                        if runner is None:
+                            if getattr(macro, "stop_others_on_trigger", False):
+                                self._stop_other_macros(except_idx=idx)
+                            elif getattr(macro, "suspend_others_while_running", False):
+                                self._suspend_other_macros(except_idx=idx)
+                            runner = MacroRunner(macro, self, idx)
+                            self._macro_runners[idx] = runner
+                            runner.start()
+                        else:
+                            runner.stop()
+                            self._macro_runners.pop(idx, None)
+
+            time.sleep(self.tick)
+            self._clear_guard_if_needed()
+
+        self._stop_all_macros()
+        self.running = False
+        self.active = False
+        self.paused = False
+        self._emit_state()
+
+    def _stop_all_macros(self):
+        for idx, runner in list(self._macro_runners.items()):
+            runner.stop()
+            if runner.is_alive():
+                self._emit_log(f"매크로 스레드가 아직 종료되지 않음: {runner.macro.trigger_key}")
+            self._macro_runners.pop(idx, None)
+        self._hold_release_since.clear()
+        self._guard_macro_idx = None
+        self._suspended_toggle_indices.clear()
+
+    def _stop_other_macros(self, except_idx: Optional[int] = None):
+        for idx, runner in list(self._macro_runners.items()):
+            if except_idx is not None and idx == except_idx:
+                continue
+            runner.stop()
+            self._macro_runners.pop(idx, None)
+            self._hold_release_since.pop(idx, None)
+
+    def _suspend_other_macros(self, except_idx: Optional[int] = None):
+        for idx, runner in list(self._macro_runners.items()):
+            if except_idx is not None and idx == except_idx:
+                continue
+            macro = None
+            try:
+                macro = self._profile.macros[idx]
+            except Exception:
+                macro = None
+            if macro and getattr(macro, "mode", None) == "toggle" and runner.is_alive():
+                self._suspended_toggle_indices.add(idx)
+            runner.stop()
+            self._macro_runners.pop(idx, None)
+            self._hold_release_since.pop(idx, None)
+        if except_idx is not None:
+            self._guard_macro_idx = except_idx
+
+    def _resume_suspended_toggles(self):
+        for idx in list(self._suspended_toggle_indices):
+            try:
+                macro = self._profile.macros[idx]
+            except Exception:
+                macro = None
+            if macro and getattr(macro, "enabled", True):
+                runner = MacroRunner(macro, self, idx)
+                self._macro_runners[idx] = runner
+                runner.start()
+            self._suspended_toggle_indices.discard(idx)
+
+    def _clear_guard_if_needed(self):
+        if self._guard_macro_idx is not None and self._guard_macro_idx not in self._macro_runners:
+            self._guard_macro_idx = None
+            self._resume_suspended_toggles()
+
+    def _reset_condition_states(self):
+        with self._cond_lock:
+            self._cond_key_states.clear()
+
+    def _evaluate_condition(
+        self,
+        cond: Condition,
+        *,
+        key_states: Optional[Dict[str, bool]] = None,
+        resolver: Optional[VariableResolver] = None,
+        macro_ctx: Optional[Dict[str, Any]] = None,
+        path: Optional[List[str]] = None,
+        vars_ctx: Optional[MacroVariables] = None,
+        pixel_cache: Optional[Dict[Tuple[int, int, int, int], Any]] = None,
+    ) -> bool:
+        base_result: bool
+        detail: Dict[str, Any] = {}
+        vars_state = vars_ctx if vars_ctx is not None else getattr(self, "_vars", None)
+
+        if getattr(cond, "enabled", True) is False:
+            return False
+
+        if cond.type == "key":
+            if not cond.key:
+                return False
+            pressed = self._key_pressed(cond.key)
+            mode = str(cond.key_mode or "hold").lower()
+            if key_states is None:
+                with self._cond_lock:
+                    prev = self._cond_key_states.get(cond.key, False)
+                    self._cond_key_states[cond.key] = pressed
+            else:
+                prev = key_states.get(cond.key, False)
+                key_states[cond.key] = pressed
+            if mode in ("press", "down"):
+                base_result = pressed and not prev
+            elif mode == "up":
+                base_result = (not pressed) and prev
+            else:
+                base_result = pressed
+            detail["key"] = {"key": cond.key, "mode": mode, "pressed": pressed, "prev": prev}
+        elif cond.type == "pixel":
+            region = cond.region
+            color = cond.color
+            if cond.region_raw is not None and resolver:
+                region = Condition._parse_region(cond.region_raw, resolver)[0]
+            if cond.color_raw is not None:
+                if resolver:
+                    if cond.color_raw.startswith(("/", "$", "@")):
+                        resolved = resolver.resolve(cond.color_raw, "color")
+                        try:
+                            color = Condition._parse_color(resolved, None)[0]
+                        except Exception:
+                            color = None
+                    else:
+                        color = Condition._parse_color(cond.color_raw, resolver)[0]
+                else:
+                    color = cond.color
+            if region is None or color is None:
+                return False
+            region_tuple: Region = tuple(int(v) for v in region)
+            color_tuple: RGB = tuple(int(c) for c in color)
+            expect_exists = getattr(cond, "pixel_exists", True)
+            check = self._pixel_check(region_tuple, color_tuple, cond.tolerance, expect_exists=expect_exists, pixel_cache=pixel_cache)
+            base_result = bool(check.get("result"))
+            detail["pixel"] = {
+                "region": region_tuple,
+                "color": color_tuple,
+                "tolerance": cond.tolerance,
+                "expect_exists": expect_exists,
+                "found": check.get("found"),
+                "coord": check.get("coord"),
+                "sample_coord": check.get("sample_coord"),
+                "sample_color": check.get("sample_color"),
+            }
+        elif cond.type == "all":
+            base_result = bool(cond.conditions) and all(
+                self._evaluate_condition(
+                    c,
+                    key_states=key_states,
+                    resolver=resolver,
+                    macro_ctx=macro_ctx,
+                    path=(path or []) + [f"and[{idx}]"],
+                    vars_ctx=vars_state,
+                    pixel_cache=pixel_cache,
+                )
+                for idx, c in enumerate(cond.conditions)
+            )
+            detail["group"] = {"mode": "all", "count": len(cond.conditions or [])}
+        elif cond.type == "any":
+            base_result = bool(cond.conditions) and any(
+                self._evaluate_condition(
+                    c,
+                    key_states=key_states,
+                    resolver=resolver,
+                    macro_ctx=macro_ctx,
+                    path=(path or []) + [f"or[{idx}]"],
+                    vars_ctx=vars_state,
+                    pixel_cache=pixel_cache,
+                )
+                for idx, c in enumerate(cond.conditions)
+            )
+            detail["group"] = {"mode": "any", "count": len(cond.conditions or [])}
+        elif cond.type == "var":
+            name = (cond.var_name or "").strip()
+            if not name:
+                return False
+            expected_raw = cond.var_value_raw if cond.var_value_raw is not None else cond.var_value
+            expected = str(expected_raw) if expected_raw is not None else ""
+            if resolver:
+                try:
+                    expected = resolver.resolve(expected, "var")
+                except Exception:
+                    pass
+            actual_value = vars_state.var.get(name) if vars_state else None  # type: ignore[union-attr]
+            base_result = False if actual_value is None else str(actual_value) == expected
+            if getattr(cond, "var_operator", "eq") == "ne":
+                base_result = not base_result
+            detail["var"] = {
+                "name": name,
+                "expected": expected,
+                "actual": actual_value,
+                "operator": getattr(cond, "var_operator", "eq"),
+            }
+        elif cond.type == "timer":
+            slot = cond.timer_index or 0
+            target_val = cond.timer_value
+            op = (cond.timer_operator or "ge").lower()
+            actual_val = round(self._get_timer_value(slot), 3) if slot else None
+            ops = {
+                "gt": lambda a, b: a > b,
+                "ge": lambda a, b: a >= b,
+                "lt": lambda a, b: a < b,
+                "le": lambda a, b: a <= b,
+                "eq": lambda a, b: a == b,
+                "ne": lambda a, b: a != b,
+            }
+            compare = ops.get(op, ops["ge"])
+            if actual_val is None or target_val is None or slot < 1 or slot > 20:
+                base_result = False
+            else:
+                base_result = compare(float(actual_val), float(target_val))
+            detail["timer"] = {"slot": slot, "expected": target_val, "actual": actual_val, "operator": op}
+        else:
+            base_result = False
+
+        final_result = base_result
+        if base_result and cond.on_true:
+            final_result = any(
+                self._evaluate_condition(
+                    c,
+                    key_states=key_states,
+                    resolver=resolver,
+                    macro_ctx=macro_ctx,
+                    path=(path or []) + ["on_true"],
+                    vars_ctx=vars_state,
+                    pixel_cache=pixel_cache,
+                )
+                for c in cond.on_true
+            )
+        elif (not base_result) and cond.on_false:
+            final_result = any(
+                self._evaluate_condition(
+                    c,
+                    key_states=key_states,
+                    resolver=resolver,
+                    macro_ctx=macro_ctx,
+                    path=(path or []) + ["on_false"],
+                    vars_ctx=vars_state,
+                    pixel_cache=pixel_cache,
+                )
+                for c in cond.on_false
+            )
+
+        if macro_ctx:
+            payload: Dict[str, Any] = {
+                "type": "condition_result",
+                "macro": macro_ctx,
+                "name": cond.name,
+                "condition_type": cond.type,
+                "result": final_result,
+                "base_result": base_result,
+                "path": path or [],
+                "path_text": " > ".join(path or []),
+                "timestamp": time.time(),
+            }
+            payload.update(detail)
+            self._emit_event(payload)
+
+        return final_result
+
+    def debug_condition_tree(
+        self,
+        cond: Condition,
+        *,
+        key_states: Optional[Dict[str, bool]] = None,
+        resolver: Optional[VariableResolver] = None,
+        vars_ctx: Optional[MacroVariables] = None,
+        path: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        조건 트리를 주기적으로 평가할 때 사용할 수 있는 디버그용 함수.
+        각 노드의 base/최종 결과와 세부 정보를 반환하고, 호출자에게 이벤트를 발생시키지 않는다.
+        """
+        if cond is None:
+            return {
+                "cond": None,
+                "type": None,
+                "name": None,
+                "path": path or [],
+                "path_text": " > ".join(path or []),
+                "result": False,
+                "base_result": False,
+                "detail": {"error": "조건이 없습니다."},
+                "children": [],
+                "on_true": [],
+                "on_false": [],
+            }
+
+        key_states = key_states if key_states is not None else {}
+        vars_state = vars_ctx if vars_ctx is not None else getattr(self, "_vars", None)
+        current_path = list(path or [])
+        detail: Dict[str, Any] = {}
+        children: List[Dict[str, Any]] = []
+        true_branch: List[Dict[str, Any]] = []
+        false_branch: List[Dict[str, Any]] = []
+        base_result = False
+
+        try:
+            if cond.type == "key":
+                if not cond.key:
+                    raise ValueError("키가 비어 있습니다.")
+                pressed = self._key_pressed(cond.key)
+                mode = str(cond.key_mode or "hold").lower()
+                prev = key_states.get(cond.key, False)
+                key_states[cond.key] = pressed
+                if mode in ("press", "down"):
+                    base_result = pressed and not prev
+                elif mode == "up":
+                    base_result = (not pressed) and prev
+                else:
+                    base_result = pressed
+                detail["key"] = {"key": cond.key, "mode": mode, "pressed": pressed, "prev": prev}
+            elif cond.type == "pixel":
+                region = cond.region
+                color = cond.color
+                if cond.region_raw is not None and resolver:
+                    region = Condition._parse_region(cond.region_raw, resolver)[0]
+                if cond.color_raw is not None:
+                    if resolver:
+                        if cond.color_raw.startswith(("/", "$", "@")):
+                            resolved = resolver.resolve(cond.color_raw, "color")
+                            try:
+                                color = Condition._parse_color(resolved, None)[0]
+                            except Exception:
+                                color = None
+                        else:
+                            color = Condition._parse_color(cond.color_raw, resolver)[0]
+                    else:
+                        color = cond.color
+                if region is None or color is None:
+                    raise ValueError("영역/색상을 확인하세요.")
+                region_tuple: Region = tuple(int(v) for v in region)
+                color_tuple: RGB = tuple(int(c) for c in color)
+                expect_exists = getattr(cond, "pixel_exists", True)
+                check = self._pixel_check(
+                    region_tuple, color_tuple, cond.tolerance, expect_exists=expect_exists, include_image=True
+                )
+                base_result = bool(check.get("result"))
+                detail["pixel"] = {
+                    "region": region_tuple,
+                    "color": color_tuple,
+                    "tolerance": cond.tolerance,
+                    "expect_exists": expect_exists,
+                    "found": check.get("found"),
+                    "coord": check.get("coord"),
+                    "sample_coord": check.get("sample_coord"),
+                    "sample_color": check.get("sample_color"),
+                }
+            elif cond.type in ("all", "any"):
+                for idx, child in enumerate(cond.conditions or []):
+                    child_res = self.debug_condition_tree(
+                        child,
+                        key_states=key_states,
+                        resolver=resolver,
+                        vars_ctx=vars_state,
+                        path=current_path + [f"{'and' if cond.type == 'all' else 'or'}[{idx}]"],
+                    )
+                    children.append(child_res)
+                base_result = bool(children) and (all(r.get("result") for r in children) if cond.type == "all" else any(r.get("result") for r in children))
+                detail["group"] = {"mode": cond.type, "count": len(cond.conditions or [])}
+            elif cond.type == "var":
+                name = (cond.var_name or "").strip()
+                if not name:
+                    raise ValueError("변수 이름이 없습니다.")
+                expected_raw = cond.var_value_raw if cond.var_value_raw is not None else cond.var_value
+                expected = str(expected_raw) if expected_raw is not None else ""
+                if resolver:
+                    try:
+                        expected = resolver.resolve(expected, "var")
+                    except Exception:
+                        pass
+                actual_value = vars_state.var.get(name) if vars_state else None  # type: ignore[union-attr]
+                base_result = False if actual_value is None else str(actual_value) == expected
+                if getattr(cond, "var_operator", "eq") == "ne":
+                    base_result = not base_result
+                detail["var"] = {
+                    "name": name,
+                    "expected": expected,
+                    "actual": actual_value,
+                    "operator": getattr(cond, "var_operator", "eq"),
+                }
+            elif cond.type == "timer":
+                slot = cond.timer_index or 0
+                target_val = cond.timer_value
+                op = (cond.timer_operator or "ge").lower()
+                actual_val = round(self._get_timer_value(slot), 3) if slot else None
+                ops = {
+                    "gt": lambda a, b: a > b,
+                    "ge": lambda a, b: a >= b,
+                    "lt": lambda a, b: a < b,
+                    "le": lambda a, b: a <= b,
+                    "eq": lambda a, b: a == b,
+                    "ne": lambda a, b: a != b,
+                }
+                compare = ops.get(op, ops["ge"])
+                if actual_val is None or target_val is None or slot < 1 or slot > 20:
+                    base_result = False
+                else:
+                    base_result = compare(float(actual_val), float(target_val))
+                detail["timer"] = {"slot": slot, "expected": target_val, "actual": actual_val, "operator": op}
+            else:
+                base_result = False
+        except Exception as exc:
+            detail["error"] = str(exc)
+            base_result = False
+
+        final_result = base_result
+        if base_result and cond.on_true:
+            for idx, child in enumerate(cond.on_true):
+                child_res = self.debug_condition_tree(
+                    child,
+                    key_states=key_states,
+                    resolver=resolver,
+                    vars_ctx=vars_state,
+                    path=current_path + [f"on_true[{idx}]"],
+                )
+                true_branch.append(child_res)
+            if true_branch:
+                final_result = any(r.get("result") for r in true_branch)
+        elif (not base_result) and cond.on_false:
+            for idx, child in enumerate(cond.on_false):
+                child_res = self.debug_condition_tree(
+                    child,
+                    key_states=key_states,
+                    resolver=resolver,
+                    vars_ctx=vars_state,
+                    path=current_path + [f"on_false[{idx}]"],
+                )
+                false_branch.append(child_res)
+            if false_branch:
+                final_result = any(r.get("result") for r in false_branch)
+
+        return {
+            "cond": cond,
+            "type": getattr(cond, "type", None),
+            "name": getattr(cond, "name", None),
+            "path": current_path,
+            "path_text": " > ".join(current_path),
+            "result": bool(final_result),
+            "base_result": bool(base_result),
+            "detail": detail,
+            "children": children,
+            "on_true": true_branch,
+            "on_false": false_branch,
+        }
+
+    def _pixel_check(
+        self,
+        region: Region,
+        color: RGB,
+        tolerance: int,
+        *,
+        expect_exists: bool = True,
+        include_image: bool = False,
+        pixel_cache: Optional[Dict[Tuple[int, int, int, int], Any]] = None,
+    ) -> Dict[str, Any]:
+        x, y, w, h = region
+        cache_key = (x, y, w, h)
+
+        try:
+            if pixel_cache is not None and cache_key in pixel_cache:
+                arr = pixel_cache[cache_key]
+            else:
+                arr = capture_region_np(region)
+                if pixel_cache is not None:
+                    pixel_cache[cache_key] = arr
+        except Exception:
+            # 폴백: 기존 PIL 경로 유지
+            img = capture_region(region).convert("RGB")
+            arr = np.asarray(img, dtype=np.uint8)
+            if pixel_cache is not None:
+                pixel_cache[cache_key] = arr
+
+        target = np.array(color, dtype=np.int16)
+        diff = np.abs(arr.astype(np.int16) - target).max(axis=2)
+        mask = diff <= int(tolerance)
+        found = bool(mask.any())
+        coord = None
+
+        if found:
+            py, px = np.argwhere(mask)[0]
+            coord = (x + int(px), y + int(py))
+
+        sample_coord = coord or (x + max(0, w // 2), y + max(0, h // 2))
+        try:
+            sy = int(sample_coord[1] - y)
+            sx = int(sample_coord[0] - x)
+            sample_color_raw = arr[sy, sx]
+            sample_color: Optional[Tuple[int, int, int]] = tuple(int(c) for c in sample_color_raw)  # type: ignore[arg-type]
+        except Exception:
+            sample_color = None
+
+        result = found if expect_exists else (not found)
+        payload = {
+            "found": found,
+            "result": result,
+            "coord": coord,
+            "sample_coord": sample_coord,
+            "sample_color": sample_color,
+            "expect_exists": expect_exists,
+        }
+        if include_image:
+            try:
+                img = Image.fromarray(arr.astype(np.uint8), mode="RGB")
+                buf = io.BytesIO()
+                img.save(buf, format="PNG", optimize=True)
+                payload["image_png"] = buf.getvalue()
+            except Exception:
+                pass
+        return payload
+
+    def _run_pixel_test(
+        self,
+        *,
+        region: Optional[Region] = None,
+        color: Optional[RGB] = None,
+        tolerance: Optional[int] = None,
+        expect_exists: Optional[bool] = None,
+        source: Optional[str] = None,
+        label: Optional[str] = None,
+    ):
+        region_val: Region = tuple(int(v) for v in (region or self._pixel_test_region))
+        color_val: RGB = tuple(int(c) for c in (color or self._pixel_test_color))  # type: ignore[assignment]
+        tol_val = int(tolerance if tolerance is not None else self._pixel_test_tolerance)
+        expect = self._pixel_test_expect_exists if expect_exists is None else bool(expect_exists)
+        ts = time.time()
+        try:
+            check = self._pixel_check(region_val, color_val, tol_val, expect_exists=expect)
+            payload = {
+                "type": "pixel_test",
+                "found": check.get("found"),
+                "result": check.get("result"),
+                "coord": check.get("coord"),
+                "sample_coord": check.get("sample_coord"),
+                "sample_color": check.get("sample_color"),
+                "expect_exists": expect,
+                "region": region_val,
+                "color": color_val,
+                "tolerance": tol_val,
+                "source": source or "manual",
+                "label": label,
+                "timestamp": ts,
+            }
+            self._emit_event(payload)
+            self._emit_log(
+                f"픽셀 테스트[{payload['source']}]: {'찾음' if check.get('found') else '없음'} ({check.get('coord')})"
+            )
+        except Exception as exc:
+            self._emit_event(
+                {
+                    "type": "pixel_test",
+                    "error": str(exc),
+                    "region": region_val,
+                    "color": color_val,
+                    "tolerance": tol_val,
+                    "source": source or "manual",
+                    "label": label,
+                    "timestamp": ts,
+                }
+            )
+            self._emit_log(f"픽셀 테스트 실패: {exc}")
