@@ -7997,8 +7997,12 @@ class PresetTransferDialog(QtWidgets.QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("프리셋 옮기기")
-        self.setModal(True)
-        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.setModal(False)
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        try:
+            self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, False)
+        except Exception:
+            pass
         self.profile_provider = profile_provider
         self.detect_resolution_cb = detect_resolution
         self.detect_scale_cb = detect_scale
@@ -8044,12 +8048,12 @@ class PresetTransferDialog(QtWidgets.QDialog):
     def _build_sample_tab(self):
         self.sample_tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.sample_tab)
-        desc = QtWidgets.QLabel("기준 좌표(x,y)와 현재 좌표(x',y')를 최소 2개 이상 입력하세요. (3개 권장)")
+        desc = QtWidgets.QLabel("기준 좌표(x,y)와 변환 좌표(x',y')를 'x,y' 형식으로 최소 2개 이상 입력하세요. (3개 권장)")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
-        self.sample_table = QtWidgets.QTableWidget(0, 4)
-        self.sample_table.setHorizontalHeaderLabels(["기준 x", "기준 y", "현재 x'", "현재 y'"])
+        self.sample_table = QtWidgets.QTableWidget(0, 2)
+        self.sample_table.setHorizontalHeaderLabels(["기준 (x,y)", "변환 (x',y')"])
         header = self.sample_table.horizontalHeader()
         header.setStretchLastSection(True)
         layout.addWidget(self.sample_table)
@@ -8067,25 +8071,44 @@ class PresetTransferDialog(QtWidgets.QDialog):
         self.sample_result_label = QtWidgets.QLabel("계수: a/b/c/d, RMS: -")
         layout.addWidget(self.sample_result_label)
 
+        test_row = QtWidgets.QHBoxLayout()
+        test_row.setSpacing(8)
+        test_row.addWidget(QtWidgets.QLabel("기준 좌표 테스트"))
+        self.sample_test_input = QtWidgets.QLineEdit()
+        self.sample_test_input.setPlaceholderText("예: 1032,1323 (기준 x,y)")
+        test_row.addWidget(self.sample_test_input, 1)
+        self.sample_test_btn = QtWidgets.QPushButton("좌표 변환 테스트")
+        self.sample_test_btn.setEnabled(False)
+        test_row.addWidget(self.sample_test_btn)
+        self.sample_test_result = QtWidgets.QLabel("결과: -")
+        test_row.addWidget(self.sample_test_result)
+        test_row.addStretch()
+        layout.addLayout(test_row)
+
         self.sample_preview = QtWidgets.QPlainTextEdit()
         self.sample_preview.setReadOnly(True)
-        self.sample_preview.setPlaceholderText("보정 계산 버튼을 누르면 변환 요약과 예시가 표시됩니다.")
-        self.sample_preview.setMinimumHeight(140)
+        self.sample_preview.setPlaceholderText("보정 계산을 누르면 계수, 프로필 좌표/리전 변환 요약, 예시가 표시됩니다.")
+        self.sample_preview.setMinimumHeight(160)
         self.sample_preview.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
         layout.addWidget(self.sample_preview)
 
         self.add_sample_btn.clicked.connect(self._add_sample_row)
         self.del_sample_btn.clicked.connect(self._remove_sample_rows)
         self.calc_sample_btn.clicked.connect(self._on_calc_samples)
+        self.sample_test_btn.clicked.connect(self._on_test_sample_point)
+        self.sample_test_input.returnPressed.connect(self._on_test_sample_point)
         for _ in range(2):
             self._add_sample_row()
 
     def _add_sample_row(self, sample: tuple[float, float, float, float] | None = None):
         row = self.sample_table.rowCount()
         self.sample_table.insertRow(row)
-        values = sample if sample else ("", "", "", "")
+        if sample:
+            values = [f"{sample[0]:.2f},{sample[1]:.2f}", f"{sample[2]:.2f},{sample[3]:.2f}"]
+        else:
+            values = ["", ""]
         for col, val in enumerate(values):
-            self.sample_table.setItem(row, col, QtWidgets.QTableWidgetItem(str(val) if sample else ""))
+            self.sample_table.setItem(row, col, QtWidgets.QTableWidgetItem(str(val)))
 
     def _remove_sample_rows(self):
         rows = sorted({idx.row() for idx in self.sample_table.selectionModel().selectedRows()}, reverse=True)
@@ -8094,25 +8117,34 @@ class PresetTransferDialog(QtWidgets.QDialog):
         for r in rows:
             self.sample_table.removeRow(r)
 
+    @staticmethod
+    def _parse_sample_point_text(text: str) -> tuple[float, float]:
+        cleaned = text.strip().replace("，", ",")
+        parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+        if len(parts) != 2:
+            raise ValueError("좌표는 'x,y' 형식으로 입력하세요.")
+        try:
+            return float(parts[0]), float(parts[1])
+        except Exception as exc:
+            raise ValueError("좌표는 숫자여야 합니다.") from exc
+
     def _collect_samples(self) -> list[tuple[float, float, float, float]]:
         samples: list[tuple[float, float, float, float]] = []
         for row in range(self.sample_table.rowCount()):
-            vals: list[float | None] = []
-            for col in range(4):
-                item = self.sample_table.item(row, col)
-                text = item.text().strip() if item else ""
-                if not text:
-                    vals.append(None)
-                else:
-                    try:
-                        vals.append(float(text))
-                    except Exception:
-                        raise ValueError(f"{row + 1}행 {col + 1}열에 숫자를 입력하세요.")
-            if all(v is None for v in vals):
+            base_item = self.sample_table.item(row, 0)
+            target_item = self.sample_table.item(row, 1)
+            base_text = base_item.text().strip() if base_item else ""
+            target_text = target_item.text().strip() if target_item else ""
+            if not base_text and not target_text:
                 continue
-            if any(v is None for v in vals):
-                raise ValueError(f"{row + 1}행의 좌표가 비어 있습니다. 네 칸 모두 입력하세요.")
-            samples.append((float(vals[0]), float(vals[1]), float(vals[2]), float(vals[3])))
+            if not base_text or not target_text:
+                raise ValueError(f"{row + 1}행의 좌표가 비어 있습니다. 기준/변환 모두 입력하세요.")
+            try:
+                sx, sy = self._parse_sample_point_text(base_text)
+                tx, ty = self._parse_sample_point_text(target_text)
+            except ValueError as exc:
+                raise ValueError(f"{row + 1}행: {exc}") from exc
+            samples.append((float(sx), float(sy), float(tx), float(ty)))
         if len(samples) < 2:
             raise ValueError("샘플을 최소 2개 이상 입력하세요.")
         return samples
@@ -8154,6 +8186,8 @@ class PresetTransferDialog(QtWidgets.QDialog):
         cy: float,
         dy: float,
         rms: float,
+        changes: list[tuple[str, str, str]] | None = None,
+        change_error: str | None = None,
     ):
         self.sample_result_label.setText(
             f"계수: a={ax:.5f}, b={bx:.3f}, c={cy:.5f}, d={dy:.3f} | RMS 오차: {rms:.3f}"
@@ -8164,7 +8198,23 @@ class PresetTransferDialog(QtWidgets.QDialog):
             f"RMS 오차: {rms:.3f}",
             "",
         ]
-        for idx, (sx, sy, tx, ty) in enumerate(samples[:2]):
+        lines.append("프로필 좌표/리전 변환 요약 (현재 프로필 기준)")
+        if change_error:
+            lines.append(f"- 미리보기 실패: {change_error}")
+        elif changes is None:
+            lines.append("- 프로필을 불러올 수 없습니다.")
+        elif not changes:
+            lines.append("- 변경된 항목 없음")
+        else:
+            max_lines = 12
+            for label, before, after in changes[:max_lines]:
+                lines.append(f"- {label}: {before} -> {after}")
+            if len(changes) > max_lines:
+                lines.append(f"- ...외 {len(changes) - max_lines}건")
+        lines.append("")
+        if samples:
+            lines.append("샘플 예시:")
+        for idx, (sx, sy, tx, ty) in enumerate(samples[:3]):
             pred_x = ax * sx + bx
             pred_y = cy * sy + dy
             lines.append(
@@ -8178,8 +8228,32 @@ class PresetTransferDialog(QtWidgets.QDialog):
         ax, bx = self._fit_axis([s[0] for s in samples], [s[2] for s in samples])
         cy, dy = self._fit_axis([s[1] for s in samples], [s[3] for s in samples])
         rms = self._calc_rms(samples, ax, bx, cy, dy)
-        self._last_sample_calc = {"ax": ax, "bx": bx, "cy": cy, "dy": dy, "rms": rms, "samples": samples}
-        self._render_sample_preview(samples, ax, bx, cy, dy, rms)
+        changes: list[tuple[str, str, str]] | None = None
+        change_error: str | None = None
+        if callable(getattr(self, "profile_provider", None)):
+            try:
+                preview_profile = self.profile_provider()
+                _, changes = _transform_profile_affine(preview_profile, ax, bx, cy, dy)
+            except Exception as exc:
+                change_error = str(exc)
+        else:
+            change_error = "프로필을 불러올 수 없습니다."
+        self._last_sample_calc = {
+            "ax": ax,
+            "bx": bx,
+            "cy": cy,
+            "dy": dy,
+            "rms": rms,
+            "samples": samples,
+            "changes": changes,
+            "change_error": change_error,
+        }
+        try:
+            self.sample_test_btn.setEnabled(True)
+            self.sample_test_result.setText("결과: -")
+        except Exception:
+            pass
+        self._render_sample_preview(samples, ax, bx, cy, dy, rms, changes, change_error)
         return ax, bx, cy, dy, rms, samples
 
     def _on_calc_samples(self):
@@ -8188,12 +8262,42 @@ class PresetTransferDialog(QtWidgets.QDialog):
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "입력 오류", str(exc))
             return
+        change_count = len(self._last_sample_calc.get("changes") or []) if self._last_sample_calc else 0
+        change_error = self._last_sample_calc.get("change_error") if self._last_sample_calc else None
+        extra_line = ""
+        if change_error:
+            extra_line = f"\n프로필 변환 미리보기 실패: {change_error}"
+        else:
+            extra_line = f"\n예상 변경: {change_count}건 (미리보기 확인)"
         QtWidgets.QMessageBox.information(
             self,
             "보정 계산 완료",
-            f"a={ax:.4f}, b={bx:.2f}, c={cy:.4f}, d={dy:.2f}\nRMS 오차: {rms:.3f}\n샘플 {len(samples)}개",
+            f"a={ax:.4f}, b={bx:.2f}, c={cy:.4f}, d={dy:.2f}\n"
+            f"RMS 오차: {rms:.3f}\n샘플 {len(samples)}개{extra_line}",
         )
         self._log(f"샘플 좌표 변환 계산: a={ax:.4f}, b={bx:.2f}, c={cy:.4f}, d={dy:.2f}, RMS={rms:.3f}")
+
+    def _on_test_sample_point(self):
+        if not self._last_sample_calc:
+            QtWidgets.QMessageBox.information(self, "보정 필요", "먼저 보정 계산을 실행하세요.")
+            return
+        text = self.sample_test_input.text().strip() if hasattr(self, "sample_test_input") else ""
+        if not text:
+            QtWidgets.QMessageBox.warning(self, "입력 오류", "기준 좌표를 입력하세요. 예: 1032,1323")
+            return
+        try:
+            sx, sy = self._parse_sample_point_text(text)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "입력 오류", str(exc))
+            return
+        ax = float(self._last_sample_calc.get("ax", 1.0))
+        bx = float(self._last_sample_calc.get("bx", 0.0))
+        cy = float(self._last_sample_calc.get("cy", 1.0))
+        dy = float(self._last_sample_calc.get("dy", 0.0))
+        pred_x = ax * sx + bx
+        pred_y = cy * sy + dy
+        if isinstance(getattr(self, "sample_test_result", None), QtWidgets.QLabel):
+            self.sample_test_result.setText(f"→ 변환 좌표: ({pred_x:.2f}, {pred_y:.2f})")
 
     def _save_from_samples(self) -> bool:
         try:
