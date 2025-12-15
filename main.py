@@ -10472,6 +10472,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             pixel_expect_exists=expect_exists,
             keyboard_device_id=self.profile.keyboard_device_id if input_mode == "hardware" else None,
             keyboard_hardware_id=self.profile.keyboard_hardware_id if input_mode == "hardware" else None,
+            mouse_device_id=self.profile.mouse_device_id if input_mode == "hardware" else None,
+            mouse_hardware_id=self.profile.mouse_hardware_id if input_mode == "hardware" else None,
             keyboard_test_key=test_key,
             input_mode=input_mode,
             key_delay=key_delay if isinstance(key_delay, KeyDelayConfig) else KeyDelayConfig.from_dict(key_delay),

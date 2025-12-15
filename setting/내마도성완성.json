@@ -4933,8 +4933,8 @@
   "pixel_expect_exists": true,
   "keyboard_device_id": 2,
   "keyboard_hardware_id": "HID\\VID_29EA&PID_0102&REV_0100&MI_01",
-  "mouse_device_id": null,
-  "mouse_hardware_id": null,
+  "mouse_device_id": 17,
+  "mouse_hardware_id": "HID\\VID_373B&PID_1040&REV_0215&MI_02",
   "keyboard_test_key": "f24",
   "input_mode": "hardware",
   "key_delay": {
