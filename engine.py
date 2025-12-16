@@ -3,12 +3,14 @@ from __future__ import annotations
 import copy
 import ctypes
 import io
+import os
 import queue
 import random
 import re
 import sys
 import threading
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
@@ -19,6 +21,7 @@ from lib.interception import Interception, KeyFilter, KeyState
 from lib.input_backend import InterceptionBackend, KeyboardBackendStatus, KeyDelayConfig, SoftwareBackend
 from lib.keyboard import get_interception, get_keystate, to_scan_code
 from lib.pixel import RGB, Region, capture_region, capture_region_np, find_color_in_region
+from lib.processes import get_foreground_process
 
 ConditionType = Literal["key", "pixel", "all", "any", "var", "timer"]
 KeyMode = Literal["press", "down", "up", "hold"]
@@ -58,6 +61,18 @@ def _is_admin() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
+
+
+def _norm_path(path: Optional[str]) -> str:
+    if not path:
+        return ""
+    try:
+        return os.path.normcase(os.path.abspath(path))
+    except Exception:
+        try:
+            return os.path.normcase(path)
+        except Exception:
+            return str(path)
 
 
 @dataclass
@@ -743,6 +758,55 @@ class Step:
 
 
 @dataclass
+class AppTarget:
+    name: Optional[str] = None
+    path: Optional[str] = None
+
+    @classmethod
+    def from_any(cls, raw: Any) -> Optional["AppTarget"]:
+        if isinstance(raw, cls):
+            return raw
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return None
+            if os.path.sep in text or ":" in text:
+                return cls(path=text, name=None)
+            return cls(name=text, path=None)
+        if isinstance(raw, dict):
+            name = raw.get("name")
+            path = raw.get("path") or raw.get("exe")
+            if not name and not path:
+                return None
+            return cls(name=name, path=path)
+        return None
+
+    def norm_path(self) -> str:
+        return _norm_path(self.path)
+
+    def norm_name(self) -> str:
+        text = (self.name or "").strip()
+        if text:
+            return text.lower()
+        if self.path:
+            try:
+                return Path(self.path).name.lower()
+            except Exception:
+                return str(self.path).lower()
+        return ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {}
+        if self.name:
+            data["name"] = self.name
+        if self.path:
+            data["path"] = self.path
+        return data
+
+
+@dataclass
 class MacroCondition:
     condition: Condition
     actions: List[Step] = field(default_factory=list)
@@ -794,6 +858,8 @@ class Macro:
     description: Optional[str] = None
     stop_others_on_trigger: bool = False
     suspend_others_while_running: bool = False
+    scope: Literal["global", "app"] = "global"
+    app_targets: List[AppTarget] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "Macro":
@@ -815,6 +881,14 @@ class Macro:
                 cycle_count = None
         enabled_raw = data.get("enabled", True)
         enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).strip().lower() not in ("false", "0", "no")
+        scope_raw = str(data.get("scope", "global") or "global").lower()
+        scope = scope_raw if scope_raw in ("global", "app") else "global"
+        targets: List[AppTarget] = []
+        targets_raw = data.get("app_targets", data.get("apps", []))
+        for item in targets_raw or []:
+            target = AppTarget.from_any(item)
+            if target:
+                targets.append(target)
         return cls(
             trigger_key=str(data.get("trigger_key") or data.get("key") or ""),
             mode=data.get("mode", "hold"),
@@ -827,9 +901,16 @@ class Macro:
             description=data.get("description"),
             stop_others_on_trigger=bool(data.get("stop_others_on_trigger", False)),
             suspend_others_while_running=bool(data.get("suspend_others_while_running", False)),
+            scope=scope,
+            app_targets=targets,
         )
 
     def to_dict(self) -> Dict[str, Any]:
+        targets: List[Dict[str, Any]] = []
+        for t in getattr(self, "app_targets", []) or []:
+            target = AppTarget.from_any(t)
+            if target:
+                targets.append(target.to_dict())
         return {
             "trigger_key": self.trigger_key,
             "mode": self.mode,
@@ -842,6 +923,8 @@ class Macro:
             "stop_actions": [a.to_dict() for a in getattr(self, "stop_actions", [])],
             "stop_others_on_trigger": getattr(self, "stop_others_on_trigger", False),
             "suspend_others_while_running": getattr(self, "suspend_others_while_running", False),
+            "scope": getattr(self, "scope", "global"),
+            "app_targets": targets,
         }
 
     @staticmethod
@@ -1870,6 +1953,8 @@ class MacroEngine:
         self._recent_sends: Dict[str, float] = {}
         self._guard_macro_idx: Optional[int] = None
         self._suspended_toggle_indices: Set[int] = set()
+        self._app_ctx: Optional[Dict[str, Any]] = None
+        self._app_ctx_ts: float = 0.0
         # 홀드 상태가 일시적으로 끊겼을 때 재시작을 막기 위해 약간 여유를 둔다.
         self._hold_release_debounce = max(self.tick * 2, 0.05)
         # 매크로가 스스로 트리거 키를 입력했을 때 토글이 바로 꺼지는 것을 막기 위한 완충 시간.
@@ -1879,6 +1964,8 @@ class MacroEngine:
         self._timer_lock = threading.Lock()
         self._timers: List[Dict[str, Any]] = []
         self._reset_timers()
+        self._app_ctx: Optional[Dict[str, Any]] = None
+        self._app_ctx_ts: float = 0.0
 
         self._pixel_test_region: Region = (0, 0, 1, 1)
         self._pixel_test_color: RGB = (0, 0, 0)
@@ -1958,9 +2045,10 @@ class MacroEngine:
         return max(0.0, offset + (time.monotonic() - start))
 
     def update_profile(self, profile: MacroProfile):
+        app_ctx = self._get_app_context(force=True)
         with self._lock:
             self._profile = copy.deepcopy(profile)
-            swallow_keys = self._swallow_keys_locked()
+            swallow_keys = self._swallow_keys_locked(app_ctx)
             device_id = self._profile.keyboard_device_id
             hardware_id = self._profile.keyboard_hardware_id
             mouse_device_id = getattr(self._profile, "mouse_device_id", None)
@@ -1976,7 +2064,7 @@ class MacroEngine:
         self._apply_keyboard_device(device_id, hardware_id, log=False)
         self._apply_mouse_device(mouse_device_id, mouse_hardware_id, log=False)
         self._select_backend(self._input_mode, allow_fallback=True, log=True)
-        self._refresh_swallow()
+        self._refresh_swallow(app_ctx)
         # 픽셀 테스트 설정도 프로필에서 동기화
         try:
             expect_exists = True
@@ -2020,7 +2108,7 @@ class MacroEngine:
             self.active = True
             self.paused = False
         self._emit_log("GUI: 활성화")
-        self._refresh_swallow()
+        self._refresh_swallow(self._get_app_context(force=True))
         self._emit_state()
 
     def deactivate(self):
@@ -2030,7 +2118,7 @@ class MacroEngine:
         self._stop_all_macros()
         self._reset_condition_states()
         self._emit_log("GUI: 비활성화")
-        self._refresh_swallow()
+        self._refresh_swallow(self._get_app_context(force=True))
         self._emit_state()
 
     def toggle_pause(self):
@@ -2042,7 +2130,7 @@ class MacroEngine:
         if paused:
             self._stop_all_macros()
         self._emit_log(f"GUI: {'일시정지' if paused else '재개'}")
-        self._refresh_swallow()
+        self._refresh_swallow(self._get_app_context(force=True))
         self._emit_state()
 
     def start(self):
@@ -2055,6 +2143,7 @@ class MacroEngine:
         self._thread = threading.Thread(target=self._loop, name="MacroEngine", daemon=True)
         self._thread.start()
         self._swallower.start()
+        self._refresh_swallow(self._get_app_context(force=True))
         self._emit_state()
 
     def stop(self):
@@ -2084,15 +2173,83 @@ class MacroEngine:
         payload = {"type": "state", **self.snapshot_state(), "backend": self._backend_state_payload()}
         self._emit_event(payload)
 
-    def _swallow_keys_locked(self) -> List[str]:
-        return [m.trigger_key for m in self._profile.macros if getattr(m, "enabled", True) and m.trigger_key and m.suppress_trigger]
+    def _normalize_app_ctx(self, info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not info:
+            return None
+        path = str(info.get("path") or "").strip()
+        name = str(info.get("name") or "").strip()
+        base = name or (Path(path).name if path else "")
+        return {
+            "pid": info.get("pid"),
+            "name": name,
+            "path": path,
+            "base": base,
+            "norm_path": _norm_path(path),
+            "norm_base": base.lower() if base else "",
+        }
 
-    def _swallow_keys(self) -> List[str]:
+    def _get_app_context(self, *, force: bool = False) -> Optional[Dict[str, Any]]:
+        if not hasattr(self, "_app_ctx"):
+            self._app_ctx = None
+            self._app_ctx_ts = 0.0
+        now = time.monotonic()
+        if not force and self._app_ctx and (now - self._app_ctx_ts) < max(self.tick * 2, 0.05):
+            return self._app_ctx
+        info = None
+        try:
+            info = get_foreground_process()
+        except Exception:
+            info = None
+        self._app_ctx = self._normalize_app_ctx(info)
+        self._app_ctx_ts = now
+        return self._app_ctx
+
+    def _macro_matches_app(self, macro: Macro, app_ctx: Optional[Dict[str, Any]]) -> bool:
+        scope = getattr(macro, "scope", "global") or "global"
+        if scope != "app":
+            return True
+        targets = getattr(macro, "app_targets", []) or []
+        if not targets or not app_ctx:
+            return False
+        ctx_norm_path = app_ctx.get("norm_path") or ""
+        ctx_base = app_ctx.get("norm_base") or (app_ctx.get("base") or "").lower()
+        for t in targets:
+            target = AppTarget.from_any(t)
+            if not target:
+                continue
+            norm_path = target.norm_path()
+            norm_name = target.norm_name()
+            if norm_path and ctx_norm_path and ctx_norm_path == norm_path:
+                return True
+            if norm_name:
+                if ctx_base and ctx_base == norm_name:
+                    return True
+                if ctx_norm_path:
+                    try:
+                        ctx_file = Path(ctx_norm_path).name.lower()
+                    except Exception:
+                        ctx_file = ctx_norm_path.lower()
+                    if ctx_file and ctx_file == norm_name:
+                        return True
+        return False
+
+    def _swallow_keys_locked(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str]:
+        ctx = app_ctx if app_ctx is not None else self._get_app_context()
+        keys: List[str] = []
+        for m in self._profile.macros:
+            if not getattr(m, "enabled", True) or not m.trigger_key or not m.suppress_trigger:
+                continue
+            if not self._macro_matches_app(m, ctx):
+                continue
+            keys.append(m.trigger_key)
+        return keys
+
+    def _swallow_keys(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str]:
         with self._lock:
-            return self._swallow_keys_locked()
+            return self._swallow_keys_locked(app_ctx)
 
-    def _refresh_swallow(self):
-        keys = self._swallow_keys()
+    def _refresh_swallow(self, app_ctx: Optional[Dict[str, Any]] = None):
+        keys = self._swallow_keys(app_ctx)
         self._swallower.set_keys(keys)
         # 스레드가 예외로 죽었을 때 자동으로 다시 올려준다.
         self._swallower.start()
@@ -2515,7 +2672,8 @@ class MacroEngine:
         self._emit_state()
         while not self._stop_event.is_set():
             self._handle_hotkeys()
-            self._refresh_swallow()
+            app_ctx = self._get_app_context()
+            self._refresh_swallow(app_ctx)
             if not self.running:
                 break
 
@@ -2534,6 +2692,15 @@ class MacroEngine:
                     runner = self._macro_runners.pop(idx, None)
                     if runner:
                         runner.stop()
+                    self._hold_release_since.pop(idx, None)
+                    continue
+                if not self._macro_matches_app(macro, app_ctx):
+                    runner = self._macro_runners.pop(idx, None)
+                    if runner:
+                        runner.stop()
+                        if self._guard_macro_idx == idx:
+                            self._guard_macro_idx = None
+                            self._resume_suspended_toggles()
                     self._hold_release_since.pop(idx, None)
                     continue
                 runner = self._macro_runners.get(idx)

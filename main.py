@@ -30,6 +30,7 @@ from capture import (
 from engine import (
     Action,
     Condition,
+    AppTarget,
     Macro,
     MacroCondition,
     MacroEngine,
@@ -44,6 +45,7 @@ from engine import (
 from lib import keyboard as kbutil
 from lib.interception import Interception, KeyFilter, KeyState, MapVk, MouseFilter, MouseState, map_virtual_key
 from lib.keyboard import get_keystate
+from lib.processes import get_foreground_process, list_processes
 from lib.pixel import RGB, Region, capture_region
 
 
@@ -4725,6 +4727,193 @@ class ActionEditDialog(QtWidgets.QDialog):
         return act
 
 
+class AppScopeDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, *, scope: str = "global", targets=None, apply_all_cb=None):
+        super().__init__(parent)
+        self.setWindowTitle("앱 동작 범위 설정")
+        self.setModal(True)
+        self.resize(520, 420)
+        self._apply_all_cb = apply_all_cb
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        form = QtWidgets.QFormLayout()
+        self.scope_combo = QtWidgets.QComboBox()
+        self.scope_combo.addItem("전역 (어디서나)", "global")
+        self.scope_combo.addItem("특정 앱에서만", "app")
+        form.addRow("동작 범위", self.scope_combo)
+
+        self.app_target_group = QtWidgets.QGroupBox("특정 앱 선택 (scope=특정 앱일 때만 적용)")
+        target_layout = QtWidgets.QVBoxLayout(self.app_target_group)
+
+        proc_row = QtWidgets.QHBoxLayout()
+        self.process_combo = QtWidgets.QComboBox()
+        self.process_combo.setMinimumContentsLength(25)
+        self.process_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.process_refresh_btn = QtWidgets.QToolButton()
+        self.process_refresh_btn.setText("새로고침")
+        self.process_add_btn = QtWidgets.QToolButton()
+        self.process_add_btn.setText("추가")
+        proc_row.addWidget(self.process_combo, stretch=1)
+        proc_row.addWidget(self.process_refresh_btn)
+        proc_row.addWidget(self.process_add_btn)
+        target_layout.addLayout(proc_row)
+
+        file_row = QtWidgets.QHBoxLayout()
+        self.process_pick_btn = QtWidgets.QPushButton("EXE 선택...")
+        self.process_active_btn = QtWidgets.QPushButton("현재 활성 창 추가")
+        self.process_remove_btn = QtWidgets.QPushButton("선택 삭제")
+        file_row.addWidget(self.process_pick_btn)
+        file_row.addWidget(self.process_active_btn)
+        file_row.addWidget(self.process_remove_btn)
+        file_row.addStretch()
+        target_layout.addLayout(file_row)
+
+        self.app_target_list = QtWidgets.QListWidget()
+        self.app_target_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        target_layout.addWidget(self.app_target_list)
+
+        layout.addLayout(form)
+        layout.addWidget(self.app_target_group)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch()
+        self.apply_all_btn = QtWidgets.QPushButton("모든 매크로에 적용")
+        self.ok_btn = QtWidgets.QPushButton("확인")
+        self.cancel_btn = QtWidgets.QPushButton("취소")
+        self.apply_all_btn.setEnabled(bool(apply_all_cb))
+        btn_row.addWidget(self.apply_all_btn)
+        btn_row.addWidget(self.ok_btn)
+        btn_row.addWidget(self.cancel_btn)
+        layout.addLayout(btn_row)
+
+        self.ok_btn.clicked.connect(self.accept)
+        self.cancel_btn.clicked.connect(self.reject)
+        self.scope_combo.currentIndexChanged.connect(self._update_scope_ui)
+        self.process_refresh_btn.clicked.connect(self._refresh_process_list)
+        self.process_add_btn.clicked.connect(self._add_selected_process)
+        self.process_pick_btn.clicked.connect(self._pick_process_file)
+        self.process_active_btn.clicked.connect(self._add_active_process)
+        self.process_remove_btn.clicked.connect(self._remove_selected_targets)
+        self.apply_all_btn.clicked.connect(self._apply_all)
+
+        self._set_target_list(targets or [])
+        idx = self.scope_combo.findData(scope or "global")
+        self.scope_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._update_scope_ui()
+        self._refresh_process_list()
+
+    def _apply_all(self):
+        if not self._apply_all_cb:
+            return
+        self._apply_all_cb(self.selected_scope(), self.selected_targets())
+        QtWidgets.QMessageBox.information(self, "적용 완료", "모든 매크로에 적용되었습니다.")
+
+    def _target_key(self, name: str | None, path: str | None) -> str:
+        if path:
+            try:
+                return Path(path).resolve().as_posix().lower()
+            except Exception:
+                return str(path).lower()
+        return (name or "").strip().lower()
+
+    def _format_process_label(self, info: dict) -> str:
+        name = info.get("name") or "(알 수 없음)"
+        pid = info.get("pid")
+        path = info.get("path") or ""
+        bits = [name]
+        if pid is not None:
+            bits.append(f"PID {pid}")
+        if path:
+            bits.append(path)
+        return " | ".join(bits)
+
+    def _refresh_process_list(self):
+        self.process_combo.clear()
+        try:
+            infos = list_processes(max_count=200)
+        except Exception:
+            infos = []
+        if not infos:
+            self.process_combo.addItem("실행 중인 프로세스를 찾을 수 없습니다.", None)
+            self.process_combo.setEnabled(False)
+            return
+        self.process_combo.setEnabled(True)
+        for info in infos:
+            self.process_combo.addItem(self._format_process_label(info), info)
+
+    def _add_target_entry(self, name: str | None, path: str | None):
+        key = self._target_key(name, path)
+        if not key:
+            return
+        for idx in range(self.app_target_list.count()):
+            item = self.app_target_list.item(idx)
+            data = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
+            if isinstance(data, dict):
+                existing = self._target_key(data.get("name"), data.get("path"))
+                if existing == key:
+                    return
+        label_parts = [name or (Path(path).name if path else key)]
+        if path:
+            label_parts.append(path)
+        item = QtWidgets.QListWidgetItem(" | ".join(part for part in label_parts if part))
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, {"name": name, "path": path})
+        self.app_target_list.addItem(item)
+
+    def _remove_selected_targets(self):
+        for item in self.app_target_list.selectedItems():
+            row = self.app_target_list.row(item)
+            self.app_target_list.takeItem(row)
+
+    def _set_target_list(self, targets):
+        self.app_target_list.clear()
+        for t in targets or []:
+            target = AppTarget.from_any(t)
+            if not target:
+                continue
+            self._add_target_entry(target.name, target.path)
+
+    def _collect_targets(self) -> list[AppTarget]:
+        targets: list[AppTarget] = []
+        for idx in range(self.app_target_list.count()):
+            item = self.app_target_list.item(idx)
+            data = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
+            if isinstance(data, dict):
+                target = AppTarget.from_any(data)
+                if target and (target.name or target.path):
+                    targets.append(target)
+        return targets
+
+    def _add_selected_process(self):
+        data = self.process_combo.currentData()
+        if isinstance(data, dict):
+            self._add_target_entry(data.get("name"), data.get("path"))
+
+    def _add_active_process(self):
+        try:
+            info = get_foreground_process()
+        except Exception:
+            info = None
+        if not info:
+            QtWidgets.QMessageBox.information(self, "추가 실패", "활성 창 정보를 가져오지 못했습니다.")
+            return
+        self._add_target_entry(info.get("name"), info.get("path"))
+
+    def _pick_process_file(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "실행 파일 선택", "", "Executables (*.exe);;All Files (*.*)")
+        if path:
+            self._add_target_entry(Path(path).name, path)
+
+    def _update_scope_ui(self):
+        enabled = self.scope_combo.currentData() == "app"
+        self.app_target_group.setEnabled(bool(enabled))
+
+    def selected_scope(self) -> str:
+        return self.scope_combo.currentData() or "global"
+
+    def selected_targets(self) -> list[AppTarget]:
+        return self._collect_targets()
+
 class MacroDialog(QtWidgets.QDialog):
     _action_clipboard: Action | None = None
 
@@ -4744,6 +4933,7 @@ class MacroDialog(QtWidgets.QDialog):
         open_screenshot_dialog=None,
         screenshot_hotkeys_provider=None,
         screenshot_manager=None,
+        apply_scope_all=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("매크로 편집")
@@ -4761,6 +4951,9 @@ class MacroDialog(QtWidgets.QDialog):
         self._open_screenshot_dialog_fn = open_screenshot_dialog
         self._screenshot_hotkeys_provider = screenshot_hotkeys_provider
         self._screenshot_manager = screenshot_manager
+        self._apply_scope_all_cb = apply_scope_all
+        self._scope: str = "global"
+        self._app_targets: list[AppTarget] = []
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -4789,6 +4982,14 @@ class MacroDialog(QtWidgets.QDialog):
         self.cycle_spin = QtWidgets.QSpinBox()
         self.cycle_spin.setRange(0, 999999)
         self.cycle_spin.setSpecialValueText("무한 반복")
+        self.scope_btn = QtWidgets.QPushButton("앱 동작 범위 설정...")
+        self.scope_summary = QtWidgets.QLabel("전역 (어디서나)")
+        self.scope_summary.setStyleSheet("color: #555;")
+        scope_row = QtWidgets.QHBoxLayout()
+        scope_row.addWidget(self.scope_btn)
+        scope_row.addWidget(self.scope_summary, stretch=1)
+        scope_row.addStretch()
+
         form.addRow("이름(선택)", self.name_edit)
         form.addRow("설명(선택)", self.desc_edit)
         form.addRow("트리거 키", trigger_row)
@@ -4798,6 +4999,7 @@ class MacroDialog(QtWidgets.QDialog):
         form.addRow(self.enabled_check)
         form.addRow("사이클 횟수(0=무한)", self.cycle_spin)
         form.addRow(self.suppress_checkbox)
+        form.addRow(scope_row)
         layout.addLayout(form)
 
         self.action_tree = ActionTreeWidget()
@@ -4888,6 +5090,7 @@ class MacroDialog(QtWidgets.QDialog):
 
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
+        self.scope_btn.clicked.connect(self._open_scope_dialog)
         self.add_btn.clicked.connect(self._add_action)
         self.add_child_btn.clicked.connect(lambda: self._add_action(as_child=True))
         self.edit_btn.clicked.connect(self._edit_action)
@@ -4931,6 +5134,9 @@ class MacroDialog(QtWidgets.QDialog):
             self.stop_action_tree.load_actions([])
             self.stop_collapse_btn.setChecked(True)
             self._update_stop_collapsed()
+            self._scope = "global"
+            self._app_targets = []
+            self._set_scope_label()
 
     def _populate_trigger_menu(self):
         menu = self.trigger_menu
@@ -4952,6 +5158,41 @@ class MacroDialog(QtWidgets.QDialog):
         menu.addSeparator()
         for i in range(1, 13):
             add(f"F{i}", f"f{i}")
+
+    def _scope_summary_text(self) -> str:
+        if self._scope != "app":
+            return "전역 (어디서나)"
+        labels: list[str] = []
+        for t in self._app_targets or []:
+            target = AppTarget.from_any(t)
+            if not target:
+                continue
+            label = target.name or (Path(target.path).name if target.path else "")
+            if label:
+                labels.append(label)
+        if not labels:
+            return "특정 앱 (지정 필요)"
+        if len(labels) > 3:
+            labels = labels[:3] + ["..."]
+        return f"특정 앱: {', '.join(labels)}"
+
+    def _set_scope_label(self):
+        self.scope_summary.setText(self._scope_summary_text())
+
+    def _open_scope_dialog(self):
+        dlg = AppScopeDialog(self, scope=self._scope, targets=self._app_targets, apply_all_cb=self._apply_scope_all_cb)
+        if _run_dialog_non_modal(dlg):
+            self._scope = dlg.selected_scope()
+            self._app_targets = dlg.selected_targets()
+            self._set_scope_label()
+
+    def _collect_app_targets(self) -> list[AppTarget]:
+        targets: list[AppTarget] = []
+        for t in self._app_targets or []:
+            target = AppTarget.from_any(t)
+            if target:
+                targets.append(target)
+        return targets
 
     def _selected_item(self, tree: ActionTreeWidget | None = None) -> QtWidgets.QTreeWidgetItem | None:
         tree = tree or self.action_tree
@@ -5500,6 +5741,14 @@ class MacroDialog(QtWidgets.QDialog):
         self.stop_others_check.setChecked(bool(getattr(macro, "stop_others_on_trigger", False)))
         self.suspend_others_check.setChecked(bool(getattr(macro, "suspend_others_while_running", False)))
         self.cycle_spin.setValue(int(macro.cycle_count or 0))
+        self._scope = getattr(macro, "scope", "global") or "global"
+        self._app_targets = []
+        if self._scope == "app":
+            for t in getattr(macro, "app_targets", []) or []:
+                target = AppTarget.from_any(t)
+                if target:
+                    self._app_targets.append(copy.deepcopy(target))
+        self._set_scope_label()
         self.action_tree.load_actions(copy.deepcopy(macro.actions))
         stop_actions = copy.deepcopy(getattr(macro, "stop_actions", []) or [])
         self.stop_action_tree.load_actions(stop_actions)
@@ -5519,6 +5768,10 @@ class MacroDialog(QtWidgets.QDialog):
         stop_others = self.stop_others_check.isChecked()
         suspend_others = self.suspend_others_check.isChecked()
         enabled = self.enabled_check.isChecked()
+        scope = self._scope or "global"
+        app_targets: list[AppTarget] = []
+        if scope == "app":
+            app_targets = [copy.deepcopy(t) for t in self._collect_app_targets()]
         actions = self.action_tree.collect_actions()
         stop_enabled = self.stop_group.isChecked()
         stop_actions = self.stop_action_tree.collect_actions() if stop_enabled else []
@@ -5536,6 +5789,8 @@ class MacroDialog(QtWidgets.QDialog):
             name=name,
             description=description,
             cycle_count=cycle_count,
+            scope=scope,
+            app_targets=app_targets,
         )
 
 
@@ -10113,8 +10368,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         group = QtWidgets.QGroupBox("매크로 목록 (기본 액션 + 조건)")
         layout = QtWidgets.QVBoxLayout(group)
 
-        self.macro_table = QtWidgets.QTableWidget(0, 7)
-        self.macro_table.setHorizontalHeaderLabels(["순번", "이름", "트리거", "모드", "활성", "차단", "설명"])
+        self.macro_table = QtWidgets.QTableWidget(0, 8)
+        self.macro_table.setHorizontalHeaderLabels(["순번", "이름", "트리거", "모드", "활성", "차단", "범위", "설명"])
         header = self.macro_table.horizontalHeader()
         header.setDefaultSectionSize(90)
         header.setMinimumSectionSize(60)
@@ -10597,7 +10852,27 @@ class MacroWindow(QtWidgets.QMainWindow):
         return True
 
     # Profile helpers -----------------------------------------------------
+    def _macro_scope_text(self, macro: Macro) -> str:
+        scope = getattr(macro, "scope", "global") or "global"
+        if scope != "app":
+            return "전역"
+        targets = getattr(macro, "app_targets", []) or []
+        names: list[str] = []
+        for t in targets:
+            target = AppTarget.from_any(t)
+            if not target:
+                continue
+            label = target.name or (Path(target.path).name if target.path else "")
+            if label:
+                names.append(label)
+        if not names:
+            return "앱 지정"
+        if len(names) > 3:
+            names = names[:3] + ["..."]
+        return f"앱: {', '.join(names)}"
+
     def _set_macro_row(self, row: int, macro: Macro):
+        scope_text = self._macro_scope_text(macro)
         values = [
             str(row + 1),
             macro.name or "",
@@ -10605,6 +10880,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             macro.mode,
             "ON" if getattr(macro, "enabled", True) else "OFF",
             "ON" if macro.suppress_trigger else "OFF",
+            scope_text,
             getattr(macro, "description", "") or "",
         ]
         for col, val in enumerate(values):
@@ -10625,6 +10901,26 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.macro_table.insertRow(row)
         self._set_macro_row(row, macro)
         if not self._loading_profile:
+            self._mark_dirty()
+
+    def _apply_scope_to_all_macros(self, scope: str, targets: list[AppTarget]):
+        scope_val = scope or "global"
+        cleaned: list[AppTarget] = []
+        if scope_val == "app":
+            for t in targets or []:
+                target = AppTarget.from_any(t)
+                if target:
+                    cleaned.append(copy.deepcopy(target))
+        updated = False
+        for row in range(self.macro_table.rowCount()):
+            macro = self._macro_from_row(row)
+            if not macro:
+                continue
+            macro.scope = scope_val
+            macro.app_targets = [copy.deepcopy(t) for t in cleaned] if scope_val == "app" else []
+            self._set_macro_row(row, macro)
+            updated = True
+        if updated and not self._loading_profile:
             self._mark_dirty()
 
     def _macro_summary(self, macro: Macro) -> str:
@@ -10707,6 +11003,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             open_screenshot_dialog=self._open_screenshot_dialog,
             screenshot_hotkeys_provider=self._screenshot_hotkeys_info,
             screenshot_manager=self.screenshot_manager,
+            apply_scope_all=self._apply_scope_to_all_macros,
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -10742,6 +11039,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             open_screenshot_dialog=self._open_screenshot_dialog,
             screenshot_hotkeys_provider=self._screenshot_hotkeys_info,
             screenshot_manager=self.screenshot_manager,
+            apply_scope_all=self._apply_scope_to_all_macros,
         )
         if _run_dialog_non_modal(dlg):
             try:

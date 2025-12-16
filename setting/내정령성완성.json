@@ -3682,7 +3682,14 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": true,
-      "suspend_others_while_running": false
+      "suspend_others_while_running": false,
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
     },
     {
       "trigger_key": "mouse5",
@@ -4998,7 +5005,14 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": true,
-      "suspend_others_while_running": false
+      "suspend_others_while_running": false,
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
     },
     {
       "trigger_key": "mouse3",
@@ -5041,7 +5055,14 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
     },
     {
       "trigger_key": "1",
@@ -5054,7 +5075,14 @@
       "actions": [],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
     },
     {
       "trigger_key": "2",
@@ -5126,7 +5154,14 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
     },
     {
       "trigger_key": "3",
@@ -5198,7 +5233,14 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
     },
     {
       "trigger_key": "`",
@@ -5270,7 +5312,14 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
     },
     {
       "trigger_key": "mouse2",
@@ -5283,7 +5332,14 @@
       "actions": [],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
     }
   ],
   "pixel_region": "0,0,100,100",
