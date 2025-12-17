@@ -1063,6 +1063,27 @@ def _group_child_count(cond: Condition) -> int:
     return len(direct_list) + len(getattr(current, "on_true", []) or []) + len(getattr(current, "on_false", []) or [])
 
 
+def _key_bundle_info(cond: Condition) -> tuple[bool, list[str], str | None]:
+    """Detect a pure key bundle group and return (is_bundle, keys, key_mode)."""
+    if not isinstance(cond, Condition):
+        return False, [], None
+    if cond.type not in ("all", "any"):
+        return False, [], None
+    if getattr(cond, "on_true", []) or getattr(cond, "on_false", []):
+        return False, [], None
+    children = getattr(cond, "conditions", []) or []
+    if not children:
+        return False, [], None
+    if not all(isinstance(c, Condition) and c.type == "key" for c in children):
+        return False, [], None
+    modes = {getattr(c, "key_mode", None) for c in children}
+    mode = modes.pop() if len(modes) == 1 else None
+    keys = [getattr(c, "key", "") for c in children if getattr(c, "key", "")]
+    if not keys:
+        return False, [], mode
+    return True, keys, mode
+
+
 def _condition_brief(cond: Condition) -> str:
     if not isinstance(cond, Condition):
         return "(조건 없음)"
@@ -1095,9 +1116,18 @@ def _condition_brief(cond: Condition) -> str:
         slot_text = f"타이머{slot}" if slot else "타이머"
         target_text = target if target is not None else "?"
         return f"{slot_text} {op} {target_text}{suffix}"
+    is_bundle, keys, mode = _key_bundle_info(cond)
+    if is_bundle:
+        mode_text = mode or ""
+        key_list = ",".join(keys)
+        return f"키 {key_list} ({mode_text}){suffix}"
     if cond.type == "all":
+        if cond.name:
+            return f"{cond.name}{suffix}"
         return f"AND 그룹 (하위 {_group_child_count(cond)}개){suffix}"
     if cond.type == "any":
+        if cond.name:
+            return f"{cond.name}{suffix}"
         return f"OR 그룹 (하위 {_group_child_count(cond)}개){suffix}"
     return f"{cond.type}{suffix}"
 
@@ -1151,6 +1181,10 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.key_mode_combo.addItem("hold (누르는 동안 계속 참)", "hold")
         self.key_mode_combo.addItem("released (안 눌릴 때 참)", "released")
         self.key_mode_combo.setToolTip("press/down=방금 눌림, up=뗄 때, hold=누르는 동안, released=안 눌릴 때")
+        self.key_group_mode_combo = QtWidgets.QComboBox()
+        self.key_group_mode_combo.addItem("모두 만족 (AND)", "all")
+        self.key_group_mode_combo.addItem("하나라도 (OR)", "any")
+        self.key_group_mode_combo.setToolTip("쉼표로 여러 키를 입력하면 이 모드로 묶어서 추가합니다.")
         self.region_edit = QtWidgets.QLineEdit("0,0,1,1")
         self.region_offset_edit = QtWidgets.QLineEdit("")
         self.region_edit.setPlaceholderText("기본 영역: x,y(,w,h) 또는 /변수")
@@ -1199,6 +1233,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.form.addRow("이름(선택)", self.name_edit)
         self.form.addRow("키/마우스", self.key_edit)
         self.form.addRow("키 모드", self.key_mode_combo)
+        self.form.addRow("여러 키 묶기", self.key_group_mode_combo)
         self.form.addRow("Region x,y,w,h", self.region_edit)
         self.form.addRow("+dx,dy,dw,dh (선택)", self.region_offset_edit)
         self.form.addRow("색상 (HEX RRGGBB)", self.color_edit)
@@ -1256,7 +1291,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 if label is not None:
                     label.setVisible(visible)
 
-        _toggle((self.key_edit, self.key_mode_combo), visible=is_key, enabled=is_key)
+        _toggle((self.key_edit, self.key_mode_combo, self.key_group_mode_combo), visible=is_key, enabled=is_key)
         _toggle(
             (self.region_edit, self.region_offset_edit, self.color_edit, self.tol_spin, self.pixel_expect_combo, self.test_btn),
             visible=is_pixel,
@@ -1309,11 +1344,17 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         typ = self._current_type()
         name = self.name_edit.text().strip() or None
         if typ == "key":
-            key = self.key_edit.text().strip()
-            if not key:
+            raw_keys = self.key_edit.text().strip()
+            keys = [k.strip() for k in raw_keys.replace(",", " ").split() if k.strip()]
+            if not keys:
                 raise ValueError("키를 입력하세요.")
             mode = self.key_mode_combo.currentData() or "hold"
-            return Condition(type="key", name=name, key=key, key_mode=mode)
+            if len(keys) == 1:
+                return Condition(type="key", name=name, key=keys[0], key_mode=mode)
+            group_type = self.key_group_mode_combo.currentData() or "all"
+            children = [Condition(type="key", key=k, key_mode=mode) for k in keys]
+            summary = name or f"키 {','.join(keys)} ({mode})"
+            return Condition(type=group_type, name=summary, conditions=children)
         if typ == "pixel":
             region_text = _compose_region_raw(self.region_edit.text(), self.region_offset_edit.text())
             color_text = self.color_edit.text()
@@ -1565,8 +1606,22 @@ class ConditionDialog(QtWidgets.QDialog):
                 self._append_condition_item(child)
         else:
             self._append_condition_item(self.root_condition)
-        self.condition_tree.expandAll()
+        self._expand_condition_tree()
         self._restart_condition_debug_if_running()
+
+    def _expand_condition_tree(self):
+        def walk(item: QtWidgets.QTreeWidgetItem | None):
+            if not item:
+                return
+            data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            is_bundle = isinstance(data, Condition) and _key_bundle_info(data)[0]
+            if not is_bundle:
+                self.condition_tree.expandItem(item)
+            for i in range(item.childCount()):
+                walk(item.child(i))
+
+        for i in range(self.condition_tree.topLevelItemCount()):
+            walk(self.condition_tree.topLevelItem(i))
 
     def _condition_from_item(self, item: QtWidgets.QTreeWidgetItem) -> Condition | None:
         cond = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
@@ -1617,7 +1672,7 @@ class ConditionDialog(QtWidgets.QDialog):
             item = self._find_item_for_condition(selected_cond)
             if item:
                 self.condition_tree.setCurrentItem(item)
-        self.condition_tree.expandAll()
+        self._expand_condition_tree()
 
     def _find_item_for_condition(self, target: Condition) -> QtWidgets.QTreeWidgetItem | None:
         def walk(item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QTreeWidgetItem | None:
@@ -1797,7 +1852,7 @@ class ConditionDialog(QtWidgets.QDialog):
             else:
                 self.root_condition = Condition(type="any", conditions=[self.root_condition, new_cond])
             self._refresh_condition_tree()
-            self.condition_tree.expandAll()
+            self._expand_condition_tree()
             return
 
         target_group.conditions.append(new_cond)
@@ -1849,7 +1904,7 @@ class ConditionDialog(QtWidgets.QDialog):
         if selected_cond and selected_cond.type in ("all", "any"):
             selected_cond.conditions.append(new_cond)
             self._refresh_condition_tree()
-            self.condition_tree.expandAll()
+            self._expand_condition_tree()
             item = self._find_item_for_condition(selected_cond)
             if item:
                 self.condition_tree.setCurrentItem(item)
@@ -1860,7 +1915,7 @@ class ConditionDialog(QtWidgets.QDialog):
             if parent_group:
                 parent_group.conditions.append(new_cond)
                 self._refresh_condition_tree()
-                self.condition_tree.expandAll()
+                self._expand_condition_tree()
                 item = self._find_item_for_condition(parent_group)
                 if item:
                     self.condition_tree.setCurrentItem(item)
@@ -1869,7 +1924,7 @@ class ConditionDialog(QtWidgets.QDialog):
         if self.root_condition.type == "any" and selected_cond is None:
             self.root_condition.conditions.append(new_cond)
             self._refresh_condition_tree()
-            self.condition_tree.expandAll()
+            self._expand_condition_tree()
             item = self._find_item_for_condition(new_cond)
             if item:
                 self.condition_tree.setCurrentItem(item)
@@ -1880,7 +1935,7 @@ class ConditionDialog(QtWidgets.QDialog):
         else:
             self.root_condition = Condition(type="any", conditions=[self.root_condition, new_cond])
         self._refresh_condition_tree()
-        self.condition_tree.expandAll()
+        self._expand_condition_tree()
 
     def _clone_condition_node(self):
         target = self._selected_condition()
@@ -3155,6 +3210,7 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
         self.setExpandsOnDoubleClick(False)
         self.setAlternatingRowColors(False)
+        self.setUniformRowHeights(True)
         self._expander_size = 16
         self._expander_margin = 8
         self._expander_fill = QtGui.QColor("#f6f8fc")
@@ -3855,14 +3911,22 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if header:
             idx = item.indexOfChild(header)
             item.takeChild(idx)
-            self.renumber()
+        self.renumber()
 
     def load_actions(self, actions: List[Action]):
-        self.clear()
-        for act in actions:
-            self._append_action_item(act)
-        self.expandAll()
-        self.renumber()
+        # Block signals/repaints during bulk load to avoid per-item itemChanged churn.
+        prev_block = self.blockSignals(True)
+        self.setUpdatesEnabled(False)
+        try:
+            self.clear()
+            for act in actions:
+                self._append_action_item(act)
+            self.expandAll()
+            self.renumber()
+        finally:
+            self.setUpdatesEnabled(True)
+            self.blockSignals(prev_block)
+            self.viewport().update()
 
     def collapse_all(self, checked: bool = False):
         """모든 노드를 접는다(버튼에서 bool 시그널을 받아도 허용)."""
