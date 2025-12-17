@@ -3310,7 +3310,9 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": true,
-      "suspend_others_while_running": false
+      "suspend_others_while_running": false,
+      "scope": "global",
+      "app_targets": []
     },
     {
       "trigger_key": "mouse5",
@@ -4626,7 +4628,9 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": true,
-      "suspend_others_while_running": false
+      "suspend_others_while_running": false,
+      "scope": "global",
+      "app_targets": []
     },
     {
       "trigger_key": "mouse3",
@@ -4669,7 +4673,9 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "global",
+      "app_targets": []
     },
     {
       "trigger_key": "1",
@@ -4682,7 +4688,9 @@
       "actions": [],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "global",
+      "app_targets": []
     },
     {
       "trigger_key": "2",
@@ -4754,7 +4762,9 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "global",
+      "app_targets": []
     },
     {
       "trigger_key": "3",
@@ -4826,7 +4836,9 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "global",
+      "app_targets": []
     },
     {
       "trigger_key": "`",
@@ -4898,7 +4910,9 @@
       ],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "global",
+      "app_targets": []
     },
     {
       "trigger_key": "q",
@@ -4911,7 +4925,9 @@
       "actions": [],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "global",
+      "app_targets": []
     },
     {
       "trigger_key": "mouse2",
@@ -4924,7 +4940,9 @@
       "actions": [],
       "stop_actions": [],
       "stop_others_on_trigger": false,
-      "suspend_others_while_running": true
+      "suspend_others_while_running": true,
+      "scope": "global",
+      "app_targets": []
     }
   ],
   "pixel_region": "0,0,100,100",
@@ -4933,7 +4951,7 @@
   "pixel_expect_exists": true,
   "keyboard_device_id": 2,
   "keyboard_hardware_id": "HID\\VID_29EA&PID_0102&REV_0100&MI_01",
-  "mouse_device_id": 17,
+  "mouse_device_id": 12,
   "mouse_hardware_id": "HID\\VID_373B&PID_1040&REV_0215&MI_02",
   "keyboard_test_key": "f24",
   "input_mode": "hardware",

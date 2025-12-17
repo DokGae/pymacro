@@ -4992,7 +4992,7 @@ class AppScopeDialog(QtWidgets.QDialog):
         return self._collect_targets()
 
 class MacroDialog(QtWidgets.QDialog):
-    _action_clipboard: Action | None = None
+    _action_clipboard: list[Action] | None = None
 
     def __init__(
         self,
@@ -5747,45 +5747,78 @@ class MacroDialog(QtWidgets.QDialog):
         target_tree = tree or self.action_tree
         if not target_tree:
             return
-        item = self._selected_item(target_tree)
-        if not item:
+        items = target_tree._top_level_selected(target_tree.selectedItems())
+        if not items:
             QtWidgets.QMessageBox.information(self, "선택 없음", "복사할 액션을 선택하세요.")
             return
-        act = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if not isinstance(act, Action):
+        copied: list[Action] = []
+        for item in items:
+            act = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if isinstance(act, Action):
+                copied.append(copy.deepcopy(act))
+        if not copied:
             QtWidgets.QMessageBox.information(self, "선택 없음", "액션을 선택하세요.")
             return
-        MacroDialog._action_clipboard = copy.deepcopy(act)
+        MacroDialog._action_clipboard = copied
 
     def _paste_action(self, tree: ActionTreeWidget | None = None):
         target_tree = tree or self.action_tree
         if not target_tree:
             return
-        if MacroDialog._action_clipboard is None:
+        if not MacroDialog._action_clipboard:
             QtWidgets.QMessageBox.information(self, "복사본 없음", "먼저 복사할 액션을 선택해 복사하세요.")
             return
         target_item = self._selected_item(target_tree)
         if target_tree.topLevelItemCount() > 0 and target_item is None:
             QtWidgets.QMessageBox.information(self, "선택 없음", "붙여넣을 위치를 선택하세요.")
             return
-        cloned = copy.deepcopy(MacroDialog._action_clipboard)
-        new_item = None
+        clipboard = MacroDialog._action_clipboard
+        actions_to_paste: list[Action]
+        if isinstance(clipboard, list):
+            actions_to_paste = [copy.deepcopy(act) for act in clipboard]
+        else:
+            actions_to_paste = [copy.deepcopy(clipboard)]
+
+        new_items: list[QtWidgets.QTreeWidgetItem] = []
         expand_item = None
+        parent = None
+        insert_row: int | None = None
         if target_item is None:
-            new_item = target_tree._append_action_item(cloned, None)
-            expand_item = new_item
+            parent = None
+            insert_row = target_tree.topLevelItemCount()
         else:
             data = target_item.data(0, QtCore.Qt.ItemDataRole.UserRole)
             if data == "__else__" or (isinstance(data, dict) and data.get("marker") == "__elif__"):
-                new_item = target_tree._append_action_item(cloned, target_item)
+                parent = target_item
+                insert_row = parent.childCount()
                 expand_item = target_item
             else:
-                new_item = target_tree._insert_after(cloned, target_item)
-                expand_item = target_item.parent() or new_item
+                parent = target_item.parent()
+                base_row = (
+                    parent.indexOfChild(target_item)
+                    if parent
+                    else target_tree.indexOfTopLevelItem(target_item)
+                )
+                insert_row = (base_row + 1) if base_row >= 0 else None
+                expand_item = parent
+
+        for act in actions_to_paste:
+            item = target_tree._append_action_item(act, parent, insert_row)
+            new_items.append(item)
+            if parent:
+                insert_row = parent.indexOfChild(item) + 1
+            else:
+                insert_row = target_tree.indexOfTopLevelItem(item) + 1
+
+        if expand_item is None and new_items:
+            expand_item = new_items[0]
         if expand_item:
             target_tree.expandItem(expand_item)
-        if new_item:
-            target_tree.setCurrentItem(new_item)
+        if new_items:
+            target_tree.clearSelection()
+            for item in new_items:
+                item.setSelected(True)
+            target_tree.setCurrentItem(new_items[0])
         target_tree.renumber()
 
     def _delete_action(self):
