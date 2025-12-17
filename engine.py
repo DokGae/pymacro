@@ -24,7 +24,7 @@ from lib.pixel import RGB, Region, capture_region, capture_region_np, find_color
 from lib.processes import get_foreground_process
 
 ConditionType = Literal["key", "pixel", "all", "any", "var", "timer"]
-KeyMode = Literal["press", "down", "up", "hold"]
+KeyMode = Literal["press", "down", "up", "hold", "released"]
 ActionType = Literal[
     "press",
     "down",
@@ -271,7 +271,7 @@ class Condition:
         false_branch = [Condition.from_dict(c, resolver) for c in data.get("on_false", [])]
         key_mode_raw = data.get("key_mode")
         key_mode = str(key_mode_raw).lower() if key_mode_raw else None
-        if key_mode and key_mode not in ("press", "down", "up", "hold"):
+        if key_mode and key_mode not in ("press", "down", "up", "hold", "released"):
             key_mode = None
         pixel_exists_raw = data.get("pixel_exists", True)
         if isinstance(pixel_exists_raw, str):
@@ -2846,6 +2846,8 @@ class MacroEngine:
                 base_result = pressed and not prev
             elif mode == "up":
                 base_result = (not pressed) and prev
+            elif mode == "released":
+                base_result = not pressed
             else:
                 base_result = pressed
             detail["key"] = {"key": cond.key, "mode": mode, "pressed": pressed, "prev": prev}
@@ -3048,6 +3050,8 @@ class MacroEngine:
                     base_result = pressed and not prev
                 elif mode == "up":
                     base_result = (not pressed) and prev
+                elif mode == "released":
+                    base_result = not pressed
                 else:
                     base_result = pressed
                 detail["key"] = {"key": cond.key, "mode": mode, "pressed": pressed, "prev": prev}

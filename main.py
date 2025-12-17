@@ -1074,7 +1074,7 @@ def _condition_brief(cond: Condition) -> str:
     suffix = f" | {' / '.join(suffix_parts)}" if suffix_parts else ""
     if cond.type == "key":
         mode = cond.key_mode or "hold"
-        return f"키 {cond.key} ({mode}){suffix}"
+        return f"키/마우스 {cond.key} ({mode}){suffix}"
     if cond.type == "pixel":
         region = cond.region_raw or ",".join(str(v) for v in cond.region or [])
         color_hex = cond.color_raw or (_rgb_to_hex(cond.color) or "------")
@@ -1132,19 +1132,25 @@ class ConditionNodeDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
 
-        form = QtWidgets.QFormLayout()
+        self.form = QtWidgets.QFormLayout()
         self.type_combo = QtWidgets.QComboBox()
         if allow_group:
             self.type_combo.addItem("AND 그룹 (모두 참)", "all")
             self.type_combo.addItem("OR 그룹 (하나라도 참)", "any")
         self.type_combo.addItem("픽셀", "pixel")
-        self.type_combo.addItem("키", "key")
+        self.type_combo.addItem("키/마우스", "key")
         self.type_combo.addItem("변수 값 비교", "var")
         self.type_combo.addItem("타이머", "timer")
         self.name_edit = QtWidgets.QLineEdit()
         self.key_edit = QtWidgets.QLineEdit()
+        self.key_edit.setPlaceholderText("예: a, ctrl, mouse1")
         self.key_mode_combo = QtWidgets.QComboBox()
-        self.key_mode_combo.addItems(["press", "down", "up", "hold"])
+        self.key_mode_combo.addItem("press (눌리는 순간 한 번, down과 동일)", "press")
+        self.key_mode_combo.addItem("down (눌리는 순간 한 번)", "down")
+        self.key_mode_combo.addItem("up (뗄 때 한 번)", "up")
+        self.key_mode_combo.addItem("hold (누르는 동안 계속 참)", "hold")
+        self.key_mode_combo.addItem("released (안 눌릴 때 참)", "released")
+        self.key_mode_combo.setToolTip("press/down=방금 눌림, up=뗄 때, hold=누르는 동안, released=안 눌릴 때")
         self.region_edit = QtWidgets.QLineEdit("0,0,1,1")
         self.region_offset_edit = QtWidgets.QLineEdit("")
         self.region_edit.setPlaceholderText("기본 영역: x,y(,w,h) 또는 /변수")
@@ -1189,23 +1195,23 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.group_hint = QtWidgets.QLabel("하위 조건은 트리에서 추가/삭제하세요.")
         self.group_hint.setStyleSheet("color: gray;")
 
-        form.addRow("조건 타입", self.type_combo)
-        form.addRow("이름(선택)", self.name_edit)
-        form.addRow("키", self.key_edit)
-        form.addRow("키 모드", self.key_mode_combo)
-        form.addRow("Region x,y,w,h", self.region_edit)
-        form.addRow("+dx,dy,dw,dh (선택)", self.region_offset_edit)
-        form.addRow("색상 (HEX RRGGBB)", self.color_edit)
-        form.addRow("Tolerance", self.tol_spin)
-        form.addRow("픽셀 상태", self.pixel_expect_combo)
-        form.addRow("변수 이름", self.var_name_edit)
-        form.addRow("변수 값", self.var_value_edit)
-        form.addRow("비교 방식", self.var_op_combo)
-        form.addRow("타이머 슬롯(1~20)", self.timer_slot_combo)
-        form.addRow("타이머 값(초)", self.timer_value_spin)
-        form.addRow("타이머 비교", self.timer_op_combo)
-        form.addRow(self.group_hint)
-        layout.addLayout(form)
+        self.form.addRow("조건 타입", self.type_combo)
+        self.form.addRow("이름(선택)", self.name_edit)
+        self.form.addRow("키/마우스", self.key_edit)
+        self.form.addRow("키 모드", self.key_mode_combo)
+        self.form.addRow("Region x,y,w,h", self.region_edit)
+        self.form.addRow("+dx,dy,dw,dh (선택)", self.region_offset_edit)
+        self.form.addRow("색상 (HEX RRGGBB)", self.color_edit)
+        self.form.addRow("Tolerance", self.tol_spin)
+        self.form.addRow("픽셀 상태", self.pixel_expect_combo)
+        self.form.addRow("변수 이름", self.var_name_edit)
+        self.form.addRow("변수 값", self.var_value_edit)
+        self.form.addRow("비교 방식", self.var_op_combo)
+        self.form.addRow("타이머 슬롯(1~20)", self.timer_slot_combo)
+        self.form.addRow("타이머 값(초)", self.timer_value_spin)
+        self.form.addRow("타이머 비교", self.timer_op_combo)
+        self.form.addRow(self.group_hint)
+        layout.addLayout(self.form)
 
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
@@ -1229,7 +1235,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 self.type_combo.setCurrentIndex(self.type_combo.findData("all") if self.type_combo.findData("all") >= 0 else 0)
             else:
                 self.type_combo.setCurrentIndex(self.type_combo.findData("pixel"))
-            self.key_mode_combo.setCurrentText("hold")
+            self.key_mode_combo.setCurrentIndex(max(0, self.key_mode_combo.findData("hold")))
             self._sync_type_visibility()
 
     def _current_type(self) -> str:
@@ -1242,24 +1248,31 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         is_group = typ in ("all", "any")
         is_var = typ == "var"
         is_timer = typ == "timer"
-        self.key_edit.setEnabled(is_key)
-        self.key_mode_combo.setEnabled(is_key)
-        for w in (self.region_edit, self.region_offset_edit, self.color_edit, self.tol_spin, self.pixel_expect_combo, self.test_btn):
-            w.setEnabled(is_pixel)
-            w.setVisible(is_pixel)
-        for w in (self.var_name_edit, self.var_value_edit, self.var_op_combo):
-            w.setEnabled(is_var)
-            w.setVisible(is_var)
-        for w in (self.timer_slot_combo, self.timer_value_spin, self.timer_op_combo):
-            w.setEnabled(is_timer)
-            w.setVisible(is_timer)
+        def _toggle(widgets, *, visible: bool, enabled: bool):
+            for w in widgets:
+                w.setEnabled(enabled)
+                w.setVisible(visible)
+                label = self.form.labelForField(w)
+                if label is not None:
+                    label.setVisible(visible)
+
+        _toggle((self.key_edit, self.key_mode_combo), visible=is_key, enabled=is_key)
+        _toggle(
+            (self.region_edit, self.region_offset_edit, self.color_edit, self.tol_spin, self.pixel_expect_combo, self.test_btn),
+            visible=is_pixel,
+            enabled=is_pixel,
+        )
+        _toggle((self.var_name_edit, self.var_value_edit, self.var_op_combo), visible=is_var, enabled=is_var)
+        _toggle((self.timer_slot_combo, self.timer_value_spin, self.timer_op_combo), visible=is_timer, enabled=is_timer)
         self.group_hint.setVisible(is_group)
 
     def _load(self, cond: Condition):
         self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(cond.type)))
         if cond.type == "key":
             self.key_edit.setText(cond.key or "")
-            self.key_mode_combo.setCurrentText(cond.key_mode or "hold")
+            idx = self.key_mode_combo.findData(cond.key_mode or "hold")
+            if idx >= 0:
+                self.key_mode_combo.setCurrentIndex(idx)
         elif cond.type == "pixel":
             raw_region = cond.region_raw or ",".join(str(v) for v in cond.region or [])
             base_txt, offset_txt = _split_region_offset(raw_region) if raw_region else ("", "")
@@ -1299,7 +1312,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             key = self.key_edit.text().strip()
             if not key:
                 raise ValueError("키를 입력하세요.")
-            mode = self.key_mode_combo.currentText()
+            mode = self.key_mode_combo.currentData() or "hold"
             return Condition(type="key", name=name, key=key, key_mode=mode)
         if typ == "pixel":
             region_text = _compose_region_raw(self.region_edit.text(), self.region_offset_edit.text())
