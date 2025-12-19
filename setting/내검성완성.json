@@ -311,7 +311,7 @@
                     "tolerance": 0,
                     "pixel_exists": true,
                     "timer_index": 2,
-                    "timer_value": 0.1,
+                    "timer_value": 0.3,
                     "timer_operator": "ge",
                     "enabled": true
                   }
@@ -663,7 +663,7 @@
                     "tolerance": 0,
                     "pixel_exists": true,
                     "timer_index": 1,
-                    "timer_value": 0.1,
+                    "timer_value": 0.3,
                     "timer_operator": "ge",
                     "enabled": true
                   }
@@ -793,7 +793,7 @@
                   "type": "if",
                   "name": null,
                   "description": "스티그마1",
-                  "enabled": true,
+                  "enabled": false,
                   "once_per_macro": false,
                   "key": null,
                   "repeat": 1,
@@ -817,7 +817,7 @@
                     "timer_index": null,
                     "timer_value": null,
                     "timer_operator": "ge",
-                    "enabled": true,
+                    "enabled": false,
                     "conditions": [
                       {
                         "type": "any",

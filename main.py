@@ -2707,8 +2707,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._current_index = -1
             return
         idx = max(0, min(len(self._image_files) - 1, idx))
-        if idx == self._current_index:
-            return
         self._current_index = idx
         self.image_combo.blockSignals(True)
         self.image_combo.setCurrentIndex(idx)
