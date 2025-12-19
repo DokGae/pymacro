@@ -10295,16 +10295,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(6)
 
-        top_row = QtWidgets.QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(6)
-        title = QtWidgets.QLabel("설정 파일")
-        title.setStyleSheet("font-weight: 600;")
-        self.profile_path_label = QtWidgets.QLabel("새 프로필 (미저장)")
-        self.profile_path_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
-        self.profile_path_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.profile_path_label.setMinimumHeight(22)
-
         theme = self._theme
         btn_style = (
             f"padding: 4px 10px; border: 1px solid {theme['button_border']}; "
@@ -10316,17 +10306,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             b.setMinimumHeight(26)
             b.setStyleSheet(btn_style)
             return b
-
-        self.quick_load_btn = _btn("불러오기")
-        self.quick_save_btn = _btn("저장")
-        self.quick_save_as_btn = _btn("다른 이름")
-
-        top_row.addWidget(title)
-        top_row.addWidget(self.profile_path_label, 1)
-        top_row.addWidget(self.quick_load_btn)
-        top_row.addWidget(self.quick_save_btn)
-        top_row.addWidget(self.quick_save_as_btn)
-        layout.addLayout(top_row)
 
         lists_row = QtWidgets.QHBoxLayout()
         lists_row.setContentsMargins(0, 0, 0, 0)
@@ -10774,9 +10753,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.deactivate_btn.clicked.connect(self.engine.deactivate)
         self.pause_btn.clicked.connect(self.engine.toggle_pause)
         self.apply_btn.clicked.connect(self._handle_apply_click)
-        self.quick_load_btn.clicked.connect(self._load_profile)
-        self.quick_save_btn.clicked.connect(self._save_profile)
-        self.quick_save_as_btn.clicked.connect(self._save_profile_as)
         self.recent_load_btn.clicked.connect(lambda: self._load_selected_profile(self.recent_list))
         self.fav_load_btn.clicked.connect(lambda: self._load_selected_profile(self.favorite_list))
         self.recent_to_fav_btn.clicked.connect(self._favorite_selected_recent)
@@ -11243,15 +11219,15 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._update_profile_list_buttons()
 
     def _refresh_profile_header(self):
-        if not hasattr(self, "profile_path_label"):
-            return
         path = self.current_profile_path
-        if path:
-            self.profile_path_label.setText(_elide_middle(str(path), 72))
-            self.profile_path_label.setToolTip(str(path))
-        else:
-            self.profile_path_label.setText("새 프로필 (미저장)")
-            self.profile_path_label.setToolTip("파일로 저장하거나 불러오면 목록에 표시됩니다.")
+        self._update_title()
+        if hasattr(self, "profile_path_label"):
+            if path:
+                self.profile_path_label.setText(_elide_middle(str(path), 72))
+                self.profile_path_label.setToolTip(str(path))
+            else:
+                self.profile_path_label.setText("새 프로필 (미저장)")
+                self.profile_path_label.setToolTip("파일로 저장하거나 불러오면 목록에 표시됩니다.")
 
     def _selected_profile_path(self, widget: QtWidgets.QListWidget) -> str | None:
         item = widget.currentItem()
@@ -11380,9 +11356,14 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._stop_pixel_test_loop()
 
     def _update_title(self):
-        name = Path(self.current_profile_path).name if self.current_profile_path else "새 프로필"
+        if self.current_profile_path:
+            name = Path(self.current_profile_path).name
+            path_txt = str(Path(self.current_profile_path))
+        else:
+            name = "새 프로필"
+            path_txt = name
         dirty_mark = "*" if self.dirty else ""
-        self.setWindowTitle(f"{self.base_title} - {name}{dirty_mark}")
+        self.setWindowTitle(f"{self.base_title} - {path_txt}{dirty_mark}")
 
     def _mark_dirty(self, dirty: bool = True):
         self.dirty = dirty
