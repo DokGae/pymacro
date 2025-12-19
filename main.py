@@ -5949,7 +5949,7 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self.hotkey_checkbox.setChecked(self.manager.hotkeys.enabled)
         form.addRow(self.hotkey_checkbox)
         self.preset_combo = QtWidgets.QComboBox()
-        for name in self._presets:
+        for name in self._sorted_preset_names():
             self.preset_combo.addItem(name)
         form.addRow("품질 프리셋", self.preset_combo)
 
@@ -9903,13 +9903,16 @@ class MacroWindow(QtWidgets.QMainWindow):
         variable_group = self._build_variable_group()
         log_group = self._build_log_group()
 
-        layout.addWidget(macro_group, stretch=3)
-        layout.addWidget(variable_group, stretch=2)
-        layout.addWidget(log_group, stretch=2)
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        splitter.addWidget(macro_group)
+        splitter.addWidget(variable_group)
+        splitter.addWidget(log_group)
+        splitter.setSizes([400, 260, 200])
+        self.main_splitter = splitter
+
+        layout.addWidget(splitter, stretch=1)
         layout.setStretch(0, 0)  # header
-        layout.setStretch(1, 3)  # macro
-        layout.setStretch(2, 2)  # variable
-        layout.setStretch(3, 2)  # log
+        layout.setStretch(1, 1)  # splitter with macro/variable/log
 
     def _build_menu(self):
         menu_bar = self.menuBar()
@@ -10519,21 +10522,22 @@ class MacroWindow(QtWidgets.QMainWindow):
             self.variable_tables[key] = table
 
             btn_row = QtWidgets.QHBoxLayout()
-            add_btn = QtWidgets.QPushButton("추가")
             del_btn = QtWidgets.QPushButton("삭제")
-            btn_row.addWidget(add_btn)
+            sort_btn = QtWidgets.QPushButton("정렬")
             btn_row.addWidget(del_btn)
+            btn_row.addWidget(sort_btn)
             btn_row.addStretch()
-
-            def add_row():
-                self._append_variable_pair(table, "", "")
 
             def del_rows():
                 if not self._delete_selected_variable_pairs(table):
                     self._pop_last_variable_pair(table)
 
-            add_btn.clicked.connect(add_row)
+            def sort_rows():
+                pairs = self._sort_pairs_by_name(self._variable_pairs_from_table(table))
+                self._set_variable_pairs(table, pairs)
+
             del_btn.clicked.connect(del_rows)
+            sort_btn.clicked.connect(sort_rows)
 
             tab_layout.addWidget(table)
             tab_layout.addLayout(btn_row)
@@ -10603,20 +10607,53 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.macro_table.doubleClicked.connect(lambda _: self._edit_macro())
         self.macro_table.customContextMenuRequested.connect(self._macro_context_menu)
 
+    # 정렬/키 헬퍼 ---------------------------------------------------------
+    def _name_sort_key(self, name: str):
+        """
+        이름을 글자 단위로 정렬 키로 변환한다.
+        우선순위: 한글(0) > 영문(1) > 숫자(2) > 기타(3), 이후 동일 순서로 다음 글자를 비교한다.
+        """
+
+        def _bucket(ch: str) -> int:
+            if ch.isascii() and ch.isalpha():
+                return 0  # 영문 우선
+            if "가" <= ch <= "힣":
+                return 1  # 한글
+            if ch.isdigit():
+                return 2  # 숫자
+            return 3      # 기타 기호
+
+        if not name:
+            return ((3, ""),)
+
+        key_parts = [(_bucket(ch), ch.casefold()) for ch in name]
+        # 길이 차이로 끝까지 동일한 경우를 안정적으로 구분
+        key_parts.append((4, len(name)))
+        return tuple(key_parts)
+
+    def _sorted_preset_names(self) -> list[str]:
+        names = list(self._presets.keys())
+        return sorted(
+            names,
+            key=lambda n: (-1, "") if n == "사용자 설정" else self._name_sort_key(n),
+        )
+
+    def _sort_pairs_by_name(self, pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        return sorted(pairs, key=lambda pair: self._name_sort_key(pair[0]))
+
     # Variable helpers ---------------------------------------------------
     def _on_variable_item_changed(self, _item):
         if getattr(self, "_updating_variables", False):
             return
         self._mark_dirty()
         self._refresh_variable_completers()
+        self._ensure_trailing_blank(_item.tableWidget() if hasattr(_item, "tableWidget") else None)
 
-    def _configure_variable_table(self, table: QtWidgets.QTableWidget, *, pairs_per_row: int = 4):
-        table.setProperty("pairs_per_row", max(1, pairs_per_row))
-        table.setColumnCount(pairs_per_row * 2)
-        headers: list[str] = []
-        for idx in range(pairs_per_row):
-            headers.extend([f"이름{idx + 1}", f"값{idx + 1}"])
-        table.setHorizontalHeaderLabels(headers)
+    def _configure_variable_table(self, table: QtWidgets.QTableWidget, *, rows_per_column: int = 12):
+        table.setProperty("rows_per_column", max(1, rows_per_column))
+        table.setColumnCount(2)
+        table.setRowCount(rows_per_column)
+        table.setHorizontalHeaderLabels(["이름1", "값1"])
         header = _VariableHeader(QtCore.Qt.Orientation.Horizontal, table)
         table.setHorizontalHeader(header)
         header.setDefaultSectionSize(90)
@@ -10635,16 +10672,31 @@ class MacroWindow(QtWidgets.QMainWindow):
         )
         table.setItemDelegate(_VariableSeparatorDelegate(table))
 
-    def _variable_pairs_per_row(self, table: QtWidgets.QTableWidget) -> int:
-        return max(1, int(table.property("pairs_per_row") or 4))
+    def _rows_per_column(self, table: QtWidgets.QTableWidget) -> int:
+        base = int(table.property("rows_per_column") or 12)
+        vh = table.verticalHeader() if hasattr(table, "verticalHeader") else None
+        row_h = vh.defaultSectionSize() if vh else (table.fontMetrics().height() + 8)
+        view_h = table.viewport().height() if hasattr(table, "viewport") else 0
+        auto = int(view_h / row_h) if view_h and row_h else base
+        return max(1, auto or base or 12)
+
+    def _ensure_trailing_blank(self, table: QtWidgets.QTableWidget | None):
+        if table is None:
+            return
+        rows_per_col = self._rows_per_column(table)
+        pairs = self._variable_pairs_from_table(table)
+        capacity = (table.columnCount() // 2) * rows_per_col
+        if len(pairs) >= capacity:
+            self._set_variable_pairs(table, pairs)
 
     def _variable_pairs_from_table(self, table: QtWidgets.QTableWidget) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
-        per_row = self._variable_pairs_per_row(table)
-        for row in range(table.rowCount()):
-            for pidx in range(per_row):
-                name_item = table.item(row, pidx * 2)
-                val_item = table.item(row, pidx * 2 + 1)
+        rows = table.rowCount()
+        cols = table.columnCount()
+        for c in range(0, cols, 2):
+            for r in range(rows):
+                name_item = table.item(r, c)
+                val_item = table.item(r, c + 1) if c + 1 < cols else None
                 name = name_item.text().strip() if name_item else ""
                 val = val_item.text().strip() if val_item else ""
                 if not name and not val:
@@ -10653,21 +10705,22 @@ class MacroWindow(QtWidgets.QMainWindow):
         return pairs
 
     def _set_variable_pairs(self, table: QtWidgets.QTableWidget, pairs: list[tuple[str, str]]):
-        per_row = self._variable_pairs_per_row(table)
-        cols = per_row * 2
-        rows = math.ceil(len(pairs) / per_row) if pairs else 0
+        rows_per_col = self._rows_per_column(table)
+        slots_needed = len(pairs) + 1  # 항상 한 칸 여유를 둔다.
+        cols = max(1, math.ceil(slots_needed / rows_per_col)) * 2
+        rows = rows_per_col
         prev_updating = getattr(self, "_updating_variables", False)
         self._updating_variables = True
         try:
             table.setColumnCount(cols)
             headers: list[str] = []
-            for idx in range(per_row):
+            for idx in range(cols // 2):
                 headers.extend([f"이름{idx + 1}", f"값{idx + 1}"])
             table.setHorizontalHeaderLabels(headers)
             table.setRowCount(rows)
             for idx, (name, val) in enumerate(pairs):
-                r = idx // per_row
-                c = (idx % per_row) * 2
+                r = idx % rows_per_col
+                c = (idx // rows_per_col) * 2
                 table.setItem(r, c, QtWidgets.QTableWidgetItem(name))
                 table.setItem(r, c + 1, QtWidgets.QTableWidgetItem(val))
         finally:
@@ -10685,9 +10738,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         indexes = table.selectionModel().selectedIndexes()
         if not indexes:
             return False
-        per_row = self._variable_pairs_per_row(table)
+        rows_per_col = self._rows_per_column(table)
         to_remove = sorted(
-            {idx.row() * per_row + (idx.column() // 2) for idx in indexes},
+            {(idx.column() // 2) * rows_per_col + idx.row() for idx in indexes},
             reverse=True,
         )
         pairs = self._variable_pairs_from_table(table)
@@ -10747,7 +10800,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         try:
             for cat, table in self.variable_tables.items():
                 data = getattr(variables, cat, {}) or {}
-                pairs = list(data.items())
+                pairs = self._sort_pairs_by_name(list(data.items()))
                 table.clearContents()
                 table.setRowCount(0)
                 self._set_variable_pairs(table, pairs)
