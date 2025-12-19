@@ -48,6 +48,8 @@ from lib.keyboard import get_keystate
 from lib.processes import get_foreground_process, list_processes
 from lib.pixel import RGB, Region, capture_region
 
+MAX_RECENT_PROFILES = 15
+
 
 def _is_admin() -> bool:
     if not sys.platform.startswith("win"):
@@ -106,6 +108,24 @@ def _short_hwid(hwid: str) -> str:
     if match:
         return f"VID_{match.group(1).upper()} PID_{match.group(2).upper()}"
     return hwid
+
+
+def _normalize_profile_path(path: str) -> str:
+    try:
+        return str(Path(path).expanduser().resolve())
+    except Exception:
+        try:
+            return str(Path(path))
+        except Exception:
+            return str(path)
+
+
+def _elide_middle(text: str, max_len: int = 60) -> str:
+    if not text or len(text) <= max_len:
+        return text
+    head = max(3, max_len // 2 - 2)
+    tail = max(3, max_len - head - 3)
+    return f"{text[:head]}...{text[-tail:]}"
 
 
 def _default_macro() -> Macro:
@@ -2692,15 +2712,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
     def _on_image_changed(self, idx: int):
         self._select_index(idx)
 
-    def _read_metadata(self, path: Path) -> dict | None:
-        try:
-            meta_path = path.with_suffix(path.suffix + ".json")
-            if not meta_path.exists():
-                return None
-            return json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
-
     def _select_index(self, idx: int):
         self._pending_state = self._capture_view_state()
         if not self._image_files:
@@ -2717,23 +2728,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             img = self.canvas._image
             dims = f"{img.width()}x{img.height()}" if isinstance(img, QtGui.QImage) else "-"
             self._status_prefix = f"{path.name} | {path.stat().st_size / 1024:.1f} KB, {dims}"
-            meta = self._read_metadata(path)
-            if meta:
-                meta_parts = []
-                if meta.get("type"):
-                    meta_parts.append(str(meta.get("type")))
-                if meta.get("label"):
-                    meta_parts.append(str(meta.get("label")))
-                if meta.get("fail_path"):
-                    meta_parts.append(str(meta.get("fail_path")))
-                if meta.get("timestamp"):
-                    try:
-                        ts_txt = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(meta.get("timestamp"))))
-                        meta_parts.append(ts_txt)
-                    except Exception:
-                        pass
-                if meta_parts:
-                    self._status_prefix += " | 메타: " + " / ".join(meta_parts)
             self._last_sample = None
             self._restore_view_state()
         else:
@@ -3171,6 +3165,53 @@ class _VariableSeparatorDelegate(QtWidgets.QStyledItemDelegate):
         rect = option.rect
         painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
         painter.restore()
+
+
+class _ProfileListDelegate(QtWidgets.QStyledItemDelegate):
+    def _to_brush(self, value):
+        if isinstance(value, QtGui.QBrush):
+            return value
+        if isinstance(value, QtGui.QColor):
+            return QtGui.QBrush(value)
+        if isinstance(value, str):
+            return QtGui.QBrush(QtGui.QColor(value))
+        return None
+
+    def paint(
+        self,
+        painter: QtGui.QPainter,
+        option: QtWidgets.QStyleOptionViewItem,
+        index: QtCore.QModelIndex,
+    ):
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+
+        bg_brush = self._to_brush(index.data(QtCore.Qt.ItemDataRole.BackgroundRole))
+        fg_brush = self._to_brush(index.data(QtCore.Qt.ItemDataRole.ForegroundRole))
+
+        if bg_brush:
+            try:
+                hover_flag = QtWidgets.QStyle.StateFlag.State_MouseOver  # Qt6
+            except AttributeError:
+                hover_flag = QtWidgets.QStyle.State_MouseOver  # Qt5 fallback
+            opt.state &= ~hover_flag
+
+        if bg_brush:
+            painter.save()
+            painter.fillRect(opt.rect, bg_brush)
+            painter.restore()
+            opt.backgroundBrush = bg_brush
+            opt.palette.setBrush(QtGui.QPalette.ColorRole.Base, bg_brush)
+            opt.palette.setBrush(QtGui.QPalette.ColorRole.Highlight, bg_brush)
+        if fg_brush:
+            for role in (
+                QtGui.QPalette.ColorRole.Text,
+                QtGui.QPalette.ColorRole.WindowText,
+                QtGui.QPalette.ColorRole.HighlightedText,
+            ):
+                opt.palette.setBrush(role, fg_brush)
+
+        super().paint(painter, opt, index)
 
 
 class _VariableHeader(QtWidgets.QHeaderView):
@@ -9769,6 +9810,17 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._image_viewer_state = self._state.get("image_viewer", {}) if isinstance(self._state, dict) else {}
         self._color_calc_state = self._state.get("color_calc", {}) if isinstance(self._state, dict) else {}
         self._log_enabled = bool(self._state.get("log_enabled", True)) if isinstance(self._state, dict) else True
+        history_state = self._state.get("profile_history", {}) if isinstance(self._state, dict) else {}
+        self._recent_profiles: list[str] = self._dedupe_profile_paths(
+            history_state.get("recent", []) if isinstance(history_state, dict) else []
+        )
+        self._favorite_profiles: list[str] = self._dedupe_profile_paths(
+            history_state.get("favorites", []) if isinstance(history_state, dict) else []
+        )
+        self._syncing_profile_lists = False
+        last_path = self._state.get("last_profile_path") if isinstance(self._state, dict) else None
+        if last_path:
+            self._recent_profiles = self._dedupe_profile_paths([last_path, *self._recent_profiles])
         self.debugger: DebuggerDialog | None = None
         self._image_viewer_dialog: ImageViewerDialog | None = None
         self._color_calc_dialog: ColorToleranceDialog | None = None
@@ -9817,6 +9869,8 @@ class MacroWindow(QtWidgets.QMainWindow):
 
         self._build_ui()
         self._build_menu()
+        self._refresh_profile_header()
+        self._refresh_profile_lists()
         self._install_shortcuts()
         loaded = self._load_last_session()
         if not loaded:
@@ -9896,7 +9950,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(6)
         header_layout.addWidget(self._build_status_row())
-        header_layout.addWidget(self._build_device_group())
+        header_layout.addWidget(self._build_profile_strip())
         layout.addWidget(header)
 
         macro_group = self._build_macro_group()
@@ -10230,6 +10284,140 @@ class MacroWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
 
+    def _build_profile_strip(self):
+        group = QtWidgets.QFrame()
+        group.setObjectName("profileStrip")
+        group.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        group.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
+        group.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
+
+        layout = QtWidgets.QVBoxLayout(group)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(6)
+        title = QtWidgets.QLabel("설정 파일")
+        title.setStyleSheet("font-weight: 600;")
+        self.profile_path_label = QtWidgets.QLabel("새 프로필 (미저장)")
+        self.profile_path_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.profile_path_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.profile_path_label.setMinimumHeight(22)
+
+        theme = self._theme
+        btn_style = (
+            f"padding: 4px 10px; border: 1px solid {theme['button_border']}; "
+            f"border-radius: 6px; background: {theme['button_bg']}; color: {theme['button_text']};"
+        )
+
+        def _btn(text: str):
+            b = QtWidgets.QPushButton(text)
+            b.setMinimumHeight(26)
+            b.setStyleSheet(btn_style)
+            return b
+
+        self.quick_load_btn = _btn("불러오기")
+        self.quick_save_btn = _btn("저장")
+        self.quick_save_as_btn = _btn("다른 이름")
+
+        top_row.addWidget(title)
+        top_row.addWidget(self.profile_path_label, 1)
+        top_row.addWidget(self.quick_load_btn)
+        top_row.addWidget(self.quick_save_btn)
+        top_row.addWidget(self.quick_save_as_btn)
+        layout.addLayout(top_row)
+
+        lists_row = QtWidgets.QHBoxLayout()
+        lists_row.setContentsMargins(0, 0, 0, 0)
+        lists_row.setSpacing(10)
+
+        fav_col = QtWidgets.QVBoxLayout()
+        fav_col.setContentsMargins(0, 0, 0, 0)
+        fav_col.setSpacing(4)
+        fav_head = QtWidgets.QHBoxLayout()
+        fav_head.setContentsMargins(0, 0, 0, 0)
+        fav_head.setSpacing(4)
+        self.fav_label = QtWidgets.QLabel("즐겨찾기 (0)")
+        self.fav_label.setStyleSheet("font-weight: 600;")
+        self.fav_load_btn = _btn("불러오기")
+        self.fav_load_btn.setMinimumHeight(24)
+        self.fav_remove_btn = _btn("즐겨찾기 해제")
+        self.fav_remove_btn.setMinimumHeight(24)
+        fav_head.addWidget(self.fav_label)
+        fav_head.addStretch()
+        fav_head.addWidget(self.fav_load_btn)
+        fav_head.addWidget(self.fav_remove_btn)
+        fav_col.addLayout(fav_head)
+        self.favorite_list = QtWidgets.QListWidget()
+        self.favorite_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.favorite_list.setAlternatingRowColors(False)
+        self.favorite_list.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
+        self.favorite_list.setMaximumHeight(120)
+        self.favorite_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        fav_col.addWidget(self.favorite_list)
+
+        rec_col = QtWidgets.QVBoxLayout()
+        rec_col.setContentsMargins(0, 0, 0, 0)
+        rec_col.setSpacing(4)
+        rec_head = QtWidgets.QHBoxLayout()
+        rec_head.setContentsMargins(0, 0, 0, 0)
+        rec_head.setSpacing(4)
+        self.recent_label = QtWidgets.QLabel("최근 불러온 (0)")
+        self.recent_label.setStyleSheet("font-weight: 600;")
+        self.recent_load_btn = _btn("불러오기")
+        self.recent_load_btn.setMinimumHeight(24)
+        self.recent_to_fav_btn = _btn("즐겨찾기 추가")
+        self.recent_to_fav_btn.setMinimumHeight(24)
+        self.recent_clear_btn = _btn("비우기")
+        self.recent_clear_btn.setMinimumHeight(24)
+        rec_head.addWidget(self.recent_label)
+        rec_head.addStretch()
+        rec_head.addWidget(self.recent_load_btn)
+        rec_head.addWidget(self.recent_to_fav_btn)
+        rec_head.addWidget(self.recent_clear_btn)
+        rec_col.addLayout(rec_head)
+        self.recent_list = QtWidgets.QListWidget()
+        self.recent_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.recent_list.setAlternatingRowColors(False)
+        self.recent_list.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
+        self.recent_list.setMaximumHeight(120)
+        self.recent_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        rec_col.addWidget(self.recent_list)
+
+        self._fav_list_delegate = _ProfileListDelegate(self.favorite_list)
+        self.favorite_list.setItemDelegate(self._fav_list_delegate)
+        self._recent_list_delegate = _ProfileListDelegate(self.recent_list)
+        self.recent_list.setItemDelegate(self._recent_list_delegate)
+
+        lists_row.addLayout(fav_col, 1)
+        lists_row.addLayout(rec_col, 1)
+        layout.addLayout(lists_row)
+
+        sel_bg = "#2c4a7a" if theme["is_dark"] else "#dce7ff"
+        sel_fg = "#ffffff" if theme["is_dark"] else "#1f3f73"
+        hover_bg = theme["panel_alt_bg"]
+        base_bg = "#ffffff" if not theme["is_dark"] else "#111318"
+        list_style = (
+            f"QListWidget {{ border: 1px solid {theme['panel_border']}; border-radius: 0px; padding: 0px; background: {base_bg}; }}"
+            f"QListWidget {{ outline: 0; }}"
+            f"QListWidget::item {{ padding: 6px 10px; margin: 0; border: none; border-radius: 0px; }}"
+            f"QListWidget::item:hover {{ background: {hover_bg}; color: {theme['text']}; border: none; border-radius: 0px; }}"
+            f"QListWidget::item:selected {{ background: {sel_bg}; color: {sel_fg}; border: none; outline: 0; border-radius: 0px; }}"
+            f"QListWidget::item:selected:active {{ background: {sel_bg}; color: {sel_fg}; border: none; outline: 0; border-radius: 0px; }}"
+            f"QListWidget::item:selected:!active {{ background: {sel_bg}; color: {sel_fg}; border: none; outline: 0; border-radius: 0px; }}"
+            f"QListWidget::item:selected:hover {{ background: {sel_bg}; color: {sel_fg}; border: none; outline: 0; border-radius: 0px; }}"
+            f"QListWidget::item:focus {{ outline: none; border: none; border-radius: 0px; }}"
+        )
+        self.favorite_list.setStyleSheet(list_style)
+        self.recent_list.setStyleSheet(list_style)
+
+        group.setStyleSheet(
+            f"#profileStrip {{ border: 1px solid {theme['panel_border']}; border-radius: 8px; "
+            f"background: {theme['panel_bg']}; color: {theme['text']}; }}"
+        )
+        return group
+
     def _build_status_row(self):
         container = QtWidgets.QFrame()
         container.setObjectName("statusStrip")
@@ -10245,6 +10433,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.active_label = QtWidgets.QLabel("비활성")
         self.paused_label = QtWidgets.QLabel("정상")
         self.admin_label = QtWidgets.QLabel("관리자(?)")
+        self.hardware_label = QtWidgets.QLabel("하드웨어(?)")
         self.capture_label = QtWidgets.QLabel("")
         self.log_toggle_btn = QtWidgets.QToolButton()
         self.log_toggle_btn.setCheckable(True)
@@ -10261,8 +10450,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             f"border-radius: 6px; background: {theme['badge_bg']}; color: {theme['text']};"
         )
         self._status_badge_style = badge_style
-        for lbl in (self.running_label, self.active_label, self.paused_label, self.admin_label, self.capture_label):
-            lbl.setMinimumWidth(60)
+        for lbl in (self.running_label, self.active_label, self.paused_label, self.admin_label, self.hardware_label, self.capture_label):
+            lbl.setMinimumWidth(66)
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet(badge_style)
         self.capture_label.setVisible(False)
@@ -10277,8 +10466,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         badge_grid.addWidget(self.active_label, 0, 1)
         badge_grid.addWidget(self.paused_label, 0, 2)
         badge_grid.addWidget(self.admin_label, 1, 0)
-        badge_grid.addWidget(self.capture_label, 1, 1)
-        badge_grid.addWidget(self.log_toggle_btn, 1, 2)
+        badge_grid.addWidget(self.hardware_label, 1, 1)
+        badge_grid.addWidget(self.capture_label, 1, 2)
+        badge_grid.addWidget(self.log_toggle_btn, 1, 3)
 
         badge_block = QtWidgets.QVBoxLayout()
         badge_block.setContentsMargins(0, 0, 0, 0)
@@ -10584,6 +10774,18 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.deactivate_btn.clicked.connect(self.engine.deactivate)
         self.pause_btn.clicked.connect(self.engine.toggle_pause)
         self.apply_btn.clicked.connect(self._handle_apply_click)
+        self.quick_load_btn.clicked.connect(self._load_profile)
+        self.quick_save_btn.clicked.connect(self._save_profile)
+        self.quick_save_as_btn.clicked.connect(self._save_profile_as)
+        self.recent_load_btn.clicked.connect(lambda: self._load_selected_profile(self.recent_list))
+        self.fav_load_btn.clicked.connect(lambda: self._load_selected_profile(self.favorite_list))
+        self.recent_to_fav_btn.clicked.connect(self._favorite_selected_recent)
+        self.recent_clear_btn.clicked.connect(self._clear_recent_profiles)
+        self.fav_remove_btn.clicked.connect(self._remove_selected_favorite)
+        self.recent_list.itemDoubleClicked.connect(self._open_profile_item)
+        self.favorite_list.itemDoubleClicked.connect(self._open_profile_item)
+        self.recent_list.itemSelectionChanged.connect(self._on_recent_selection_changed)
+        self.favorite_list.itemSelectionChanged.connect(self._on_favorite_selection_changed)
         if hasattr(self, "detect_res_btn"):
             self.detect_res_btn.clicked.connect(lambda: self._fill_current_resolution(silent=False))
         if hasattr(self, "detect_scale_btn"):
@@ -10596,9 +10798,12 @@ class MacroWindow(QtWidgets.QMainWindow):
             self.base_scale_edit.textChanged.connect(self._on_base_resolution_changed)
         if hasattr(self, "set_base_btn"):
             self.set_base_btn.clicked.connect(self._set_base_from_current_resolution)
-        self.keyboard_settings_btn.clicked.connect(self._open_keyboard_settings)
-        self.keyboard_test_btn.clicked.connect(self._run_keyboard_test_main)
-        self.keyboard_install_btn.clicked.connect(self._run_interception_installer)
+        if hasattr(self, "keyboard_settings_btn"):
+            self.keyboard_settings_btn.clicked.connect(self._open_keyboard_settings)
+        if hasattr(self, "keyboard_test_btn"):
+            self.keyboard_test_btn.clicked.connect(self._run_keyboard_test_main)
+        if hasattr(self, "keyboard_install_btn"):
+            self.keyboard_install_btn.clicked.connect(self._run_interception_installer)
 
         self.add_macro_btn.clicked.connect(self._add_macro)
         self.edit_macro_btn.clicked.connect(self._edit_macro)
@@ -10922,6 +11127,208 @@ class MacroWindow(QtWidgets.QMainWindow):
         state[key] = value
         self._state = state
         self._write_state(state)
+
+    def _dedupe_profile_paths(self, items) -> list[str]:
+        seen = set()
+        result: list[str] = []
+        for raw in items or []:
+            if not isinstance(raw, str):
+                continue
+            norm = _normalize_profile_path(raw)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            result.append(norm)
+        return result[:MAX_RECENT_PROFILES]
+
+    def _persist_profile_history(self):
+        self._update_state(
+            "profile_history",
+            {
+                "recent": self._recent_profiles,
+                "favorites": self._favorite_profiles,
+            },
+        )
+
+    def _profile_display_text(self, path: str) -> str:
+        try:
+            p = Path(path)
+            parent = p.parent.name or str(p.parent)
+            return f"{p.name} · {parent}"
+        except Exception:
+            return path
+
+    def _record_recent_profile(self, path: str | None):
+        if not path:
+            return
+        norm = _normalize_profile_path(path)
+        if not norm:
+            return
+        self._recent_profiles = [p for p in self._recent_profiles if p != norm]
+        self._recent_profiles.insert(0, norm)
+        self._recent_profiles = self._recent_profiles[:MAX_RECENT_PROFILES]
+        self._persist_profile_history()
+        self._refresh_profile_lists()
+
+    def _set_favorite_path(self, path: str | None, *, favorite: bool = True):
+        if not path:
+            return
+        norm = _normalize_profile_path(path)
+        if not norm:
+            return
+        if favorite:
+            if norm not in self._favorite_profiles:
+                self._favorite_profiles.insert(0, norm)
+                self._favorite_profiles = self._favorite_profiles[:MAX_RECENT_PROFILES]
+        else:
+            self._favorite_profiles = [p for p in self._favorite_profiles if p != norm]
+        self._persist_profile_history()
+        self._refresh_profile_lists()
+        self._refresh_profile_header()
+
+    def _clear_recent_profiles(self):
+        if not self._recent_profiles:
+            return
+        res = QtWidgets.QMessageBox.question(
+            self,
+            "최근 목록 비우기",
+            "최근에 불러온 설정 목록을 모두 비울까요?",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if res != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self._recent_profiles = []
+        self._persist_profile_history()
+        self._refresh_profile_lists()
+
+    def _refresh_profile_lists(self):
+        if not hasattr(self, "recent_list"):
+            return
+
+        def _fill_list(widget: QtWidgets.QListWidget, paths: list[str], *, highlight_current: bool):
+            widget.clear()
+            for path in paths:
+                item = QtWidgets.QListWidgetItem(self._profile_display_text(path))
+                item.setToolTip(path)
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, path)
+                norm = _normalize_profile_path(path)
+                if highlight_current and current_norm and norm == current_norm:
+                    # 현재 불러온 프로필은 배경/글자색을 강조
+                    bg = QtGui.QColor(active_bg)
+                    fg = QtGui.QColor(active_fg)
+                    item.setData(QtCore.Qt.ItemDataRole.BackgroundRole, bg)
+                    item.setData(QtCore.Qt.ItemDataRole.ForegroundRole, fg)
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                widget.addItem(item)
+            widget.setEnabled(bool(paths))
+
+        current_norm = _normalize_profile_path(self.current_profile_path) if self.current_profile_path else None
+        # 강조 색상: 밝은 테마는 짙은 주황, 어두운 테마는 선명한 녹색
+        active_bg = "#ffe08a" if not self._theme.get("is_dark") else "#2faa4f"
+        active_fg = "#2d1b00" if not self._theme.get("is_dark") else "#f0fff0"
+
+        in_favorites = current_norm in self._favorite_profiles if current_norm else False
+        highlight_recent = bool(current_norm and not in_favorites)
+        highlight_fav = bool(current_norm and in_favorites)
+
+        _fill_list(self.recent_list, self._recent_profiles, highlight_current=highlight_recent)
+        _fill_list(self.favorite_list, self._favorite_profiles, highlight_current=highlight_fav)
+        if hasattr(self, "recent_label"):
+            self.recent_label.setText(f"최근 불러온 ({len(self._recent_profiles)})")
+        if hasattr(self, "fav_label"):
+            self.fav_label.setText(f"즐겨찾기 ({len(self._favorite_profiles)})")
+        self._update_profile_list_buttons()
+
+    def _refresh_profile_header(self):
+        if not hasattr(self, "profile_path_label"):
+            return
+        path = self.current_profile_path
+        if path:
+            self.profile_path_label.setText(_elide_middle(str(path), 72))
+            self.profile_path_label.setToolTip(str(path))
+        else:
+            self.profile_path_label.setText("새 프로필 (미저장)")
+            self.profile_path_label.setToolTip("파일로 저장하거나 불러오면 목록에 표시됩니다.")
+
+    def _selected_profile_path(self, widget: QtWidgets.QListWidget) -> str | None:
+        item = widget.currentItem()
+        if not item:
+            return None
+        path = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        return str(path) if path else None
+
+    def _open_profile_item(self, item: QtWidgets.QListWidgetItem | None):
+        if item is None:
+            return
+        path = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if path:
+            self._open_profile_path(str(path))
+
+    def _load_selected_profile(self, widget: QtWidgets.QListWidget):
+        path = self._selected_profile_path(widget)
+        if path:
+            self._open_profile_path(path)
+
+    def _favorite_selected_recent(self):
+        path = self._selected_profile_path(self.recent_list)
+        if path:
+            self._set_favorite_path(path, favorite=True)
+
+    def _on_recent_selection_changed(self):
+        if getattr(self, "_syncing_profile_lists", False):
+            return
+        self._syncing_profile_lists = True
+        try:
+            self.favorite_list.clearSelection()
+        finally:
+            self._syncing_profile_lists = False
+        self._update_profile_list_buttons()
+
+    def _on_favorite_selection_changed(self):
+        if getattr(self, "_syncing_profile_lists", False):
+            return
+        self._syncing_profile_lists = True
+        try:
+            self.recent_list.clearSelection()
+        finally:
+            self._syncing_profile_lists = False
+        self._update_profile_list_buttons()
+
+    def _remove_selected_favorite(self):
+        path = self._selected_profile_path(self.favorite_list)
+        if path:
+            self._set_favorite_path(path, favorite=False)
+
+    def _toggle_favorite_current(self):
+        # 더 이상 상단 버튼에서 즐겨찾기를 토글하지 않음. 최근/즐겨찾기 리스트 버튼을 사용한다.
+        pass
+
+    def _update_profile_list_buttons(self):
+        has_recent = bool(self.recent_list.selectedItems())
+        has_fav = bool(self.favorite_list.selectedItems())
+        for btn in (self.recent_load_btn, self.recent_to_fav_btn):
+            btn.setEnabled(has_recent)
+        for btn in (self.fav_load_btn, self.fav_remove_btn):
+            btn.setEnabled(has_fav)
+        if hasattr(self, "recent_clear_btn"):
+            self.recent_clear_btn.setEnabled(bool(self._recent_profiles))
+
+    def _open_profile_path(self, path: str):
+        if not path:
+            return
+        if not Path(path).exists():
+            QtWidgets.QMessageBox.warning(self, "불러오기 실패", "파일이 존재하지 않습니다.")
+            self._recent_profiles = [p for p in self._recent_profiles if p != path]
+            self._favorite_profiles = [p for p in self._favorite_profiles if p != path]
+            self._persist_profile_history()
+            self._refresh_profile_lists()
+            return
+        if not self._confirm_save_if_dirty():
+            return
+        self._load_profile_from_path(path)
 
     def _persist_screenshot_state(self, data: dict):
         self._update_state("screenshot", data)
@@ -11291,6 +11698,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             pass
         self._loading_profile = False
         self._mark_dirty(True)
+        self._refresh_profile_header()
         self._append_log("새 프로필 생성")
 
     def _load_profile_from_path(self, path: str, *, show_error_dialog: bool = True, add_log: bool = True) -> bool:
@@ -11322,6 +11730,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             pass
         self._loading_profile = False
         self._mark_dirty(False)
+        self._record_recent_profile(path)
+        self._refresh_profile_header()
         if add_log:
             self._append_log(f"프로필 불러옴: {path}")
         return True
@@ -11377,6 +11787,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.current_profile_path = path
         self._persist_last_profile_path(path)
         self._mark_dirty(False)
+        self._record_recent_profile(path)
+        self._refresh_profile_header()
         self._append_log(f"프로필 저장: {path}")
         return True
 
@@ -12095,6 +12507,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         base = getattr(self, "_status_badge_style", "")
         if hasattr(self, "paused_label") and label is self.paused_label:
             color = "#d98c3b" if on else "limegreen"
+            label.setStyleSheet(f"{base} color: {color}; font-weight: bold;")
+            return
+        if hasattr(self, "running_label") and label is self.running_label and on:
+            label.setStyleSheet(
+                f"{base} color: #ffffff; background: #2c7a3d; border-color: #1f5f2d; font-weight: bold;"
+            )
+            return
         else:
             color = "limegreen" if on else "gray"
         label.setStyleSheet(f"{base} color: {color}; font-weight: bold;")
@@ -12119,8 +12538,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         installed = bool(hardware.get("installed"))
         available = hardware.get("available")
         admin_ok = hardware.get("admin")
-        device = hardware.get("current_device") or {}
-        mouse_device = hardware.get("current_mouse") or {}
 
         if active == "hardware":
             if installed and (available is True or available is None) and admin_ok is not False:
@@ -12141,39 +12558,17 @@ class MacroWindow(QtWidgets.QMainWindow):
             if requested == "hardware":
                 mode_txt += " (폴백)"
 
-        dev_txt = "-"
-        if device:
-            friendly = device.get("friendly_name") or device.get("hardware_id") or "알 수 없음"
-            dev_txt = friendly
-            if device.get("id"):
-                dev_txt += f" #{device.get('id')}"
-        mouse_txt = "-"
-        if mouse_device:
-            friendly_mouse = mouse_device.get("friendly_name") or mouse_device.get("hardware_id") or "알 수 없음"
-            mouse_txt = friendly_mouse
-            if mouse_device.get("id"):
-                mouse_txt += f" #{mouse_device.get('id')}"
-
-        self.keyboard_mode_label.setText(mode_txt)
-        self.keyboard_mode_label.setStyleSheet(f"color: {color}; font-weight: bold;")
-        self.keyboard_device_label.setText(dev_txt)
-        self.keyboard_device_label.setStyleSheet("color: #333;")
-        self.mouse_device_label.setText(mouse_txt)
-        self.mouse_device_label.setStyleSheet("color: #333;")
+        if hasattr(self, "hardware_label"):
+            base = getattr(self, "_status_badge_style", "")
+            self.hardware_label.setText(mode_txt)
+            self.hardware_label.setStyleSheet(f"{base} color: {color}; font-weight: bold;")
 
         test_key = backend.get("keyboard_test_key") or getattr(self.profile, "keyboard_test_key", "f24")
-        self.keyboard_test_btn.setText(f"테스트 ({str(test_key).upper()})")
         self.profile.input_mode = requested
         self.profile.keyboard_test_key = test_key
-        if device:
-            self.profile.keyboard_device_id = device.get("id")
-            self.profile.keyboard_hardware_id = device.get("hardware_id")
-        if mouse_device:
-            self.profile.mouse_device_id = mouse_device.get("id")
-            self.profile.mouse_hardware_id = mouse_device.get("hardware_id")
         hint = getattr(self, "_status_hint", "")
         if hint:
-            self.statusBar().showMessage(f"{hint} | 입력 {mode_txt} (키보드 {dev_txt}, 마우스 {mouse_txt})")
+            self.statusBar().showMessage(f"{hint} | 입력 {mode_txt}")
         prev_active = (prev_backend or {}).get("active_mode")
         if prev_active == "hardware" and active != "hardware":
             self._append_log("Interception 불가 또는 장치 미검출로 소프트웨어 입력으로 전환되었습니다.")
