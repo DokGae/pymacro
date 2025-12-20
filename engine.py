@@ -439,31 +439,35 @@ class Action:
     @staticmethod
     def parse_repeat(raw: Any) -> tuple[int, Optional[tuple[int, int]], Optional[str]]:
         """
-        반복 횟수 파서. 정수 또는 \"a-b\" 범위를 허용한다.
+        반복 횟수 파서. 정수 또는 "a~b" 범위를 허용한다.
         returns: (repeat_value, repeat_range, repeat_raw)
         """
         text = str(raw).strip() if raw is not None else ""
         if text == "":
             return 1, None, None
-        if "-" in text:
-            parts = [p.strip() for p in text.split("-")]
+        sep = "~" if "~" in text else "-"
+        if sep in text:
+            parts = [p.strip() for p in text.split(sep)]
             if len(parts) != 2 or any(not p for p in parts):
-                raise ValueError("반복은 정수 또는 범위(예: 1-3)여야 합니다.")
+                raise ValueError("반복은 정수 또는 범위(예: 1~3)여야 합니다.")
             try:
                 first, second = (int(parts[0]), int(parts[1]))
             except Exception as exc:
-                raise ValueError("반복은 정수 또는 범위(예: 1-3)여야 합니다.") from exc
+                raise ValueError("반복은 정수 또는 범위(예: 1~3)여야 합니다.") from exc
             low, high = sorted((first, second))
-            low = max(1, low)
-            high = max(1, high)
+            if low < 1 or high < 1:
+                raise ValueError("반복은 1 이상의 정수 또는 범위(예: 1~3)여야 합니다.")
+            normalized = f"{low}~{high}"
             if low == high:
-                return low, None, text
-            return low, (low, high), text
+                return low, None, normalized
+            return low, (low, high), normalized
         try:
             val = int(text)
         except Exception as exc:
-            raise ValueError("반복은 정수 또는 범위(예: 1-3)여야 합니다.") from exc
-        return max(1, val), None, None
+            raise ValueError("반복은 정수 또는 범위(예: 1~3)여야 합니다.") from exc
+        if val < 1:
+            raise ValueError("반복은 1 이상의 정수 또는 범위(예: 1~3)여야 합니다.")
+        return val, None, None
 
     def sleep_value_text(self) -> str:
         if self.sleep_range:

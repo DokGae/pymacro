@@ -12,8 +12,9 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 from pathlib import Path
-from typing import Any, Callable, List
+from typing import Any, Callable, List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -3360,6 +3361,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             item.setData(col, key, cached)
         return str(cached)
 
+    def _set_type_text(self, item: QtWidgets.QTreeWidgetItem, text: str):
+        key = QtCore.Qt.ItemDataRole.UserRole + 5
+        item.setText(1, text)
+        item.setData(1, key, text)
+
     def _set_drop_enabled(self, item: QtWidgets.QTreeWidgetItem, enabled: bool):
         flags = item.flags()
         if enabled:
@@ -4372,8 +4378,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.region_edit.setPlaceholderText("기본 좌표: x,y(,w,h) 또는 /변수")
         self.region_offset_edit.setPlaceholderText("+dx,dy,dw,dh (선택)")
         self.repeat_edit = QtWidgets.QLineEdit("1")
-        self.repeat_edit.setPlaceholderText("1 또는 1-3 (무작위)")
-        self.repeat_edit.setToolTip("1 이상 반복 횟수 또는 범위(예: 1-3). 프레스/다운/업/마우스 입력에 적용.")
+        self.repeat_edit.setPlaceholderText("1 → 1회 반복, 1~4 → 1~4회 랜덤 반복")
+        self.repeat_edit.setToolTip("1 → 1회 반복, 1~4 → 1~4회 랜덤 반복. 프레스/다운/업/마우스 입력에 적용.")
         self.pixel_target_edit = QtWidgets.QLineEdit("momo")
         self.group_mode_combo = QtWidgets.QComboBox()
         self.group_mode_combo.addItem("모두 실행", "all")
@@ -4503,6 +4509,62 @@ class ActionEditDialog(QtWidgets.QDialog):
     def _set_override_preset(self):
         self.override_press_edit.setText("70-120")
         self.override_gap_edit.setText("80-150")
+
+    def _parse_repeat_input(self) -> tuple[int, Optional[tuple[int, int]], Optional[str]]:
+        raw_repeat = self.repeat_edit.text() or ""
+        normalized = self._normalize_repeat_text(raw_repeat)
+        if not normalized:
+            if not raw_repeat.strip():
+                normalized = "1"
+            else:
+                raise ValueError("반복 횟수는 정수 또는 A~B 형식(정수 범위)로 입력하세요. 예: 1 또는 1~4")
+        range_match = re.fullmatch(r"(\d+)~(\d+)", normalized)
+        if range_match:
+            start, end = (int(range_match.group(1)), int(range_match.group(2)))
+            if start < 1 or end < 1:
+                raise ValueError("반복 횟수는 1 이상의 정수만 허용됩니다.")
+            if start > end:
+                raise ValueError("반복 범위는 시작값이 끝값보다 작거나 같아야 합니다.")
+            repeat_raw = f"{start}~{end}"
+            self.repeat_edit.setText(repeat_raw)
+            repeat_range = None if start == end else (start, end)
+            return start, repeat_range, repeat_raw
+        single_match = re.fullmatch(r"\d+", normalized)
+        if single_match:
+            val = int(single_match.group(0))
+            if val < 1:
+                raise ValueError("반복 횟수는 1 이상의 정수만 허용됩니다.")
+            self.repeat_edit.setText(str(val))
+            return val, None, None
+        raise ValueError("반복 횟수는 정수 또는 A~B 형식(정수 범위)로 입력하세요. 예: 1 또는 1~4")
+
+    @staticmethod
+    def _normalize_repeat_text(text: str) -> str:
+        raw = unicodedata.normalize("NFKC", str(text or ""))
+        if not raw:
+            return ""
+        # Map common range separators and strip zero-width whitespace.
+        translate_map = {
+            0xFF5E: "~",
+            0x301C: "~",
+            0x223C: "~",
+            0x2013: "~",
+            0x2014: "~",
+            0x2212: "~",
+            0x2010: "~",
+            0x2011: "~",
+            0x2012: "~",
+            0x2015: "~",
+            0xFE63: "~",
+            0xFF0D: "~",
+            0x200B: None,
+            0xFEFF: None,
+        }
+        raw = raw.translate(translate_map)
+        raw = raw.replace("-", "~")
+        raw = raw.replace("\uD68C", "").replace("\uBC88", "")
+        raw = re.sub(r"\s+", "", raw)
+        return raw
 
     def _install_var_completer(self, edit: QtWidgets.QLineEdit, category: str):
         if not self._variable_provider:
@@ -4641,7 +4703,10 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.once_check.setChecked(getattr(act, "once_per_macro", False))
         self.key_edit.setText(getattr(act, "key_raw", None) or act.key or "")
         if getattr(act, "repeat_raw", None):
-            self.repeat_edit.setText(str(act.repeat_raw))
+            repeat_raw_txt = str(act.repeat_raw).strip()
+            if "~" not in repeat_raw_txt and "-" in repeat_raw_txt:
+                repeat_raw_txt = repeat_raw_txt.replace("-", "~")
+            self.repeat_edit.setText(repeat_raw_txt)
         else:
             try:
                 self.repeat_edit.setText(str(max(1, int(getattr(act, "repeat", 1) or 1))))
@@ -4723,11 +4788,7 @@ class ActionEditDialog(QtWidgets.QDialog):
                 raise ValueError("키를 입력하세요.")
             act.key = key
             act.key_raw = key
-            repeat_txt = self.repeat_edit.text().strip() or "1"
-            try:
-                repeat_val, repeat_range, repeat_raw = Action.parse_repeat(repeat_txt)
-            except Exception:
-                raise ValueError("반복 횟수는 1 이상의 정수 또는 1-3 형식의 범위여야 합니다.")
+            repeat_val, repeat_range, repeat_raw = self._parse_repeat_input()
             act.repeat = repeat_val
             act.repeat_range = repeat_range
             act.repeat_raw = repeat_raw
@@ -4756,11 +4817,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             if pos_text:
                 act.mouse_pos_raw = pos_text
                 act.mouse_pos = _parse_point(pos_text, resolver=self._resolver)
-            repeat_txt = self.repeat_edit.text().strip() or "1"
-            try:
-                repeat_val, repeat_range, repeat_raw = Action.parse_repeat(repeat_txt)
-            except Exception:
-                raise ValueError("반복 횟수는 1 이상의 정수 또는 1-3 형식의 범위여야 합니다.")
+            repeat_val, repeat_range, repeat_raw = self._parse_repeat_input()
             act.repeat = repeat_val
             act.repeat_range = repeat_range
             act.repeat_raw = repeat_raw
@@ -5587,7 +5644,7 @@ class MacroDialog(QtWidgets.QDialog):
         updated_if = tgt._action_from_item(if_item)
         if isinstance(updated_if, Action):
             if_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, updated_if)
-            if_item.setText(1, updated_if.type)
+            tgt._set_type_text(if_item, updated_if.type)
             if_item.setText(2, updated_if.name or "")
             if_item.setText(3, tgt._format_value(updated_if))
             if_item.setText(4, tgt._format_desc(updated_if))
@@ -5700,7 +5757,7 @@ class MacroDialog(QtWidgets.QDialog):
                 except Exception:
                     pass
                 item.setData(0, QtCore.Qt.ItemDataRole.UserRole, {"marker": "__elif__", "condition": new_cond, "enabled": enabled_flag})
-                item.setText(1, "ELIF")
+                self.action_tree._set_type_text(item, "ELIF")
                 item.setText(2, new_act.name or "")
                 item.setText(3, _condition_brief(new_cond))
                 item.setText(4, new_act.description or "")
@@ -5756,7 +5813,7 @@ class MacroDialog(QtWidgets.QDialog):
                 new_act.else_actions = []
                 new_act.elif_blocks = []
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, new_act)
-            item.setText(1, new_act.type)
+            self.action_tree._set_type_text(item, new_act.type)
             item.setText(2, new_act.name or "")
             item.setText(3, self.action_tree._format_value(new_act))
             item.setText(4, self.action_tree._format_desc(new_act))
@@ -11129,8 +11186,11 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _profile_display_text(self, path: str) -> str:
         try:
             p = Path(path)
+            name = p.stem or p.name  # 확장자(.json) 숨김
             parent = p.parent.name or str(p.parent)
-            return f"{p.name} · {parent}"
+            if parent.lower() == "setting":
+                return name
+            return f"{name} · {parent}"
         except Exception:
             return path
 
