@@ -61,6 +61,14 @@ _named_vk = {
     "right": Vk.Right,
     "up": Vk.Up,
     "down": Vk.Down,
+    # 윈도우 키
+    "win": Vk.LeftWin,
+    "lwin": Vk.LeftWin,
+    "rwin": Vk.RightWin,
+    "super": Vk.LeftWin,
+    "meta": Vk.LeftWin,
+    "cmd": Vk.LeftWin,
+    "command": Vk.LeftWin,
     # OEM/기호 키
     "`": Vk.Oem3,
     "~": Vk.Oem3,
@@ -104,6 +112,16 @@ _modifier_aliases = {
     "ralt": "alt",
     "leftalt": "alt",
     "rightalt": "alt",
+    "win": "win",
+    "lwin": "win",
+    "rwin": "win",
+    "leftwin": "win",
+    "rightwin": "win",
+    "super": "win",
+    "meta": "win",
+    "cmd": "win",
+    "command": "win",
+    "windows": "win",
 }
 # 기능키 매핑
 for i in range(1, 25):

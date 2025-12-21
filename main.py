@@ -42,6 +42,8 @@ from engine import (
     KeyDelayConfig,
     DEFAULT_BASE_RESOLUTION,
     DEFAULT_BASE_SCALE,
+    normalize_trigger_key,
+    parse_trigger_keys,
 )
 from lib import keyboard as kbutil
 from lib.interception import Interception, KeyFilter, KeyState, MapVk, MouseFilter, MouseState, map_virtual_key
@@ -5127,18 +5129,38 @@ class MacroDialog(QtWidgets.QDialog):
         self._apply_scope_all_cb = apply_scope_all
         self._scope: str = "global"
         self._app_targets: list[AppTarget] = []
+        self._updating_trigger_builder = False
 
         layout = QtWidgets.QVBoxLayout(self)
 
         form = QtWidgets.QFormLayout()
         self.name_edit = QtWidgets.QLineEdit()
         self.trigger_edit = QtWidgets.QLineEdit()
+        self.trigger_edit.setPlaceholderText("예: w 또는 mouse4 (조합은 아래 체크박스로 설정)")
         self.trigger_menu_btn = QtWidgets.QToolButton()
         self.trigger_menu_btn.setText("목록")
         self.trigger_menu_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.trigger_menu = QtWidgets.QMenu(self)
         self.trigger_menu_btn.setMenu(self.trigger_menu)
         self._populate_trigger_menu()
+        self.trigger_mod_ctrl = QtWidgets.QCheckBox("Ctrl")
+        self.trigger_mod_shift = QtWidgets.QCheckBox("Shift")
+        self.trigger_mod_alt = QtWidgets.QCheckBox("Alt")
+        self.trigger_mod_win = QtWidgets.QCheckBox("Win")
+        self.trigger_main_edit = QtWidgets.QLineEdit()
+        self.trigger_main_edit.setPlaceholderText("주 키 (예: w, f1, mouse1)")
+        self.trigger_main_edit.setClearButtonEnabled(True)
+        trigger_builder_row = QtWidgets.QWidget()
+        trigger_builder_layout = QtWidgets.QHBoxLayout(trigger_builder_row)
+        trigger_builder_layout.setContentsMargins(0, 0, 0, 0)
+        for chk in (
+            self.trigger_mod_ctrl,
+            self.trigger_mod_shift,
+            self.trigger_mod_alt,
+            self.trigger_mod_win,
+        ):
+            trigger_builder_layout.addWidget(chk)
+        trigger_builder_layout.addWidget(self.trigger_main_edit, stretch=1)
         self.desc_edit = QtWidgets.QLineEdit()
         self.desc_edit.setPlaceholderText("이 매크로에 대한 메모/설명")
         trigger_row = QtWidgets.QWidget()
@@ -5166,6 +5188,7 @@ class MacroDialog(QtWidgets.QDialog):
         form.addRow("이름(선택)", self.name_edit)
         form.addRow("설명(선택)", self.desc_edit)
         form.addRow("트리거 키", trigger_row)
+        form.addRow("조합 구성", trigger_builder_row)
         form.addRow("모드 (hold/toggle)", self.mode_combo)
         form.addRow(self.stop_others_check)
         form.addRow(self.suspend_others_check)
@@ -5174,6 +5197,17 @@ class MacroDialog(QtWidgets.QDialog):
         form.addRow(self.suppress_checkbox)
         form.addRow(scope_row)
         layout.addLayout(form)
+
+        for chk in (
+            self.trigger_mod_ctrl,
+            self.trigger_mod_shift,
+            self.trigger_mod_alt,
+            self.trigger_mod_win,
+        ):
+            chk.toggled.connect(self._sync_trigger_from_builder)
+        self.trigger_main_edit.textChanged.connect(self._sync_trigger_from_builder)
+        self.trigger_edit.textChanged.connect(self._sync_builder_from_trigger_text)
+        self._sync_builder_from_trigger_text()
 
         self.action_tree = ActionTreeWidget()
         layout.addWidget(self.action_tree)
@@ -5331,6 +5365,46 @@ class MacroDialog(QtWidgets.QDialog):
         menu.addSeparator()
         for i in range(1, 13):
             add(f"F{i}", f"f{i}")
+
+    def _sync_trigger_from_builder(self):
+        if self._updating_trigger_builder:
+            return
+        parts: list[str] = []
+        if self.trigger_mod_ctrl.isChecked():
+            parts.append("ctrl")
+        if self.trigger_mod_shift.isChecked():
+            parts.append("shift")
+        if self.trigger_mod_alt.isChecked():
+            parts.append("alt")
+        if self.trigger_mod_win.isChecked():
+            parts.append("win")
+        main = self.trigger_main_edit.text().strip()
+        if main:
+            parts.append(main)
+        combined = normalize_trigger_key("+".join(parts))
+        self._updating_trigger_builder = True
+        try:
+            self.trigger_edit.setText(combined)
+        finally:
+            self._updating_trigger_builder = False
+
+    def _sync_builder_from_trigger_text(self):
+        if self._updating_trigger_builder:
+            return
+        text = self.trigger_edit.text().strip()
+        keys = parse_trigger_keys(text)
+        mods = {k for k in keys if k in ("ctrl", "shift", "alt", "win")}
+        main_key = next((k for k in keys if k not in mods), "")
+        self._updating_trigger_builder = True
+        try:
+            self.trigger_mod_ctrl.setChecked("ctrl" in mods)
+            self.trigger_mod_shift.setChecked("shift" in mods)
+            self.trigger_mod_alt.setChecked("alt" in mods)
+            self.trigger_mod_win.setChecked("win" in mods)
+            self.trigger_main_edit.setText(main_key)
+            self.trigger_edit.setText(normalize_trigger_key(text))
+        finally:
+            self._updating_trigger_builder = False
 
     def _scope_summary_text(self) -> str:
         if self._scope != "app":
@@ -5941,6 +6015,7 @@ class MacroDialog(QtWidgets.QDialog):
         self.name_edit.setText(macro.name or "")
         self.desc_edit.setText(getattr(macro, "description", "") or "")
         self.trigger_edit.setText(macro.trigger_key)
+        self._sync_builder_from_trigger_text()
         self.mode_combo.setCurrentText(macro.mode)
         self.enabled_check.setChecked(getattr(macro, "enabled", True))
         self.suppress_checkbox.setChecked(bool(macro.suppress_trigger))
@@ -5964,7 +6039,9 @@ class MacroDialog(QtWidgets.QDialog):
         self._update_stop_collapsed()
 
     def get_macro(self) -> Macro:
-        trigger = self.trigger_edit.text().strip()
+        # 빌더 체크박스/입력값을 우선 반영해 텍스트를 최신 상태로 맞춘다.
+        self._sync_trigger_from_builder()
+        trigger = normalize_trigger_key(self.trigger_edit.text().strip())
         if not trigger:
             raise ValueError("트리거 키를 입력하세요.")
         name = self.name_edit.text().strip() or None

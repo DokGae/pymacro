@@ -52,6 +52,53 @@ MacroMode = Literal["hold", "toggle"]
 VarCategory = Literal["sleep", "region", "color", "key", "var"]
 DEFAULT_BASE_RESOLUTION: tuple[int, int] = (1920, 1080)
 DEFAULT_BASE_SCALE: float = 100.0
+_TRIGGER_MOD_ALIASES = {
+    "ctrl": {"ctrl", "control", "lctrl", "rctrl", "leftctrl", "rightctrl"},
+    "shift": {"shift", "lshift", "rshift", "leftshift", "rightshift"},
+    "alt": {"alt", "lalt", "ralt", "leftalt", "rightalt", "menu"},
+    "win": {"win", "lwin", "rwin", "super", "meta", "cmd", "command", "windows"},
+}
+
+
+def _normalize_trigger_part(key: str) -> str:
+    low = str(key or "").strip().lower()
+    for canon, aliases in _TRIGGER_MOD_ALIASES.items():
+        if low in aliases:
+            return canon
+    return low
+
+
+def parse_trigger_keys(trigger_key: str) -> List[str]:
+    """'ctrl+shift+w' -> ['ctrl', 'shift', 'w']; invalid 부분은 무시."""
+    if not trigger_key:
+        return []
+    mouse_names = {"mouse1", "mouse2", "mouse3", "mouse4", "mouse5", "lmb", "rmb", "mmb", "mb4", "mb5", "x1", "x2", "mouse_left", "mouse_right", "mouse_middle"}
+    ordered_keys: List[str] = []
+    seen: Set[str] = set()
+    for raw in re.split(r"[+]", str(trigger_key)):
+        norm = _normalize_trigger_part(raw)
+        if not norm:
+            continue
+        try:
+            sc = to_scan_code(norm)
+        except Exception:
+            sc = 0
+        if sc <= 0 and norm not in mouse_names:
+            continue
+        if norm in seen:
+            continue
+        seen.add(norm)
+        ordered_keys.append(norm)
+    mod_order = ["ctrl", "shift", "alt", "win"]
+    mods = [m for m in mod_order if m in seen]
+    others = [k for k in ordered_keys if k not in mod_order]
+    return mods + others
+
+
+def normalize_trigger_key(trigger_key: str) -> str:
+    """조합키를 정규화해 저장/비교용 문자열로 만든다."""
+    keys = parse_trigger_keys(trigger_key)
+    return "+".join(keys)
 
 
 def _is_admin() -> bool:
@@ -894,7 +941,7 @@ class Macro:
             if target:
                 targets.append(target)
         return cls(
-            trigger_key=str(data.get("trigger_key") or data.get("key") or ""),
+            trigger_key=normalize_trigger_key(str(data.get("trigger_key") or data.get("key") or "")),
             mode=data.get("mode", "hold"),
             actions=actions,
             stop_actions=stop_actions,
@@ -908,6 +955,14 @@ class Macro:
             scope=scope,
             app_targets=targets,
         )
+
+    def __post_init__(self):
+        # 정규화된 형태로 유지해 비교/차단 로직을 단순화한다.
+        self.trigger_key = normalize_trigger_key(self.trigger_key)
+
+    @property
+    def trigger_keys(self) -> List[str]:
+        return parse_trigger_keys(self.trigger_key)
 
     def to_dict(self) -> Dict[str, Any]:
         targets: List[Dict[str, Any]] = []
@@ -2240,12 +2295,17 @@ class MacroEngine:
     def _swallow_keys_locked(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str]:
         ctx = app_ctx if app_ctx is not None else self._get_app_context()
         keys: List[str] = []
+        seen: Set[str] = set()
         for m in self._profile.macros:
             if not getattr(m, "enabled", True) or not m.trigger_key or not m.suppress_trigger:
                 continue
             if not self._macro_matches_app(m, ctx):
                 continue
-            keys.append(m.trigger_key)
+            for k in parse_trigger_keys(m.trigger_key):
+                if k in seen:
+                    continue
+                seen.add(k)
+                keys.append(k)
         return keys
 
     def _swallow_keys(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -2584,12 +2644,52 @@ class MacroEngine:
         }
         return pressed, detail
 
+    def _trigger_state(self, trigger: str) -> tuple[bool, Dict[str, Any]]:
+        keys = parse_trigger_keys(trigger)
+        if not keys:
+            return False, {"keys": []}
+        if len(keys) == 1:
+            pressed, detail = self._key_state_detail(keys[0])
+            merged = dict(detail)
+            merged["keys"] = [{"key": keys[0], "pressed": pressed, **detail}]
+            merged.setdefault("sw_pressed", merged.get("sw_pressed", False))
+            merged.setdefault("os_pressed", merged.get("os_pressed", False))
+            merged.setdefault("sw_age", merged.get("sw_age"))
+            merged.setdefault("sw_stale", merged.get("sw_stale", False))
+            return pressed, merged
+
+        all_pressed = True
+        details: List[Dict[str, Any]] = []
+        sw_pressed_any = False
+        os_pressed_all = True
+        sw_age: Optional[float] = None
+        sw_stale_any = False
+        for key in keys:
+            pressed, d = self._key_state_detail(key)
+            details.append({"key": key, "pressed": pressed, **d})
+            if not pressed:
+                all_pressed = False
+            sw_pressed_any = sw_pressed_any or d.get("sw_pressed", False)
+            os_pressed_all = os_pressed_all and d.get("os_pressed", False)
+            age = d.get("sw_age")
+            if age is not None:
+                sw_age = age if sw_age is None else min(sw_age, age)
+            sw_stale_any = sw_stale_any or d.get("sw_stale", False)
+        merged = {
+            "keys": details,
+            "sw_pressed": sw_pressed_any,
+            "os_pressed": os_pressed_all,
+            "sw_age": sw_age,
+            "sw_stale": sw_stale_any,
+        }
+        return all_pressed, merged
+
     def _key_pressed(self, key: str) -> bool:
         """
         트리거 키를 삼키는 경우 OS에 전달되지 않으므로 swallower가 추적한 상태로 판단.
         그 외에는 OS 키 상태를 사용.
         """
-        pressed, _ = self._key_state_detail(key)
+        pressed, _ = self._trigger_state(key)
         return pressed
 
     def _mark_sent(self, key: str):
@@ -2611,17 +2711,24 @@ class MacroEngine:
         ts = self._recent_sends.get(norm)
         return ts is not None and (time.monotonic() - ts) <= window
 
-    def _edge(self, key: str, *, ignore_recent_sec: float = 0.0) -> bool:
-        pressed = self._key_pressed(key)
-        prev = self._hotkey_states.get(key, False)
+    def _sent_recent_trigger(self, trigger: str, window: float) -> bool:
+        keys = parse_trigger_keys(trigger)
+        if not keys:
+            return False
+        return any(self._sent_recent(k, window) for k in keys)
+
+    def _edge(self, trigger: str, *, ignore_recent_sec: float = 0.0) -> bool:
+        pressed, _ = self._trigger_state(trigger)
+        norm = normalize_trigger_key(trigger)
+        prev = self._hotkey_states.get(norm, False)
 
         # 매크로가 방금 보낸 입력이면 토글로 취급하지 않는다.
-        if ignore_recent_sec > 0 and self._sent_recent(key, ignore_recent_sec):
-            self._hotkey_states[key] = pressed
+        if ignore_recent_sec > 0 and self._sent_recent_trigger(trigger, ignore_recent_sec):
+            self._hotkey_states[norm] = pressed
             return False
 
         edge = pressed and not prev
-        self._hotkey_states[key] = pressed
+        self._hotkey_states[norm] = pressed
         return edge
 
     def _log_hold_transition(
@@ -2709,7 +2816,7 @@ class MacroEngine:
                     continue
                 runner = self._macro_runners.get(idx)
                 if macro.mode == "hold":
-                    pressed, state_detail = self._key_state_detail(macro.trigger_key)
+                    pressed, state_detail = self._trigger_state(macro.trigger_key)
                     if pressed:
                         self._hold_release_since.pop(idx, None)
                         if runner is None:
