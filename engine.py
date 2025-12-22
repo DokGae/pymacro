@@ -909,6 +909,11 @@ class Macro:
     description: Optional[str] = None
     stop_others_on_trigger: bool = False
     suspend_others_while_running: bool = False
+    interaction_outgoing_mode: Literal["none", "stop", "suspend"] = "none"
+    interaction_targets: List[str] = field(default_factory=list)
+    interaction_exclude_targets: List[str] = field(default_factory=list)
+    interaction_incoming_allow: List[str] = field(default_factory=list)
+    interaction_incoming_block: List[str] = field(default_factory=list)
     scope: Literal["global", "app"] = "global"
     app_targets: List[AppTarget] = field(default_factory=list)
 
@@ -940,6 +945,22 @@ class Macro:
             target = AppTarget.from_any(item)
             if target:
                 targets.append(target)
+        def _string_list(key: str) -> List[str]:
+            raw = data.get(key, [])
+            if not isinstance(raw, list):
+                return []
+            result: List[str] = []
+            for item in raw:
+                try:
+                    text = str(item).strip()
+                except Exception:
+                    text = ""
+                if text:
+                    result.append(text)
+            return result
+        interaction_mode = str(data.get("interaction_outgoing_mode", "none") or "none").lower()
+        if interaction_mode not in ("none", "stop", "suspend"):
+            interaction_mode = "none"
         return cls(
             trigger_key=normalize_trigger_key(str(data.get("trigger_key") or data.get("key") or "")),
             mode=data.get("mode", "hold"),
@@ -952,6 +973,11 @@ class Macro:
             description=data.get("description"),
             stop_others_on_trigger=bool(data.get("stop_others_on_trigger", False)),
             suspend_others_while_running=bool(data.get("suspend_others_while_running", False)),
+            interaction_outgoing_mode=interaction_mode,
+            interaction_targets=_string_list("interaction_targets"),
+            interaction_exclude_targets=_string_list("interaction_exclude_targets"),
+            interaction_incoming_allow=_string_list("interaction_incoming_allow"),
+            interaction_incoming_block=_string_list("interaction_incoming_block"),
             scope=scope,
             app_targets=targets,
         )
@@ -982,6 +1008,11 @@ class Macro:
             "stop_actions": [a.to_dict() for a in getattr(self, "stop_actions", [])],
             "stop_others_on_trigger": getattr(self, "stop_others_on_trigger", False),
             "suspend_others_while_running": getattr(self, "suspend_others_while_running", False),
+            "interaction_outgoing_mode": getattr(self, "interaction_outgoing_mode", "none"),
+            "interaction_targets": list(getattr(self, "interaction_targets", []) or []),
+            "interaction_exclude_targets": list(getattr(self, "interaction_exclude_targets", []) or []),
+            "interaction_incoming_allow": list(getattr(self, "interaction_incoming_allow", []) or []),
+            "interaction_incoming_block": list(getattr(self, "interaction_incoming_block", []) or []),
             "scope": getattr(self, "scope", "global"),
             "app_targets": targets,
         }
@@ -1399,6 +1430,12 @@ class MacroRunner:
             "trigger_key": self.macro.trigger_key,
             "mode": self.macro.mode,
         }
+
+    def _macro_identifier(self) -> str:
+        base = (self.macro.name or "").strip().lower()
+        if not base:
+            base = (self.macro.trigger_key or "").strip().lower()
+        return base or f"macro-{self.index if self.index is not None else 'unknown'}"
 
     def _build_seq_map(self, actions: List[Action], prefix: List[int]):
         for idx, act in enumerate(actions):
@@ -2018,6 +2055,8 @@ class MacroEngine:
         self._hold_release_debounce = max(self.tick * 2, 0.05)
         # 매크로가 스스로 트리거 키를 입력했을 때 토글이 바로 꺼지는 것을 막기 위한 완충 시간.
         self._edge_block_window = max(self.tick * 5, 0.1)
+        # 키 눌림을 삼키는 동안 오래된 상태를 무시하기 위한 완충 시간.
+        self._swallow_stale_sec = max(self.tick * 25, 1.0)
         self._swallower = KeySwallower(get_interception())
         self._swallower.set_keys(self._swallow_keys())
         self._timer_lock = threading.Lock()
@@ -2043,6 +2082,110 @@ class MacroEngine:
         self._backend = None
         self._active_backend_mode: Optional[str] = None
         self._backend_status: Optional[Dict[str, Any]] = None
+
+    # ------------------------------------------------------------------ 상호작용 규칙
+    @staticmethod
+    def _normalize_targets(raw: Optional[List[str]]) -> Set[str]:
+        items: Set[str] = set()
+        for item in raw or []:
+            try:
+                text = str(item).strip().lower()
+            except Exception:
+                text = ""
+            if text:
+                items.add(text)
+        return items
+
+    def _macro_identifier(self, macro: Macro, idx: Optional[int]) -> str:
+        if getattr(macro, "name", None):
+            try:
+                name = str(macro.name).strip()
+            except Exception:
+                name = ""
+            if name:
+                return name.lower()
+        if getattr(macro, "trigger_key", None):
+            try:
+                key = str(macro.trigger_key).strip()
+            except Exception:
+                key = ""
+            if key:
+                return key.lower()
+        return f"macro-{idx}" if idx is not None else "macro-unknown"
+
+    def _interaction_mode(self, macro: Macro) -> Optional[Literal["stop", "suspend"]]:
+        mode = str(getattr(macro, "interaction_outgoing_mode", "none") or "none").lower()
+        if mode not in ("none", "stop", "suspend"):
+            mode = "none"
+        if mode == "none":
+            if getattr(macro, "stop_others_on_trigger", False):
+                mode = "stop"
+            elif getattr(macro, "suspend_others_while_running", False):
+                mode = "suspend"
+        if mode == "none":
+            return None
+        return mode  # type: ignore[return-value]
+
+    def _interaction_target_allowed(
+        self,
+        actor_macro: Macro,
+        actor_idx: int,
+        target_macro: Macro,
+        target_idx: int,
+    ) -> bool:
+        actor_id = self._macro_identifier(actor_macro, actor_idx)
+        target_id = self._macro_identifier(target_macro, target_idx)
+
+        targets = self._normalize_targets(getattr(actor_macro, "interaction_targets", []))
+        excludes = self._normalize_targets(getattr(actor_macro, "interaction_exclude_targets", []))
+        if targets and target_id not in targets:
+            return False
+        if target_id in excludes:
+            return False
+
+        allow = self._normalize_targets(getattr(target_macro, "interaction_incoming_allow", []))
+        block = self._normalize_targets(getattr(target_macro, "interaction_incoming_block", []))
+        if allow and actor_id not in allow:
+            return False
+        if actor_id in block:
+            return False
+        return True
+
+    def _apply_macro_interaction(self, actor_idx: int):
+        macros = list(self._profile.macros)
+        if actor_idx < 0 or actor_idx >= len(macros):
+            return
+        actor_macro = macros[actor_idx]
+        mode = self._interaction_mode(actor_macro)
+        if mode is None:
+            return
+
+        suspended = False
+        for idx, runner in list(self._macro_runners.items()):
+            if idx == actor_idx:
+                continue
+            target_macro: Optional[Macro] = None
+            try:
+                target_macro = macros[idx]
+            except Exception:
+                target_macro = None
+            if not target_macro:
+                continue
+            if not self._interaction_target_allowed(actor_macro, actor_idx, target_macro, idx):
+                continue
+            if mode == "stop":
+                runner.stop()
+                self._macro_runners.pop(idx, None)
+                self._hold_release_since.pop(idx, None)
+            elif mode == "suspend":
+                if getattr(target_macro, "mode", None) == "toggle" and runner.is_alive():
+                    self._suspended_toggle_indices.add(idx)
+                runner.stop()
+                self._macro_runners.pop(idx, None)
+                self._hold_release_since.pop(idx, None)
+                suspended = True
+        if mode == "suspend" and suspended:
+            self._guard_macro_idx = actor_idx
         self._select_backend(self._input_mode, log=True, allow_fallback=True)
         # 키 반복(초기 지연) 동안 눌림 상태가 끊겨 보이지 않도록 여유를 둔다.
         self._swallow_stale_sec = max(self.tick * 25, 1.0)
@@ -2820,10 +2963,7 @@ class MacroEngine:
                     if pressed:
                         self._hold_release_since.pop(idx, None)
                         if runner is None:
-                            if getattr(macro, "stop_others_on_trigger", False):
-                                self._stop_other_macros(except_idx=idx)
-                            elif getattr(macro, "suspend_others_while_running", False):
-                                self._suspend_other_macros(except_idx=idx)
+                            self._apply_macro_interaction(idx)
                             runner = MacroRunner(macro, self, idx)
                             self._macro_runners[idx] = runner
                             self._log_hold_transition(macro, idx, "start", state_detail)
@@ -2847,10 +2987,7 @@ class MacroEngine:
                     ignore_window = self._edge_block_window if runner is not None else 0.0
                     if self._edge(macro.trigger_key, ignore_recent_sec=ignore_window):
                         if runner is None:
-                            if getattr(macro, "stop_others_on_trigger", False):
-                                self._stop_other_macros(except_idx=idx)
-                            elif getattr(macro, "suspend_others_while_running", False):
-                                self._suspend_other_macros(except_idx=idx)
+                            self._apply_macro_interaction(idx)
                             runner = MacroRunner(macro, self, idx)
                             self._macro_runners[idx] = runner
                             runner.start()

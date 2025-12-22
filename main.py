@@ -81,6 +81,12 @@ def _rgb_to_hex(rgb) -> str | None:
     return None
 
 
+def _parse_name_list(text: str) -> list[str]:
+    raw = str(text or "")
+    parts = re.split(r"[;,]", raw)
+    return [p.strip() for p in parts if p and p.strip()]
+
+
 def _color_chip_html(hex_color: str | None, *, size: int = 12) -> str:
     if not hex_color or not isinstance(hex_color, str) or not hex_color.startswith("#"):
         return ""
@@ -842,6 +848,115 @@ def _run_dialog_non_modal(dlg: QtWidgets.QDialog) -> int:
     except Exception:
         pass
     return result["code"]
+
+
+class InteractionDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        *,
+        mode: str = "none",
+        targets: list[str] | None = None,
+        excludes: list[str] | None = None,
+        allow: list[str] | None = None,
+        block: list[str] | None = None,
+        macro_list_provider=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("상호작용 설정")
+        self.setModal(False)
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.resize(520, 260)
+        self._macro_list_provider = macro_list_provider
+        layout = QtWidgets.QVBoxLayout(self)
+
+        form = QtWidgets.QFormLayout()
+        self.mode_combo = QtWidgets.QComboBox()
+        self.mode_combo.addItem("상호작용 없음", "none")
+        self.mode_combo.addItem("다른 매크로 중지", "stop")
+        self.mode_combo.addItem("다른 매크로 대기/일시정지", "suspend")
+        form.addRow("기본 동작", self.mode_combo)
+
+        self.targets_edit, tgt_btn = self._line_with_picker("적용 대상 (비우면 전체)")
+        self.exclude_edit, exc_btn = self._line_with_picker("영향 제외")
+        self.allow_edit, allow_btn = self._line_with_picker("나를 중단 허용")
+        self.block_edit, block_btn = self._line_with_picker("나를 중단 차단")
+        form.addRow("영향 대상", self._hline(self.targets_edit, tgt_btn))
+        form.addRow("영향 제외", self._hline(self.exclude_edit, exc_btn))
+        form.addRow("나를 중단 허용", self._hline(self.allow_edit, allow_btn))
+        form.addRow("나를 중단 차단", self._hline(self.block_edit, block_btn))
+        layout.addLayout(form)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch()
+        ok_btn = QtWidgets.QPushButton("확인")
+        cancel_btn = QtWidgets.QPushButton("취소")
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+
+        self.mode_combo.setCurrentIndex({"none": 0, "stop": 1, "suspend": 2}.get((mode or "none").lower(), 0))
+        self.targets_edit.setText(", ".join(targets or []))
+        self.exclude_edit.setText(", ".join(excludes or []))
+        self.allow_edit.setText(", ".join(allow or []))
+        self.block_edit.setText(", ".join(block or []))
+
+    def _hline(self, edit: QtWidgets.QLineEdit, btn: QtWidgets.QToolButton) -> QtWidgets.QWidget:
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(edit, stretch=1)
+        lay.addWidget(btn)
+        return w
+
+    def _line_with_picker(self, placeholder: str) -> tuple[QtWidgets.QLineEdit, QtWidgets.QToolButton]:
+        edit = QtWidgets.QLineEdit()
+        edit.setPlaceholderText(placeholder)
+        btn = QtWidgets.QToolButton()
+        btn.setText("목록")
+        btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QtWidgets.QMenu(btn)
+        btn.setMenu(menu)
+        menu.aboutToShow.connect(lambda m=menu, e=edit: self._populate_macro_menu(m, e))
+        return edit, btn
+
+    def _populate_macro_menu(self, menu: QtWidgets.QMenu, target_edit: QtWidgets.QLineEdit):
+        menu.clear()
+        items: list[str] = []
+        try:
+            if callable(self._macro_list_provider):
+                items = self._macro_list_provider() or []
+        except Exception:
+            items = []
+        if not items:
+            menu.addAction("목록 없음").setEnabled(False)
+            return
+        seen = set()
+        for name in items:
+            key = name.strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            act = menu.addAction(key)
+            act.triggered.connect(lambda _=False, v=key: self._append_value(target_edit, v))
+
+    def _append_value(self, edit: QtWidgets.QLineEdit, value: str):
+        items = _parse_name_list(edit.text())
+        if value not in items:
+            items.append(value)
+        edit.setText(", ".join(items))
+
+    def result_values(self) -> tuple[str, list[str], list[str], list[str], list[str]]:
+        return (
+            self.mode_combo.currentData() or "none",
+            _parse_name_list(self.targets_edit.text()),
+            _parse_name_list(self.exclude_edit.text()),
+            _parse_name_list(self.allow_edit.text()),
+            _parse_name_list(self.block_edit.text()),
+        )
 
 
 class ActionTableWidget(QtWidgets.QTableWidget):
@@ -5109,6 +5224,7 @@ class MacroDialog(QtWidgets.QDialog):
         screenshot_hotkeys_provider=None,
         screenshot_manager=None,
         apply_scope_all=None,
+        macro_list_provider=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("매크로 편집")
@@ -5127,9 +5243,17 @@ class MacroDialog(QtWidgets.QDialog):
         self._screenshot_hotkeys_provider = screenshot_hotkeys_provider
         self._screenshot_manager = screenshot_manager
         self._apply_scope_all_cb = apply_scope_all
+        self._macro_list_provider = macro_list_provider
         self._scope: str = "global"
         self._app_targets: list[AppTarget] = []
         self._updating_trigger_builder = False
+        self._interaction_mode = "none"
+        self._interaction_targets: list[str] = []
+        self._interaction_excludes: list[str] = []
+        self._interaction_allow: list[str] = []
+        self._interaction_block: list[str] = []
+        self._stop_others_on_trigger = False
+        self._suspend_others_while_running = False
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -5170,8 +5294,6 @@ class MacroDialog(QtWidgets.QDialog):
         trigger_row_layout.addWidget(self.trigger_menu_btn)
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.addItems(["hold", "toggle"])
-        self.stop_others_check = QtWidgets.QCheckBox("이 트리거를 누르면 다른 매크로 모두 정지")
-        self.suspend_others_check = QtWidgets.QCheckBox("이 매크로 동작 시 다른 매크로 잠시 대기")
         self.enabled_check = QtWidgets.QCheckBox("활성")
         self.suppress_checkbox = QtWidgets.QCheckBox("트리거 키 차단")
         self.cycle_spin = QtWidgets.QSpinBox()
@@ -5180,22 +5302,29 @@ class MacroDialog(QtWidgets.QDialog):
         self.scope_btn = QtWidgets.QPushButton("앱 동작 범위 설정...")
         self.scope_summary = QtWidgets.QLabel("전역 (어디서나)")
         self.scope_summary.setStyleSheet("color: #555;")
+        self.interaction_btn = QtWidgets.QPushButton("상호작용 설정...")
+        self.interaction_summary = QtWidgets.QLabel("")
+        self.interaction_summary.setStyleSheet("color: #555;")
         scope_row = QtWidgets.QHBoxLayout()
         scope_row.addWidget(self.scope_btn)
         scope_row.addWidget(self.scope_summary, stretch=1)
         scope_row.addStretch()
+        inter_row = QtWidgets.QHBoxLayout()
+        inter_row.addWidget(self.interaction_btn)
+        inter_row.addWidget(self.interaction_summary, stretch=1)
+        inter_row.addStretch()
 
         form.addRow("이름(선택)", self.name_edit)
         form.addRow("설명(선택)", self.desc_edit)
         form.addRow("트리거 키", trigger_row)
         form.addRow("조합 구성", trigger_builder_row)
         form.addRow("모드 (hold/toggle)", self.mode_combo)
-        form.addRow(self.stop_others_check)
-        form.addRow(self.suspend_others_check)
         form.addRow(self.enabled_check)
         form.addRow("사이클 횟수(0=무한)", self.cycle_spin)
         form.addRow(self.suppress_checkbox)
         form.addRow(scope_row)
+        # 상호작용 라벨을 생략해 공간을 확보하고 바로 버튼/요약을 배치
+        form.addRow(inter_row)
         layout.addLayout(form)
 
         for chk in (
@@ -5298,6 +5427,7 @@ class MacroDialog(QtWidgets.QDialog):
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         self.scope_btn.clicked.connect(self._open_scope_dialog)
+        self.interaction_btn.clicked.connect(self._open_interaction_dialog)
         self.add_btn.clicked.connect(self._add_action)
         self.add_child_btn.clicked.connect(lambda: self._add_action(as_child=True))
         self.edit_btn.clicked.connect(self._edit_action)
@@ -5324,6 +5454,7 @@ class MacroDialog(QtWidgets.QDialog):
         self.stop_move_down_btn.clicked.connect(lambda: self._with_action_tree(self.stop_action_tree, lambda: self._move_selected(1, self.stop_move_down_btn)))
         self.stop_expand_btn.clicked.connect(self.stop_action_tree.expandAll)
         self.stop_tree_collapse_btn.clicked.connect(self.stop_action_tree.collapse_all)
+        self._update_interaction_summary()
 
         if macro:
             self._load_macro(macro)
@@ -5509,6 +5640,48 @@ class MacroDialog(QtWidgets.QDialog):
             self.stop_content.setVisible(not collapsed)
         if self.stop_collapse_btn:
             self.stop_collapse_btn.setText("펼치기" if collapsed else "접기")
+
+    def _update_interaction_summary(self):
+        mode_label = {"none": "없음", "stop": "중지", "suspend": "대기"}.get((self._interaction_mode or "none").lower(), "없음")
+
+        def _short(items: list[str], default: str = "전체") -> str:
+            if not items:
+                return default
+            txt = ", ".join(items[:3])
+            return txt + ("..." if len(items) > 3 else "")
+
+        parts = [mode_label]
+        parts.append(f"대상: {_short(self._interaction_targets)}")
+        if self._interaction_excludes:
+            parts.append(f"제외: {_short(self._interaction_excludes, default='없음')}")
+        if self._interaction_allow:
+            parts.append(f"허용: {_short(self._interaction_allow, default='없음')}")
+        if self._interaction_block:
+            parts.append(f"차단: {_short(self._interaction_block, default='없음')}")
+        self.interaction_summary.setText(" | ".join(parts))
+
+    def _open_interaction_dialog(self):
+        dlg = InteractionDialog(
+            mode=self._interaction_mode,
+            targets=self._interaction_targets,
+            excludes=self._interaction_excludes,
+            allow=self._interaction_allow,
+            block=self._interaction_block,
+            macro_list_provider=self._macro_list_provider,
+            parent=self,
+        )
+        if _run_dialog_non_modal(dlg) == int(QtWidgets.QDialog.DialogCode.Accepted):
+            mode, targets, excludes, allow, block = dlg.result_values()
+            self._interaction_mode = (mode or "none").lower()
+            if self._interaction_mode not in ("none", "stop", "suspend"):
+                self._interaction_mode = "none"
+            self._interaction_targets = targets
+            self._interaction_excludes = excludes
+            self._interaction_allow = allow
+            self._interaction_block = block
+            self._stop_others_on_trigger = self._interaction_mode == "stop"
+            self._suspend_others_while_running = self._interaction_mode == "suspend"
+            self._update_interaction_summary()
 
     def _move_selected(self, offset: int, btn: QtWidgets.QPushButton, tree: ActionTreeWidget | None = None):
         target_tree = tree or self.action_tree
@@ -6019,8 +6192,8 @@ class MacroDialog(QtWidgets.QDialog):
         self.mode_combo.setCurrentText(macro.mode)
         self.enabled_check.setChecked(getattr(macro, "enabled", True))
         self.suppress_checkbox.setChecked(bool(macro.suppress_trigger))
-        self.stop_others_check.setChecked(bool(getattr(macro, "stop_others_on_trigger", False)))
-        self.suspend_others_check.setChecked(bool(getattr(macro, "suspend_others_while_running", False)))
+        self._stop_others_on_trigger = bool(getattr(macro, "stop_others_on_trigger", False))
+        self._suspend_others_while_running = bool(getattr(macro, "suspend_others_while_running", False))
         self.cycle_spin.setValue(int(macro.cycle_count or 0))
         self._scope = getattr(macro, "scope", "global") or "global"
         self._app_targets = []
@@ -6037,6 +6210,21 @@ class MacroDialog(QtWidgets.QDialog):
         self._set_stop_group_enabled(bool(stop_actions))
         self.stop_collapse_btn.setChecked(True)  # 기본은 접힌 상태
         self._update_stop_collapsed()
+        mode_raw = str(getattr(macro, "interaction_outgoing_mode", "none") or "none").lower()
+        self._interaction_mode = mode_raw if mode_raw in ("none", "stop", "suspend") else "none"
+        self._interaction_targets = list(getattr(macro, "interaction_targets", []) or [])
+        self._interaction_excludes = list(getattr(macro, "interaction_exclude_targets", []) or [])
+        self._interaction_allow = list(getattr(macro, "interaction_incoming_allow", []) or [])
+        self._interaction_block = list(getattr(macro, "interaction_incoming_block", []) or [])
+        if self._interaction_mode == "none":
+            if self._stop_others_on_trigger:
+                self._interaction_mode = "stop"
+            elif self._suspend_others_while_running:
+                self._interaction_mode = "suspend"
+        else:
+            self._stop_others_on_trigger = self._interaction_mode == "stop"
+            self._suspend_others_while_running = self._interaction_mode == "suspend"
+        self._update_interaction_summary()
 
     def get_macro(self) -> Macro:
         # 빌더 체크박스/입력값을 우선 반영해 텍스트를 최신 상태로 맞춘다.
@@ -6048,8 +6236,11 @@ class MacroDialog(QtWidgets.QDialog):
         description = self.desc_edit.text().strip() or None
         mode = self.mode_combo.currentText() or "hold"
         suppress = self.suppress_checkbox.isChecked()
-        stop_others = self.stop_others_check.isChecked()
-        suspend_others = self.suspend_others_check.isChecked()
+        interaction_mode = (self._interaction_mode or "none").lower()
+        if interaction_mode not in ("none", "stop", "suspend"):
+            interaction_mode = "none"
+        self._stop_others_on_trigger = interaction_mode == "stop"
+        self._suspend_others_while_running = interaction_mode == "suspend"
         enabled = self.enabled_check.isChecked()
         scope = self._scope or "global"
         app_targets: list[AppTarget] = []
@@ -6066,8 +6257,13 @@ class MacroDialog(QtWidgets.QDialog):
             actions=actions,
             stop_actions=stop_actions,
             suppress_trigger=suppress,
-            stop_others_on_trigger=stop_others,
-            suspend_others_while_running=suspend_others,
+            stop_others_on_trigger=self._stop_others_on_trigger,
+            suspend_others_while_running=self._suspend_others_while_running,
+            interaction_outgoing_mode=interaction_mode,
+            interaction_targets=list(self._interaction_targets),
+            interaction_exclude_targets=list(self._interaction_excludes),
+            interaction_incoming_allow=list(self._interaction_allow),
+            interaction_incoming_block=list(self._interaction_block),
             enabled=enabled,
             name=name,
             description=description,
@@ -11625,6 +11821,26 @@ class MacroWindow(QtWidgets.QMainWindow):
             suffix += 1
         return f"{candidate} {suffix}"
 
+    def _macro_picker_items(self, exclude: Macro | None = None) -> list[str]:
+        items: list[str] = []
+        for m in self._collect_macros():
+            if exclude is not None and m is exclude:
+                continue
+            name = (m.name or "").strip()
+            trigger = (m.trigger_key or "").strip()
+            label = name or trigger
+            if label:
+                items.append(label)
+        uniq: list[str] = []
+        seen = set()
+        for item in items:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(item)
+        return uniq
+
     def _get_selected_row(self) -> int:
         selected = self.macro_table.selectionModel().selectedRows()
         return selected[0].row() if selected else -1
@@ -11690,6 +11906,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             screenshot_hotkeys_provider=self._screenshot_hotkeys_info,
             screenshot_manager=self.screenshot_manager,
             apply_scope_all=self._apply_scope_to_all_macros,
+            macro_list_provider=lambda: self._macro_picker_items(),
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -11726,6 +11943,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             screenshot_hotkeys_provider=self._screenshot_hotkeys_info,
             screenshot_manager=self.screenshot_manager,
             apply_scope_all=self._apply_scope_to_all_macros,
+            macro_list_provider=lambda m=macro: self._macro_picker_items(exclude=m),
         )
         if _run_dialog_non_modal(dlg):
             try:
