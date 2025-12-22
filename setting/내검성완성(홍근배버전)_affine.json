@@ -29,8 +29,8 @@
           "mouse_pos": null,
           "mouse_pos_raw": null,
           "pixel_region": [
-            2082,
-            1396,
+            1642,
+            1556,
             1,
             1
           ],
@@ -173,7 +173,7 @@
                     "tolerance": 0,
                     "pixel_exists": true,
                     "timer_index": 2,
-                    "timer_value": 0.5,
+                    "timer_value": 0.1,
                     "timer_operator": "ge",
                     "enabled": true
                   }
@@ -319,8 +319,8 @@
                   "mouse_pos": null,
                   "mouse_pos_raw": null,
                   "pixel_region": [
-                    2026,
-                    1387,
+                    1586,
+                    1547,
                     1,
                     1
                   ],
@@ -346,6 +346,35 @@
                   "var_value_raw": null,
                   "confirm_fails": 1,
                   "sleep_ms": 0,
+                  "condition": null,
+                  "label": null,
+                  "goto_label": null,
+                  "mouse_button": null,
+                  "mouse_pos": null,
+                  "mouse_pos_raw": null,
+                  "pixel_region": null,
+                  "pixel_region_raw": null,
+                  "pixel_target": null,
+                  "group_mode": null,
+                  "group_repeat": null,
+                  "timer_index": null,
+                  "timer_value": null,
+                  "key_delay_override_enabled": false,
+                  "key_delay_override": null
+                },
+                {
+                  "type": "sleep",
+                  "name": null,
+                  "description": null,
+                  "enabled": true,
+                  "once_per_macro": false,
+                  "key": null,
+                  "repeat": 1,
+                  "repeat_raw": null,
+                  "var_name": null,
+                  "var_value_raw": null,
+                  "confirm_fails": 1,
+                  "sleep_ms": "100",
                   "condition": null,
                   "label": null,
                   "goto_label": null,
@@ -496,7 +525,7 @@
                     "tolerance": 0,
                     "pixel_exists": true,
                     "timer_index": 1,
-                    "timer_value": 0.5,
+                    "timer_value": 0.1,
                     "timer_operator": "ge",
                     "enabled": true
                   }
@@ -677,7 +706,7 @@
                             "var_name": null,
                             "var_value_raw": null,
                             "var_operator": "eq",
-                            "region": "1817,1423,1,1",
+                            "region": "1377,1583,1,1",
                             "color": "fcfcfc",
                             "tolerance": 5,
                             "pixel_exists": true,
@@ -694,7 +723,7 @@
                             "var_name": null,
                             "var_value_raw": null,
                             "var_operator": "eq",
-                            "region": "1786,1426,1,1",
+                            "region": "1346,1586,1,1",
                             "color": "0f4c55",
                             "tolerance": 30,
                             "pixel_exists": false,
@@ -711,7 +740,7 @@
                             "var_name": null,
                             "var_value_raw": null,
                             "var_operator": "eq",
-                            "region": "1806,1386,1,1",
+                            "region": "1366,1546,1,1",
                             "color": "102137",
                             "tolerance": 10,
                             "pixel_exists": true,
@@ -992,7 +1021,7 @@
                                     "var_name": null,
                                     "var_value_raw": null,
                                     "var_operator": "eq",
-                                    "region": "1944,1420,1,1",
+                                    "region": "1504,1580,1,1",
                                     "color": "ffffff",
                                     "tolerance": 5,
                                     "pixel_exists": true,
@@ -1009,7 +1038,7 @@
                                     "var_name": null,
                                     "var_value_raw": null,
                                     "var_operator": "eq",
-                                    "region": "1920,1426,1,1",
+                                    "region": "1480,1586,1,1",
                                     "color": "10474F",
                                     "tolerance": 5,
                                     "pixel_exists": false,
@@ -1047,6 +1076,23 @@
                                     "var_operator": "eq",
                                     "region": "/E스킬활성",
                                     "color": "7E9B00",
+                                    "tolerance": 78,
+                                    "pixel_exists": true,
+                                    "timer_index": null,
+                                    "timer_value": null,
+                                    "timer_operator": "ge",
+                                    "enabled": true
+                                  },
+                                  {
+                                    "type": "pixel",
+                                    "name": "파란",
+                                    "key": null,
+                                    "key_mode": null,
+                                    "var_name": null,
+                                    "var_value_raw": null,
+                                    "var_operator": "eq",
+                                    "region": "/E스킬활성",
+                                    "color": "756FB8",
                                     "tolerance": 78,
                                     "pixel_exists": true,
                                     "timer_index": null,
@@ -1157,8 +1203,8 @@
                   "mouse_pos": null,
                   "mouse_pos_raw": null,
                   "pixel_region": [
-                    2082,
-                    1396,
+                    1642,
+                    1556,
                     1,
                     1
                   ],
@@ -1184,6 +1230,35 @@
                   "var_value_raw": null,
                   "confirm_fails": 1,
                   "sleep_ms": 0,
+                  "condition": null,
+                  "label": null,
+                  "goto_label": null,
+                  "mouse_button": null,
+                  "mouse_pos": null,
+                  "mouse_pos_raw": null,
+                  "pixel_region": null,
+                  "pixel_region_raw": null,
+                  "pixel_target": null,
+                  "group_mode": null,
+                  "group_repeat": null,
+                  "timer_index": null,
+                  "timer_value": null,
+                  "key_delay_override_enabled": false,
+                  "key_delay_override": null
+                },
+                {
+                  "type": "sleep",
+                  "name": null,
+                  "description": null,
+                  "enabled": true,
+                  "once_per_macro": false,
+                  "key": null,
+                  "repeat": 1,
+                  "repeat_raw": null,
+                  "var_name": null,
+                  "var_value_raw": null,
+                  "confirm_fails": 1,
+                  "sleep_ms": "100",
                   "condition": null,
                   "label": null,
                   "goto_label": null,
@@ -1252,7 +1327,7 @@
     },
     {
       "trigger_key": "mouse5",
-      "mode": "hold",
+      "mode": "toggle",
       "name": "평캔",
       "description": null,
       "suppress_trigger": true,
@@ -1279,8 +1354,8 @@
           "mouse_pos": null,
           "mouse_pos_raw": null,
           "pixel_region": [
-            2082,
-            1396,
+            1642,
+            1556,
             1,
             1
           ],
@@ -1423,7 +1498,7 @@
                     "tolerance": 0,
                     "pixel_exists": true,
                     "timer_index": 2,
-                    "timer_value": 0.5,
+                    "timer_value": 0.1,
                     "timer_operator": "ge",
                     "enabled": true
                   }
@@ -1527,7 +1602,7 @@
                 "var_operator": "eq",
                 "region": "/검성우클릭범위",
                 "color": "/right",
-                "tolerance": 160,
+                "tolerance": 30,
                 "pixel_exists": false,
                 "timer_index": null,
                 "timer_value": null,
@@ -1569,8 +1644,8 @@
                   "mouse_pos": null,
                   "mouse_pos_raw": null,
                   "pixel_region": [
-                    2026,
-                    1387,
+                    1586,
+                    1547,
                     1,
                     1
                   ],
@@ -1746,7 +1821,7 @@
                     "tolerance": 0,
                     "pixel_exists": true,
                     "timer_index": 1,
-                    "timer_value": 0.5,
+                    "timer_value": 0.1,
                     "timer_operator": "ge",
                     "enabled": true
                   }
@@ -1850,7 +1925,7 @@
                 "var_operator": "eq",
                 "region": "/검성좌클릭범위",
                 "color": "/left",
-                "tolerance": 60,
+                "tolerance": 30,
                 "pixel_exists": false,
                 "timer_index": null,
                 "timer_value": null,
@@ -1892,8 +1967,8 @@
                   "mouse_pos": null,
                   "mouse_pos_raw": null,
                   "pixel_region": [
-                    2082,
-                    1396,
+                    1642,
+                    1556,
                     1,
                     1
                   ],
@@ -2084,64 +2159,9 @@
           "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
         }
       ]
-    },
-    {
-      "trigger_key": "mouse3",
-      "mode": "hold",
-      "name": "휠",
-      "description": null,
-      "suppress_trigger": true,
-      "enabled": true,
-      "cycle_count": null,
-      "actions": [
-        {
-          "type": "press",
-          "name": null,
-          "description": null,
-          "enabled": true,
-          "once_per_macro": false,
-          "key": "shift",
-          "repeat": 1,
-          "repeat_raw": null,
-          "var_name": null,
-          "var_value_raw": null,
-          "confirm_fails": 1,
-          "sleep_ms": 0,
-          "condition": null,
-          "label": null,
-          "goto_label": null,
-          "mouse_button": null,
-          "mouse_pos": null,
-          "mouse_pos_raw": null,
-          "pixel_region": null,
-          "pixel_region_raw": null,
-          "pixel_target": null,
-          "group_mode": null,
-          "group_repeat": null,
-          "timer_index": null,
-          "timer_value": null,
-          "key_delay_override_enabled": false,
-          "key_delay_override": null
-        }
-      ],
-      "stop_actions": [],
-      "stop_others_on_trigger": false,
-      "suspend_others_while_running": true,
-      "interaction_outgoing_mode": "none",
-      "interaction_targets": [],
-      "interaction_exclude_targets": [],
-      "interaction_incoming_allow": [],
-      "interaction_incoming_block": [],
-      "scope": "app",
-      "app_targets": [
-        {
-          "name": "Aion2.exe",
-          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
-        }
-      ]
     }
   ],
-  "pixel_region": "0,0,100,100",
+  "pixel_region": "-440,160,100,100",
   "pixel_color": "ff0000",
   "pixel_tolerance": 10,
   "pixel_expect_exists": true,
@@ -2174,13 +2194,13 @@
   "variables": {
     "sleep": {},
     "region": {
-      "E스킬L": "1952,1423,1,1",
-      "E스킬쿨중": "1920,1426,1,1",
-      "E스킬활성": "1919,1400,1,1",
-      "검성우클릭범위": "2082,1396,1,1",
-      "검성좌클릭범위": "2026,1387,1,1",
-      "4스킬L": "1549,1420,1,1",
-      "4스킬쿨중범위": "1555,1426,1,1"
+      "E스킬L": "1512,1583,1,1",
+      "E스킬쿨중": "1480,1586,1,1",
+      "E스킬활성": "1479,1560,1,1",
+      "검성우클릭범위": "1642,1556,1,1",
+      "검성좌클릭범위": "1586,1547,1,1",
+      "4스킬L": "1109,1580,1,1",
+      "4스킬쿨중범위": "1115,1586,1,1"
     },
     "color": {
       "left": "000000",
@@ -2198,5 +2218,45 @@
     1920,
     1080
   ],
-  "base_scale_percent": 100.0
+  "base_scale_percent": 100.0,
+  "transform_matrix": {
+    "ax": 1.0,
+    "bx": -440.0,
+    "cy": 1.0,
+    "dy": 160.0,
+    "rms": 0.0,
+    "samples": [
+      {
+        "src": [
+          1365.0,
+          1295.0
+        ],
+        "dst": [
+          925.0,
+          1455.0
+        ]
+      },
+      {
+        "src": [
+          1363.0,
+          1305.0
+        ],
+        "dst": [
+          923.0,
+          1465.0
+        ]
+      },
+      {
+        "src": [
+          2212.0,
+          1423.0
+        ],
+        "dst": [
+          1772.0,
+          1583.0
+        ]
+      }
+    ],
+    "type": "linear_xy"
+  }
 }

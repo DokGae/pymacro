@@ -6398,6 +6398,30 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self._toggle_format_fields(self.format_combo.currentText())
         self._sync_preset_from_manager(force=True)
 
+    def _name_sort_key(self, name: str):
+        def _bucket(ch: str) -> int:
+            if ch.isascii() and ch.isalpha():
+                return 0
+            if "가" <= ch <= "힣":
+                return 1
+            if ch.isdigit():
+                return 2
+            return 3
+
+        if not name:
+            return ((3, ""),)
+
+        key_parts = [(_bucket(ch), ch.casefold()) for ch in name]
+        key_parts.append((4, len(name)))
+        return tuple(key_parts)
+
+    def _sorted_preset_names(self) -> list[str]:
+        names = list(self._presets.keys())
+        return sorted(
+            names,
+            key=lambda n: (-1, "") if n == "사용자 설정" else (0, self._name_sort_key(n)),
+        )
+
     def _status_text(self) -> str:
         state = "동작 중" if self.manager.is_running else "중지"
         hotkey_state = (
