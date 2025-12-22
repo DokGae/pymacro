@@ -3001,6 +3001,20 @@ class ImageViewerDialog(QtWidgets.QDialog):
         except Exception:
             pass
 
+    def _fill_condition_dialog_color(self, color_text: str):
+        """현재 열려 있는 조건 편집/노드 창의 color 필드를 채운다."""
+        try:
+            for w in QtWidgets.QApplication.topLevelWidgets():
+                if not w.isVisible():
+                    continue
+                if hasattr(w, "color_edit"):
+                    try:
+                        w.color_edit.setText(color_text)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def _copy_color(self):
         if not self._last_sample:
             self.status_label.setText("색상을 가져오려면 이미지 위에 마우스를 올리세요.")
@@ -3009,6 +3023,13 @@ class ImageViewerDialog(QtWidgets.QDialog):
         QtGui.QGuiApplication.clipboard().setText(hex_text)
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"색상 복사: #{hex_text}", self, QtCore.QRect(), 2000)
         self.status_label.setText(f"색상 복사: #{hex_text}")
+        try:
+            dbg = getattr(self._condition_window, "debugger", None) if self._condition_window else None
+            if dbg and dbg.isVisible():
+                dbg._set_test_inputs({"color_raw": hex_text})
+        except Exception:
+            pass
+        self._fill_condition_dialog_color(hex_text)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         if event.button() == QtCore.Qt.MouseButton.RightButton:
@@ -11028,7 +11049,9 @@ class MacroWindow(QtWidgets.QMainWindow):
             btn_row.addStretch()
 
             def del_rows():
-                if not self._delete_selected_variable_pairs(table):
+                if table.selectionModel().selectedIndexes():
+                    self._delete_selected_variable_pairs(table, key)
+                else:
                     self._pop_last_variable_pair(table)
 
             def sort_rows():
@@ -11180,6 +11203,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             "QTableWidget#variableTable { gridline-color: #a0a0a0; }"
             "QTableWidget#variableTable::item { padding: 4px; }"
             "QTableWidget#variableTable QHeaderView::section { padding: 4px; }"
+            "QTableWidget#variableTable::item:selected { background: #ffe9b3; color: #000000; }"
+            "QTableWidget#variableTable::item:focus { background: #ffe9b3; color: #000000; }"
         )
         table.setItemDelegate(_VariableSeparatorDelegate(table))
 
@@ -11221,8 +11246,10 @@ class MacroWindow(QtWidgets.QMainWindow):
         cols = max(1, math.ceil(slots_needed / rows_per_col)) * 2
         rows = rows_per_col
         prev_updating = getattr(self, "_updating_variables", False)
+        table.setProperty("current_rows_per_col", rows_per_col)
         self._updating_variables = True
         try:
+            table.clearContents()
             table.setColumnCount(cols)
             headers: list[str] = []
             for idx in range(cols // 2):
@@ -11245,16 +11272,69 @@ class MacroWindow(QtWidgets.QMainWindow):
         pairs.append((name, value))
         self._set_variable_pairs(table, pairs)
 
-    def _delete_selected_variable_pairs(self, table: QtWidgets.QTableWidget) -> bool:
+    def _extract_variable_refs(self, obj: object) -> set[str]:
+        names: set[str] = set()
+        if isinstance(obj, str):
+            for m in VariableResolver._pattern.finditer(obj):
+                name = m.group("name") or m.group("name2") or m.group("name3")
+                if name:
+                    names.add(name)
+        elif isinstance(obj, dict):
+            for val in obj.values():
+                names.update(self._extract_variable_refs(val))
+        elif isinstance(obj, (list, tuple, set)):
+            for item in obj:
+                names.update(self._extract_variable_refs(item))
+        return names
+
+    def _find_variable_usages(self, targets: list[tuple[str, str]]) -> dict[tuple[str, str], list[str]]:
+        target_set = {(cat, name.strip()) for cat, name in targets if name and str(name).strip()}
+        if not target_set:
+            return {}
+        usages: dict[tuple[str, str], list[str]] = {t: [] for t in target_set}
+        for idx, macro in enumerate(self._collect_macros(), 1):
+            try:
+                macro_dict = macro.to_dict()
+            except Exception:
+                continue
+            used_names = self._extract_variable_refs(macro_dict)
+            if not used_names:
+                continue
+            label = macro.name or macro.trigger_key or f"#{idx}"
+            for cat, name in target_set:
+                if name in used_names:
+                    usages[(cat, name)].append(label)
+        return {k: v for k, v in usages.items() if v}
+
+    def _delete_selected_variable_pairs(self, table: QtWidgets.QTableWidget, category: str | None = None) -> bool:
         indexes = table.selectionModel().selectedIndexes()
         if not indexes:
             return False
-        rows_per_col = self._rows_per_column(table)
+        rows_per_col = int(table.property("current_rows_per_col") or table.property("rows_per_column") or table.rowCount() or 1)
         to_remove = sorted(
             {(idx.column() // 2) * rows_per_col + idx.row() for idx in indexes},
             reverse=True,
         )
         pairs = self._variable_pairs_from_table(table)
+        targets: list[tuple[str, str]] = []
+        for pidx in to_remove:
+            if 0 <= pidx < len(pairs):
+                name = pairs[pidx][0]
+                if name:
+                    targets.append((category or "", name))
+        usages = self._find_variable_usages(targets)
+        if usages:
+            lines = [f"{cat or 'var'}:{name} -> {', '.join(macros)}" for (cat, name), macros in usages.items()]
+            msg = "다음 변수가 매크로에서 사용 중입니다. 삭제하면 참조가 끊어집니다.\n\n" + "\n".join(lines) + "\n\n그래도 삭제하시겠습니까?"
+            res = QtWidgets.QMessageBox.question(
+                self,
+                "변수 사용 중",
+                msg,
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if res != QtWidgets.QMessageBox.StandardButton.Yes:
+                return False
         for pidx in to_remove:
             if 0 <= pidx < len(pairs):
                 pairs.pop(pidx)
@@ -11280,15 +11360,14 @@ class MacroWindow(QtWidgets.QMainWindow):
 
     def _ensure_variable(self, category: str, name: str, default_value: str = "") -> bool:
         table = self.variable_tables.get(category)
+        name = (name or "").strip()
         if not table or not name:
             return False
         if category == "color" and not default_value:
             default_value = "000000"
-        # 이미 있으면 스킵
-        for row in range(table.rowCount()):
-            item = table.item(row, 0)
-            if item and item.text().strip() == name:
-                return True
+        existing_names = {n for n, _ in self._variable_pairs_from_table(table)}
+        if name in existing_names:
+            return True
         self._append_variable_pair(table, name, default_value)
         return True
 
