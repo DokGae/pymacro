@@ -5783,7 +5783,7 @@
                           },
                           {
                             "type": "pixel",
-                            "name": null,
+                            "name": "바정소환시확인되는거",
                             "key": null,
                             "key_mode": null,
                             "var_name": null,
@@ -5796,7 +5796,7 @@
                             "timer_index": null,
                             "timer_value": null,
                             "timer_operator": "ge",
-                            "enabled": true
+                            "enabled": false
                           },
                           {
                             "type": "all",
@@ -7866,7 +7866,7 @@
                 "var_operator": "eq",
                 "region": "/검성우클릭범위",
                 "color": "/right",
-                "tolerance": 70,
+                "tolerance": 80,
                 "pixel_exists": false,
                 "timer_index": null,
                 "timer_value": null,

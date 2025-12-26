@@ -1647,9 +1647,12 @@ class ConditionDialog(QtWidgets.QDialog):
         cond_group = QtWidgets.QGroupBox("조건 트리 (최상위 OR, AND로 묶기)")
         cond_group_layout = QtWidgets.QVBoxLayout(cond_group)
         self.condition_tree = ConditionTreeWidget()
-        self.condition_tree.setHeaderLabels(["타입", "요약"])
+        self.condition_tree.setHeaderLabels(["타입", "이름", "요약", "활성"])
         self.condition_tree.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.condition_tree.set_drop_callback(self._sync_condition_from_tree)
+        self.condition_tree.itemChanged.connect(self._on_item_changed)
+        self.condition_tree.setColumnWidth(1, 140)
+        self.condition_tree.setColumnWidth(3, 60)
         cond_group_layout.addWidget(self.condition_tree)
 
         tree_btn_row = QtWidgets.QHBoxLayout()
@@ -1703,12 +1706,23 @@ class ConditionDialog(QtWidgets.QDialog):
         self._refresh_condition_tree()
 
     def _append_condition_item(self, cond: Condition, parent_item=None):
-        item = QtWidgets.QTreeWidgetItem([_condition_type_label(cond.type), _condition_brief(cond)])
+        enabled_flag = getattr(cond, "enabled", True)
+        try:
+            setattr(cond, "enabled", enabled_flag)
+        except Exception:
+            pass
+        item = QtWidgets.QTreeWidgetItem([_condition_type_label(cond.type), cond.name or "", _condition_brief(cond), ""])
         item.setData(0, QtCore.Qt.ItemDataRole.UserRole, cond)
         flags = item.flags()
-        flags |= QtCore.Qt.ItemFlag.ItemIsDragEnabled | QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
+        flags |= (
+            QtCore.Qt.ItemFlag.ItemIsDragEnabled
+            | QtCore.Qt.ItemFlag.ItemIsEnabled
+            | QtCore.Qt.ItemFlag.ItemIsSelectable
+            | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+        )
         flags |= QtCore.Qt.ItemFlag.ItemIsDropEnabled
         item.setFlags(flags)
+        item.setCheckState(3, QtCore.Qt.CheckState.Checked if enabled_flag else QtCore.Qt.CheckState.Unchecked)
         if parent_item:
             parent_item.addChild(item)
         else:
@@ -1717,14 +1731,14 @@ class ConditionDialog(QtWidgets.QDialog):
             for child in cond.conditions:
                 self._append_condition_item(child, item)
         if cond.on_true:
-            true_header = QtWidgets.QTreeWidgetItem(["참일 때", f"{len(cond.on_true)}개"])
+            true_header = QtWidgets.QTreeWidgetItem(["참일 때", "", f"{len(cond.on_true)}개", ""])
             true_header.setData(0, QtCore.Qt.ItemDataRole.UserRole, "branch_true")
             true_header.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsDropEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
             item.addChild(true_header)
             for child in cond.on_true:
                 self._append_condition_item(child, true_header)
         if cond.on_false:
-            false_header = QtWidgets.QTreeWidgetItem(["거짓일 때", f"{len(cond.on_false)}개"])
+            false_header = QtWidgets.QTreeWidgetItem(["거짓일 때", "", f"{len(cond.on_false)}개", ""])
             false_header.setData(0, QtCore.Qt.ItemDataRole.UserRole, "branch_false")
             false_header.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsDropEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
             item.addChild(false_header)
@@ -1733,19 +1747,24 @@ class ConditionDialog(QtWidgets.QDialog):
         return item
 
     def _refresh_condition_tree(self):
-        self.condition_tree.clear()
-        if not self.root_condition or (self.root_condition.type == "any" and not self.root_condition.conditions):
-            placeholder = QtWidgets.QTreeWidgetItem(["(조건 없음)", "추가 버튼으로 루트를 만드세요."])
-            placeholder.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
-            self.condition_tree.addTopLevelItem(placeholder)
-            return
-        if self.root_condition.type == "any":
-            for child in self.root_condition.conditions:
-                self._append_condition_item(child)
-        else:
-            self._append_condition_item(self.root_condition)
-        self._expand_condition_tree()
-        self._restart_condition_debug_if_running()
+        prev_block = self.condition_tree.blockSignals(True)
+        try:
+            self.condition_tree.clear()
+            if not self.root_condition or (self.root_condition.type == "any" and not self.root_condition.conditions):
+                placeholder = QtWidgets.QTreeWidgetItem(["(조건 없음)", "", "추가 버튼으로 루트를 만드세요.", ""])
+                placeholder.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
+                self.condition_tree.addTopLevelItem(placeholder)
+            else:
+                if self.root_condition.type == "any":
+                    for child in self.root_condition.conditions:
+                        self._append_condition_item(child)
+                else:
+                    self._append_condition_item(self.root_condition)
+                self._expand_condition_tree()
+                self._restart_condition_debug_if_running()
+        finally:
+            self.condition_tree.blockSignals(prev_block)
+        self._apply_enabled_styles()
 
     def _expand_condition_tree(self):
         def walk(item: QtWidgets.QTreeWidgetItem | None):
@@ -1761,6 +1780,41 @@ class ConditionDialog(QtWidgets.QDialog):
         for i in range(self.condition_tree.topLevelItemCount()):
             walk(self.condition_tree.topLevelItem(i))
 
+    def _item_enabled_state(self, item: QtWidgets.QTreeWidgetItem | None) -> bool:
+        if not item:
+            return True
+        if item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable:
+            return item.checkState(3) == QtCore.Qt.CheckState.Checked
+        return True
+
+    def _apply_enabled_styles(self):
+        default_brush = QtGui.QBrush(self.condition_tree.palette().color(QtGui.QPalette.ColorRole.Text))
+        disabled_brush = QtGui.QBrush(QtGui.QColor("#9aa0a6"))
+
+        def walk(item: QtWidgets.QTreeWidgetItem | None, parent_disabled: bool = False):
+            if not item:
+                return
+            data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            is_disabled = parent_disabled
+            if isinstance(data, Condition):
+                is_disabled = is_disabled or (not self._item_enabled_state(item))
+            brush = disabled_brush if is_disabled else default_brush
+            for col in range(item.columnCount()):
+                item.setForeground(col, brush)
+            for idx in range(item.childCount()):
+                walk(item.child(idx), is_disabled)
+
+        for i in range(self.condition_tree.topLevelItemCount()):
+            walk(self.condition_tree.topLevelItem(i), False)
+
+    def _on_item_changed(self, item: QtWidgets.QTreeWidgetItem, column: int):
+        if column != 3:
+            return
+        data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if isinstance(data, Condition):
+            data.enabled = self._item_enabled_state(item)
+        self._apply_enabled_styles()
+
     def _condition_from_item(self, item: QtWidgets.QTreeWidgetItem) -> Condition | None:
         cond = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if not isinstance(cond, Condition):
@@ -1768,6 +1822,10 @@ class ConditionDialog(QtWidgets.QDialog):
         cond.conditions = []
         cond.on_true = []
         cond.on_false = []
+        try:
+            cond.enabled = self._item_enabled_state(item)
+        except Exception:
+            pass
         for idx in range(item.childCount()):
             child_item = item.child(idx)
             marker = child_item.data(0, QtCore.Qt.ItemDataRole.UserRole)
@@ -2146,6 +2204,7 @@ class ConditionDialog(QtWidgets.QDialog):
                     return
             elif new_cond.type in ("all", "any") and current_cond.type in ("all", "any"):
                 new_cond.conditions = copy.deepcopy(current_cond.conditions)
+            new_cond.enabled = getattr(current_cond, "enabled", True)
             new_cond.on_true = copy.deepcopy(getattr(current_cond, "on_true", []))
             new_cond.on_false = copy.deepcopy(getattr(current_cond, "on_false", []))
             self._replace_condition(current_cond, new_cond)

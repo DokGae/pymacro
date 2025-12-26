@@ -241,6 +241,7 @@ def _parse_mouse_pos(raw: Any, resolver: Optional[VariableResolver]) -> tuple[Op
 @dataclass
 class Condition:
     type: ConditionType
+    enabled: bool = True
     name: Optional[str] = None
     key: Optional[str] = None
     key_mode: Optional[KeyMode] = None
@@ -359,6 +360,11 @@ class Condition:
                     timer_value = None
         timer_op_raw = str(data.get("timer_operator", data.get("timer_op", "ge"))).lower()
         timer_operator = timer_op_raw if timer_op_raw in ("ge", "gt", "le", "lt", "eq", "ne") else "ge"
+        enabled_raw = data.get("enabled")
+        if isinstance(enabled_raw, str):
+            enabled_val = enabled_raw.strip().lower() not in ("false", "0", "no")
+        else:
+            enabled_val = bool(enabled_raw) if enabled_raw is not None else True
         cond = cls(
             type=ctype,
             name=data.get("name"),
@@ -380,16 +386,8 @@ class Condition:
             timer_index=timer_index,
             timer_value=timer_value,
             timer_operator=timer_operator,
+            enabled=enabled_val,
         )
-        enabled_raw = data.get("enabled")
-        if isinstance(enabled_raw, str):
-            enabled_val = enabled_raw.strip().lower() not in ("false", "0", "no")
-        else:
-            enabled_val = bool(enabled_raw) if enabled_raw is not None else True
-        try:
-            setattr(cond, "enabled", enabled_val)
-        except Exception:
-            pass
         return cond
 
     def to_dict(self) -> Dict[str, Any]:
@@ -410,7 +408,6 @@ class Condition:
             "timer_operator": self.timer_operator,
             "enabled": getattr(self, "enabled", True),
         }
-        payload["enabled"] = getattr(self, "enabled", True)
         if self.type in ("all", "any"):
             payload["conditions"] = [c.to_dict() for c in self.conditions]
         if self.on_true:
@@ -3168,7 +3165,8 @@ class MacroEngine:
                 "sample_color": check.get("sample_color"),
             }
         elif cond.type == "all":
-            base_result = bool(cond.conditions) and all(
+            active_children = [c for c in (cond.conditions or []) if getattr(c, "enabled", True)]
+            base_result = bool(active_children) and all(
                 self._evaluate_condition(
                     c,
                     key_states=key_states,
@@ -3178,11 +3176,16 @@ class MacroEngine:
                     vars_ctx=vars_state,
                     pixel_cache=pixel_cache,
                 )
-                for idx, c in enumerate(cond.conditions)
+                for idx, c in enumerate(active_children)
             )
-            detail["group"] = {"mode": "all", "count": len(cond.conditions or [])}
+            detail["group"] = {
+                "mode": "all",
+                "count": len(active_children),
+                "total": len(cond.conditions or []),
+            }
         elif cond.type == "any":
-            base_result = bool(cond.conditions) and any(
+            active_children = [c for c in (cond.conditions or []) if getattr(c, "enabled", True)]
+            base_result = bool(active_children) and any(
                 self._evaluate_condition(
                     c,
                     key_states=key_states,
@@ -3192,9 +3195,13 @@ class MacroEngine:
                     vars_ctx=vars_state,
                     pixel_cache=pixel_cache,
                 )
-                for idx, c in enumerate(cond.conditions)
+                for idx, c in enumerate(active_children)
             )
-            detail["group"] = {"mode": "any", "count": len(cond.conditions or [])}
+            detail["group"] = {
+                "mode": "any",
+                "count": len(active_children),
+                "total": len(cond.conditions or []),
+            }
         elif cond.type == "var":
             name = (cond.var_name or "").strip()
             if not name:
@@ -3240,31 +3247,35 @@ class MacroEngine:
 
         final_result = base_result
         if base_result and cond.on_true:
-            final_result = any(
-                self._evaluate_condition(
-                    c,
-                    key_states=key_states,
-                    resolver=resolver,
-                    macro_ctx=macro_ctx,
-                    path=(path or []) + ["on_true"],
-                    vars_ctx=vars_state,
-                    pixel_cache=pixel_cache,
+            active_true_children = [c for c in cond.on_true if getattr(c, "enabled", True)]
+            if active_true_children:
+                final_result = any(
+                    self._evaluate_condition(
+                        c,
+                        key_states=key_states,
+                        resolver=resolver,
+                        macro_ctx=macro_ctx,
+                        path=(path or []) + ["on_true"],
+                        vars_ctx=vars_state,
+                        pixel_cache=pixel_cache,
+                    )
+                    for c in active_true_children
                 )
-                for c in cond.on_true
-            )
         elif (not base_result) and cond.on_false:
-            final_result = any(
-                self._evaluate_condition(
-                    c,
-                    key_states=key_states,
-                    resolver=resolver,
-                    macro_ctx=macro_ctx,
-                    path=(path or []) + ["on_false"],
-                    vars_ctx=vars_state,
-                    pixel_cache=pixel_cache,
+            active_false_children = [c for c in cond.on_false if getattr(c, "enabled", True)]
+            if active_false_children:
+                final_result = any(
+                    self._evaluate_condition(
+                        c,
+                        key_states=key_states,
+                        resolver=resolver,
+                        macro_ctx=macro_ctx,
+                        path=(path or []) + ["on_false"],
+                        vars_ctx=vars_state,
+                        pixel_cache=pixel_cache,
+                    )
+                    for c in active_false_children
                 )
-                for c in cond.on_false
-            )
 
         if macro_ctx:
             payload: Dict[str, Any] = {
@@ -3272,6 +3283,7 @@ class MacroEngine:
                 "macro": macro_ctx,
                 "name": cond.name,
                 "condition_type": cond.type,
+                "enabled": getattr(cond, "enabled", True),
                 "result": final_result,
                 "base_result": base_result,
                 "path": path or [],
@@ -3314,11 +3326,27 @@ class MacroEngine:
         key_states = key_states if key_states is not None else {}
         vars_state = vars_ctx if vars_ctx is not None else getattr(self, "_vars", None)
         current_path = list(path or [])
-        detail: Dict[str, Any] = {}
+        cond_enabled = getattr(cond, "enabled", True)
+        detail: Dict[str, Any] = {"enabled": cond_enabled}
         children: List[Dict[str, Any]] = []
         true_branch: List[Dict[str, Any]] = []
         false_branch: List[Dict[str, Any]] = []
         base_result = False
+
+        if not cond_enabled:
+            return {
+                "cond": cond,
+                "type": getattr(cond, "type", None),
+                "name": getattr(cond, "name", None),
+                "path": current_path,
+                "path_text": " > ".join(current_path),
+                "result": False,
+                "base_result": False,
+                "detail": detail,
+                "children": [],
+                "on_true": [],
+                "on_false": [],
+            }
 
         try:
             if cond.type == "key":
@@ -3374,6 +3402,7 @@ class MacroEngine:
                     "sample_color": check.get("sample_color"),
                 }
             elif cond.type in ("all", "any"):
+                active_children: List[Dict[str, Any]] = []
                 for idx, child in enumerate(cond.conditions or []):
                     child_res = self.debug_condition_tree(
                         child,
@@ -3383,8 +3412,12 @@ class MacroEngine:
                         path=current_path + [f"{'and' if cond.type == 'all' else 'or'}[{idx}]"],
                     )
                     children.append(child_res)
-                base_result = bool(children) and (all(r.get("result") for r in children) if cond.type == "all" else any(r.get("result") for r in children))
-                detail["group"] = {"mode": cond.type, "count": len(cond.conditions or [])}
+                    if getattr(child, "enabled", True):
+                        active_children.append(child_res)
+                base_result = bool(active_children) and (
+                    all(r.get("result") for r in active_children) if cond.type == "all" else any(r.get("result") for r in active_children)
+                )
+                detail["group"] = {"mode": cond.type, "count": len(active_children), "total": len(cond.conditions or [])}
             elif cond.type == "var":
                 name = (cond.var_name or "").strip()
                 if not name:
@@ -3433,6 +3466,7 @@ class MacroEngine:
 
         final_result = base_result
         if base_result and cond.on_true:
+            active_true: List[Dict[str, Any]] = []
             for idx, child in enumerate(cond.on_true):
                 child_res = self.debug_condition_tree(
                     child,
@@ -3442,9 +3476,12 @@ class MacroEngine:
                     path=current_path + [f"on_true[{idx}]"],
                 )
                 true_branch.append(child_res)
-            if true_branch:
-                final_result = any(r.get("result") for r in true_branch)
+                if getattr(child, "enabled", True):
+                    active_true.append(child_res)
+            if active_true:
+                final_result = any(r.get("result") for r in active_true)
         elif (not base_result) and cond.on_false:
+            active_false: List[Dict[str, Any]] = []
             for idx, child in enumerate(cond.on_false):
                 child_res = self.debug_condition_tree(
                     child,
@@ -3454,8 +3491,10 @@ class MacroEngine:
                     path=current_path + [f"on_false[{idx}]"],
                 )
                 false_branch.append(child_res)
-            if false_branch:
-                final_result = any(r.get("result") for r in false_branch)
+                if getattr(child, "enabled", True):
+                    active_false.append(child_res)
+            if active_false:
+                final_result = any(r.get("result") for r in active_false)
 
         return {
             "cond": cond,
