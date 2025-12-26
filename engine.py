@@ -486,7 +486,7 @@ class Action:
     @staticmethod
     def parse_repeat(raw: Any) -> tuple[int, Optional[tuple[int, int]], Optional[str]]:
         """
-        반복 횟수 파서. 정수 또는 "a~b" 범위를 허용한다.
+        반복 횟수 파서. 정수 또는 "a~b"/"a-b" 범위를 허용한다.
         returns: (repeat_value, repeat_range, repeat_raw)
         """
         text = str(raw).strip() if raw is not None else ""
@@ -607,7 +607,9 @@ class Action:
                 key_delay_override = KeyDelayConfig.from_dict(data.get("key_delay_override"))
         except Exception:
             key_delay_override = None
-        repeat_raw_data = data.get("repeat_raw", data.get("repeat", 1))
+        repeat_raw_data = data.get("repeat_raw")
+        if repeat_raw_data in (None, ""):
+            repeat_raw_data = data.get("repeat", 1)
         try:
             repeat_val, repeat_range, repeat_raw = cls.parse_repeat(repeat_raw_data)
         except Exception:
@@ -2787,18 +2789,39 @@ class MacroEngine:
         }
         return pressed, detail
 
-    def _trigger_state(self, trigger: str) -> tuple[bool, Dict[str, Any]]:
+    def _trigger_state(self, trigger: str, *, disallow_extra_modifiers: bool = False) -> tuple[bool, Dict[str, Any]]:
         keys = parse_trigger_keys(trigger)
         if not keys:
             return False, {"keys": []}
+
+        required_mods = {k for k in keys if k in _TRIGGER_MOD_ALIASES}
+
+        def _extra_mod_details() -> List[Dict[str, Any]]:
+            mods: List[Dict[str, Any]] = []
+            if not disallow_extra_modifiers:
+                return mods
+            for mod in _TRIGGER_MOD_ALIASES:
+                if mod in required_mods:
+                    continue
+                pressed, detail = self._key_state_detail(mod)
+                if pressed:
+                    mods.append({"key": mod, "pressed": pressed, **detail})
+            return mods
+
         if len(keys) == 1:
             pressed, detail = self._key_state_detail(keys[0])
+            extra_mods = _extra_mod_details()
+            blocked = bool(extra_mods)
+            if blocked:
+                pressed = False
             merged = dict(detail)
             merged["keys"] = [{"key": keys[0], "pressed": pressed, **detail}]
             merged.setdefault("sw_pressed", merged.get("sw_pressed", False))
             merged.setdefault("os_pressed", merged.get("os_pressed", False))
             merged.setdefault("sw_age", merged.get("sw_age"))
             merged.setdefault("sw_stale", merged.get("sw_stale", False))
+            merged["extra_mods"] = extra_mods
+            merged["blocked_by_extra_mods"] = blocked
             return pressed, merged
 
         all_pressed = True
@@ -2818,12 +2841,19 @@ class MacroEngine:
             if age is not None:
                 sw_age = age if sw_age is None else min(sw_age, age)
             sw_stale_any = sw_stale_any or d.get("sw_stale", False)
+
+        extra_mods = _extra_mod_details()
+        blocked = bool(extra_mods)
+        if blocked:
+            all_pressed = False
         merged = {
             "keys": details,
             "sw_pressed": sw_pressed_any,
             "os_pressed": os_pressed_all,
             "sw_age": sw_age,
             "sw_stale": sw_stale_any,
+            "extra_mods": extra_mods,
+            "blocked_by_extra_mods": blocked,
         }
         return all_pressed, merged
 
@@ -2860,8 +2890,8 @@ class MacroEngine:
             return False
         return any(self._sent_recent(k, window) for k in keys)
 
-    def _edge(self, trigger: str, *, ignore_recent_sec: float = 0.0) -> bool:
-        pressed, _ = self._trigger_state(trigger)
+    def _edge(self, trigger: str, *, ignore_recent_sec: float = 0.0, disallow_extra_modifiers: bool = False) -> bool:
+        pressed, _ = self._trigger_state(trigger, disallow_extra_modifiers=disallow_extra_modifiers)
         norm = normalize_trigger_key(trigger)
         prev = self._hotkey_states.get(norm, False)
 
@@ -2900,26 +2930,26 @@ class MacroEngine:
         self._emit_log(" ".join(parts))
 
     def _handle_hotkeys(self):
-        if self._edge("home"):
+        if self._edge("home", disallow_extra_modifiers=True):
             self.active = True
             self.paused = False
             self._emit_log("Home: 활성화")
             self._emit_state()
-        if self._edge("insert"):
+        if self._edge("insert", disallow_extra_modifiers=True):
             if self.active:
                 self.paused = not self.paused
                 self._emit_log(f"Insert: {'일시정지' if self.paused else '재개'}")
                 if self.paused:
                     self._stop_all_macros()
                 self._emit_state()
-        if self._edge("end"):
+        if self._edge("end", disallow_extra_modifiers=True):
             self.active = False
             self.paused = False
             self._stop_all_macros()
             self._reset_condition_states()
             self._emit_log("End: 비활성화")
             self._emit_state()
-        if self._edge("pageup"):
+        if self._edge("pageup", disallow_extra_modifiers=True):
             self._run_pixel_test(source="hotkey")
 
     def _loop(self):
@@ -2959,7 +2989,7 @@ class MacroEngine:
                     continue
                 runner = self._macro_runners.get(idx)
                 if macro.mode == "hold":
-                    pressed, state_detail = self._trigger_state(macro.trigger_key)
+                    pressed, state_detail = self._trigger_state(macro.trigger_key, disallow_extra_modifiers=True)
                     if pressed:
                         self._hold_release_since.pop(idx, None)
                         if runner is None:
@@ -2985,7 +3015,11 @@ class MacroEngine:
                             self._hold_release_since.pop(idx, None)
                 else:  # toggle
                     ignore_window = self._edge_block_window if runner is not None else 0.0
-                    if self._edge(macro.trigger_key, ignore_recent_sec=ignore_window):
+                    if self._edge(
+                        macro.trigger_key,
+                        ignore_recent_sec=ignore_window,
+                        disallow_extra_modifiers=True,
+                    ):
                         if runner is None:
                             self._apply_macro_interaction(idx)
                             runner = MacroRunner(macro, self, idx)
