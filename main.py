@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
+import numpy as np
+from PIL import Image
 
 from capture import (
     CAPTURE_INTERVAL_SECONDS,
@@ -1620,6 +1622,7 @@ class ConditionDialog(QtWidgets.QDialog):
         self._screenshot_hotkeys_provider = screenshot_hotkeys_provider
         self._screenshot_manager = screenshot_manager
         self._debug_stop_cb = None
+        self._viewer_image_provider = None
 
         self.root_condition: Condition | None = None
 
@@ -1634,11 +1637,11 @@ class ConditionDialog(QtWidgets.QDialog):
         viewer_row = QtWidgets.QHBoxLayout()
         self.viewer_btn = QtWidgets.QPushButton("이미지 뷰어/피커")
         self.debug_test_btn = QtWidgets.QPushButton("디버그 테스트")
-        self.viewer_status = QtWidgets.QLabel("F1=좌표, F2=색상, F5=새로고침, Delete=삭제")
+        self._viewer_status_hint = "F1=좌표, F2=색상, F5=새로고침, Delete=삭제"
+        self.viewer_status = QtWidgets.QLabel(self._viewer_status_hint)
         self.viewer_status.setStyleSheet("color: gray;")
         last_dir = self._image_viewer_state.get("last_dir") if isinstance(self._image_viewer_state, dict) else None
-        if last_dir:
-            self.viewer_status.setText(f"최근 폴더: {last_dir} | F1=좌표, F2=색상, F5=새로고침")
+        self._refresh_viewer_status_label(last_dir)
         viewer_row.addWidget(self.viewer_btn)
         viewer_row.addWidget(self.debug_test_btn)
         viewer_row.addWidget(self.viewer_status, 1)
@@ -2256,6 +2259,7 @@ class ConditionDialog(QtWidgets.QDialog):
             "resolver": self._resolver,
             "vars_ctx": getattr(self._resolver, "vars", None) if self._resolver else None,
             "label": macro_cond.name or "조건 디버그",
+            "image_provider": self._viewer_image_provider if callable(self._viewer_image_provider) else None,
         }
 
     def _start_condition_debug_session_internal(self, *, silent: bool = False) -> bool:
@@ -2303,6 +2307,19 @@ class ConditionDialog(QtWidgets.QDialog):
         self._debug_stop_cb = None
         self.debug_test_btn.setText("디버그 테스트")
 
+    def _refresh_viewer_status_label(self, last_dir: str | None = None):
+        base_dir = last_dir or self._image_viewer_state.get("last_dir")
+        text = f"최근 폴더: {base_dir}" if base_dir else self._viewer_status_hint
+        self.viewer_status.setText(text)
+
+    def set_viewer_debug_source(self, *, enabled: bool, provider=None):
+        self._viewer_image_provider = provider if callable(provider) else None
+        self._refresh_viewer_status_label()
+        self._restart_condition_debug_if_running()
+
+    def notify_viewer_image_changed(self):
+        self._restart_condition_debug_if_running()
+
     # 이미지 뷰어 --------------------------------------------------------
     def _open_image_viewer(self):
         try:
@@ -2342,9 +2359,7 @@ class ConditionDialog(QtWidgets.QDialog):
                 self._save_image_viewer_state(self._image_viewer_state)
             except Exception:
                 pass
-        last_dir = self._image_viewer_state.get("last_dir")
-        if last_dir:
-            self.viewer_status.setText(f"최근 폴더: {last_dir}")
+        self._refresh_viewer_status_label(self._image_viewer_state.get("last_dir"))
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         if self._debug_stop_cb:
@@ -2717,10 +2732,14 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._status_prefix = ""
         self._pending_state: dict | None = None
         self._auto_refresh_enabled = bool((state or {}).get("auto_refresh"))
+        self._debug_frame_cache_path: Path | None = None
+        self._debug_frame_cache_mtime: float | None = None
+        self._debug_frame_cache_frame: np.ndarray | None = None
 
         self._build_ui()
         self.set_start_dir(start_dir, refresh=True)
         self._attach_capture_listener()
+        self._notify_condition_window()
 
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
@@ -2822,12 +2841,66 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._remember_folder()
 
     def _remember_folder(self):
-        data = {"last_dir": str(self._current_folder), "auto_refresh": bool(self.auto_refresh_chk.isChecked())}
+        data = {
+            "last_dir": str(self._current_folder),
+            "auto_refresh": bool(self.auto_refresh_chk.isChecked()),
+        }
         if callable(self._save_state):
             try:
                 self._save_state(data)
             except Exception:
                 pass
+
+    def _emit_debug_image_changed(self):
+        try:
+            if self._condition_window and hasattr(self._condition_window, "notify_viewer_image_changed"):
+                self._condition_window.notify_viewer_image_changed()
+        except Exception:
+            pass
+
+    def _notify_condition_window(self):
+        if not self._condition_window or not hasattr(self._condition_window, "set_viewer_debug_source"):
+            return
+        try:
+            self._condition_window.set_viewer_debug_source(
+                enabled=True,
+                provider=self._debug_image_payload,
+            )
+        except Exception:
+            pass
+
+    def _debug_image_payload(self):
+        if not self._image_files or self._current_index < 0:
+            return None
+        try:
+            path = self._image_files[self._current_index]
+        except Exception:
+            return None
+        frame = self._load_debug_frame(path)
+        if frame is None:
+            return None
+        return {"frame": frame, "label": path.name}
+
+    def _load_debug_frame(self, path: Path):
+        try:
+            mtime = path.stat().st_mtime
+        except Exception:
+            mtime = None
+        if (
+            self._debug_frame_cache_path == path
+            and self._debug_frame_cache_frame is not None
+            and self._debug_frame_cache_mtime == mtime
+        ):
+            return self._debug_frame_cache_frame
+        try:
+            img = Image.open(path).convert("RGB")
+            frame = np.asarray(img, dtype=np.uint8)
+        except Exception:
+            return None
+        self._debug_frame_cache_path = path
+        self._debug_frame_cache_frame = frame
+        self._debug_frame_cache_mtime = mtime
+        return frame
 
     def _attach_capture_listener(self):
         if not self._capture_manager or not hasattr(self._capture_manager, "add_capture_listener"):
@@ -2872,6 +2945,9 @@ class ImageViewerDialog(QtWidgets.QDialog):
         except Exception:
             files = []
         self._image_files = files
+        self._debug_frame_cache_path = None
+        self._debug_frame_cache_mtime = None
+        self._debug_frame_cache_frame = None
         self.image_combo.blockSignals(True)
         self.image_combo.clear()
         for f in files:
@@ -2894,6 +2970,9 @@ class ImageViewerDialog(QtWidgets.QDialog):
         if not self._image_files:
             self._current_index = -1
             return
+        self._debug_frame_cache_path = None
+        self._debug_frame_cache_mtime = None
+        self._debug_frame_cache_frame = None
         idx = max(0, min(len(self._image_files) - 1, idx))
         self._current_index = idx
         self.image_combo.blockSignals(True)
@@ -2907,6 +2986,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._status_prefix = f"{path.name} | {path.stat().st_size / 1024:.1f} KB, {dims}"
             self._last_sample = None
             self._restore_view_state()
+            self._notify_condition_window()
+            self._emit_debug_image_changed()
         else:
             self._status_prefix = "이미지를 열 수 없습니다."
             self._render_status()
@@ -6701,6 +6782,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         self._last_condition_tree: dict | None = None
         self._compare_color_override: tuple[int, int, int] | None = None
         self._section_controls: dict[str, QtWidgets.QToolButton] = {}
+        self._use_viewer_image: bool = False
 
         self._build_ui()
         self._restore_state(state or {})
@@ -6731,6 +6813,9 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.view_image_btn = QtWidgets.QPushButton("이미지 뷰어 보기")
         self.view_image_btn.clicked.connect(lambda: self._focus_viewer_cb() if callable(self._focus_viewer_cb) else None)
         status_row.addWidget(self.view_image_btn)
+        self.viewer_image_chk = QtWidgets.QCheckBox("뷰어 이미지 사용")
+        self.viewer_image_chk.toggled.connect(self._on_use_viewer_toggled)
+        status_row.addWidget(self.viewer_image_chk)
         status_row.addStretch()
         layout.addLayout(status_row)
 
@@ -6882,6 +6967,10 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.raise_()
         self.activateWindow()
 
+    @property
+    def use_viewer_image(self) -> bool:
+        return bool(self._use_viewer_image)
+
     def _restore_state(self, state: dict):
         if not isinstance(state, dict):
             return
@@ -6905,6 +6994,11 @@ class DebuggerDialog(QtWidgets.QDialog):
         try:
             self._fail_capture_confirmations = int(state.get("fail_capture_confirmations", self._fail_capture_confirmations))
             self.capture_confirm_spin.setValue(self._fail_capture_confirmations)
+        except Exception:
+            pass
+        self._use_viewer_image = bool(state.get("use_viewer_image", False))
+        try:
+            self.viewer_image_chk.setChecked(self._use_viewer_image)
         except Exception:
             pass
         self._fail_capture_enabled = bool(state.get("fail_capture_enabled", False))
@@ -6955,6 +7049,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             "fail_capture_cooldown": float(self.capture_cooldown_spin.value()),
             "fail_capture_confirmations": int(self.capture_confirm_spin.value()),
             "fail_capture_limit": self._fail_capture_limit,
+            "use_viewer_image": bool(self.viewer_image_chk.isChecked()) if hasattr(self, "viewer_image_chk") else False,
             "sections": {k: btn.isChecked() for k, btn in self._section_controls.items()},
         }
 
@@ -7781,6 +7876,12 @@ class DebuggerDialog(QtWidgets.QDialog):
 
     def _on_condition_stop_clicked(self):
         self.stop_condition_debug()
+
+    def _on_use_viewer_toggled(self, checked: bool):
+        self._use_viewer_image = bool(checked)
+        # 디버그 중이면 바로 갱신
+        if self._condition_timer.isActive():
+            self._tick_condition_debug()
 
     def _tick_condition_debug(self):
         if not callable(self._condition_eval_fn):
@@ -10281,6 +10382,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._fail_capture_hotkey_prev = False
         self._fail_capture_hotkey_key = "f12"
         self._last_capture_running: bool = False
+        self._viewer_image_provider = None
         screenshot_state = self._state.get("screenshot", {}) if isinstance(self._state, dict) else {}
         self.screenshot_manager = ScreenCaptureManager(
             interval_seconds=screenshot_state.get("interval", CAPTURE_INTERVAL_SECONDS),
@@ -10700,6 +10802,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._image_viewer_dialog.show()
         self._image_viewer_dialog.raise_()
         self._image_viewer_dialog.activateWindow()
+
+    def set_viewer_debug_source(self, *, enabled: bool, provider=None):
+        self._viewer_image_provider = provider if callable(provider) else None
 
     def _focus_image_viewer(self, path: Path | None = None):
         self._open_image_viewer_dialog()
@@ -12711,6 +12816,25 @@ class MacroWindow(QtWidgets.QMainWindow):
             resolver = payload.get("resolver")
             vars_ctx = payload.get("vars_ctx")
             macro_cond = payload.get("macro_condition")
+            image_provider = payload.get("image_provider")
+            dbg = getattr(self, "debugger", None)
+            use_viewer_image = bool(getattr(dbg, "use_viewer_image", False)) if dbg else False
+            if image_provider is None and use_viewer_image and callable(getattr(self, "_viewer_image_provider", None)):
+                image_provider = self._viewer_image_provider
+            override_frame = None
+            override_label = None
+            if use_viewer_image and callable(image_provider):
+                try:
+                    img_payload = image_provider()
+                    if isinstance(img_payload, dict):
+                        override_frame = img_payload.get("frame")
+                        override_label = img_payload.get("label")
+                    elif isinstance(img_payload, tuple) and len(img_payload) == 2:
+                        override_frame, override_label = img_payload
+                    elif isinstance(img_payload, np.ndarray):
+                        override_frame = img_payload
+                except Exception:
+                    override_frame = None
             if macro_cond and getattr(macro_cond, "condition", None):
                 cond_obj = getattr(macro_cond, "condition", None)
                 label = label or getattr(macro_cond, "name", None)
@@ -12722,6 +12846,16 @@ class MacroWindow(QtWidgets.QMainWindow):
             if vars_ctx is None:
                 vars_ctx = getattr(self.engine, "_vars", None)
             try:
+                if override_frame is not None:
+                    try:
+                        self.engine.set_debug_image_override(override_frame, label=override_label)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.engine.clear_debug_image_override()
+                    except Exception:
+                        pass
                 result = self.engine.debug_condition_tree(
                     cond_obj,
                     key_states=self._condition_debug_key_states,
@@ -12730,6 +12864,11 @@ class MacroWindow(QtWidgets.QMainWindow):
                 )
             except Exception as exc:
                 return {"error": str(exc)}
+            finally:
+                try:
+                    self.engine.clear_debug_image_override()
+                except Exception:
+                    pass
             if isinstance(result, dict):
                 self._last_condition_tree = result
             node_label = label or getattr(cond_obj, "name", None) or "조건 디버그"
@@ -12769,6 +12908,10 @@ class MacroWindow(QtWidgets.QMainWindow):
                 cb()
             except Exception:
                 pass
+        try:
+            self.engine.clear_debug_image_override()
+        except Exception:
+            pass
 
     def _capture_condition_failure(self, payload: dict):
         label = (payload or {}).get("label") or "condition"

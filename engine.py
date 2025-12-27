@@ -2068,6 +2068,8 @@ class MacroEngine:
         self._pixel_test_color: RGB = (0, 0, 0)
         self._pixel_test_tolerance: int = 0
         self._pixel_test_expect_exists: bool = True
+        self._debug_image_override: Optional[np.ndarray] = None
+        self._debug_image_label: Optional[str] = None
         self._keyboard_device_id: Optional[int] = self._profile.keyboard_device_id
         self._keyboard_hardware_id: Optional[str] = self._profile.keyboard_hardware_id
         self._mouse_device_id: Optional[int] = getattr(self._profile, "mouse_device_id", None)
@@ -2111,6 +2113,34 @@ class MacroEngine:
             if key:
                 return key.lower()
         return f"macro-{idx}" if idx is not None else "macro-unknown"
+
+    def set_debug_image_override(self, frame: Optional[np.ndarray], *, label: str | None = None):
+        self._debug_image_override = frame
+        self._debug_image_label = label
+
+    def clear_debug_image_override(self):
+        self._debug_image_override = None
+        self._debug_image_label = None
+
+    def _extract_debug_region(self, region: Region) -> Optional[np.ndarray]:
+        """
+        현재 설정된 디버그 이미지에서 지정 영역을 잘라 반환한다.
+        영역이 유효하지 않거나 이미지가 없으면 None을 반환한다.
+        """
+        if self._debug_image_override is None:
+            return None
+        try:
+            x, y, w, h = region
+            if w <= 0 or h <= 0:
+                return None
+            frame = np.asarray(self._debug_image_override, dtype=np.uint8)
+            if frame.ndim != 3 or frame.shape[2] < 3:
+                return None
+            if y < 0 or x < 0 or (y + h) > frame.shape[0] or (x + w) > frame.shape[1]:
+                return None
+            return frame[y : y + h, x : x + w, :3].copy()
+        except Exception:
+            return None
 
     def _interaction_mode(self, macro: Macro) -> Optional[Literal["stop", "suspend"]]:
         mode = str(getattr(macro, "interaction_outgoing_mode", "none") or "none").lower()
@@ -3522,20 +3552,25 @@ class MacroEngine:
     ) -> Dict[str, Any]:
         x, y, w, h = region
         cache_key = (x, y, w, h)
+        arr: Optional[np.ndarray] = self._extract_debug_region(region)
 
-        try:
-            if pixel_cache is not None and cache_key in pixel_cache:
-                arr = pixel_cache[cache_key]
-            else:
-                arr = capture_region_np(region)
+        if arr is None:
+            try:
+                if pixel_cache is not None and cache_key in pixel_cache:
+                    arr = pixel_cache[cache_key]
+                else:
+                    arr = capture_region_np(region)
+                    if pixel_cache is not None:
+                        pixel_cache[cache_key] = arr
+            except Exception:
+                # 폴백: 기존 PIL 경로 유지
+                img = capture_region(region).convert("RGB")
+                arr = np.asarray(img, dtype=np.uint8)
                 if pixel_cache is not None:
                     pixel_cache[cache_key] = arr
-        except Exception:
-            # 폴백: 기존 PIL 경로 유지
-            img = capture_region(region).convert("RGB")
-            arr = np.asarray(img, dtype=np.uint8)
-            if pixel_cache is not None:
-                pixel_cache[cache_key] = arr
+
+        if arr is None:
+            arr = np.zeros((max(1, h), max(1, w), 3), dtype=np.uint8)
 
         target = np.array(color, dtype=np.int16)
         diff = np.abs(arr.astype(np.int16) - target).max(axis=2)
