@@ -249,6 +249,68 @@ def _normalize_hex_line(text: str) -> str:
     return raw.lower()
 
 
+def _attach_hex_preview_chip(edit: QtWidgets.QLineEdit) -> QtGui.QAction:
+    """텍스트 입력 옆에 HEX 색상 미리보기 칩을 붙인다."""
+    action = edit.addAction(QtGui.QIcon(), QtWidgets.QLineEdit.ActionPosition.TrailingPosition)
+    action.setVisible(False)
+    action.setToolTip("입력 색상 미리보기")
+
+    def _update(text: str | None):
+        raw = (text or "").strip()
+        icon = QtGui.QIcon()
+        show = False
+        if raw:
+            try:
+                normalized = _normalize_hex_line(raw)
+                color = QtGui.QColor(f"#{normalized}")
+                if color.isValid():
+                    pix = QtGui.QPixmap(12, 12)
+                    pix.fill(color)
+                    icon = QtGui.QIcon(pix)
+                    show = True
+            except Exception:
+                show = False
+        action.setIcon(icon)
+        action.setVisible(show)
+
+    edit.textChanged.connect(_update)
+    _update(edit.text())
+    return action
+
+
+def _make_hex_preview_label(*, size: int = 14) -> QtWidgets.QLabel:
+    """라벨 옆에 붙이는 작은 색상 칩 레이블을 생성한다."""
+    lbl = QtWidgets.QLabel()
+    lbl.setFixedSize(size, size)
+    lbl.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+    lbl.setContentsMargins(0, 0, 0, 0)
+    lbl.setStyleSheet("padding:0;margin:0;")
+    lbl.setToolTip("입력 색상 미리보기")
+    return lbl
+
+
+def _update_hex_preview_label(label: QtWidgets.QLabel | None, text: str | None, *, size: int | None = None):
+    if not label:
+        return
+    effective_size = size or max(1, min(label.width(), label.height()))
+    raw = (text or "").strip()
+    if raw:
+        try:
+            normalized = _normalize_hex_line(raw)
+            color = QtGui.QColor(f"#{normalized}")
+            if color.isValid():
+                pix = QtGui.QPixmap(effective_size, effective_size)
+                pix.fill(color)
+                label.setPixmap(pix)
+                label.setVisible(True)
+                return
+        except Exception:
+            pass
+    label.clear()
+    label.setVisible(False)
+
+
 def _parse_hex_lines(text: str, *, allow_empty: bool = False) -> list[str]:
     colors: list[str] = []
     for idx, line in enumerate(text.splitlines(), 1):
@@ -1331,6 +1393,9 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.region_offset_edit.setPlaceholderText("+dx,dy,dw,dh (선택)")
         self.color_edit = QtWidgets.QLineEdit("ff0000")
         _setup_hex_line_edit(self.color_edit)
+        self.color_preview = _make_hex_preview_label()
+        self.color_edit.textChanged.connect(lambda txt: _update_hex_preview_label(self.color_preview, txt))
+        _update_hex_preview_label(self.color_preview, self.color_edit.text())
         self._install_var_completer(self.region_edit, "region")
         self._install_var_completer(self.color_edit, "color")
         self.var_name_edit = QtWidgets.QLineEdit()
@@ -1376,7 +1441,14 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.form.addRow("여러 키 묶기", self.key_group_mode_combo)
         self.form.addRow("Region x,y,w,h", self.region_edit)
         self.form.addRow("+dx,dy,dw,dh (선택)", self.region_offset_edit)
-        self.form.addRow("색상 (HEX RRGGBB)", self.color_edit)
+        color_row = QtWidgets.QHBoxLayout()
+        color_row.setContentsMargins(0, 0, 0, 0)
+        color_row.setSpacing(6)
+        color_row.addWidget(self.color_edit, 1)
+        color_row.addWidget(self.color_preview)
+        color_wrap = QtWidgets.QWidget()
+        color_wrap.setLayout(color_row)
+        self.form.addRow("색상", color_wrap)
         self.form.addRow("Tolerance", self.tol_spin)
         self.form.addRow("픽셀 상태", self.pixel_expect_combo)
         self.form.addRow("변수 이름", self.var_name_edit)
@@ -2243,12 +2315,17 @@ class ConditionDialog(QtWidgets.QDialog):
             raise ValueError("조건을 하나 이상 추가하세요.")
         root_copy = copy.deepcopy(self.root_condition)
         self._validate_group_children(root_copy)
+        name = self.cond_name_edit.text().strip() or None
+        try:
+            setattr(root_copy, "name", name)
+        except Exception:
+            pass
 
         return MacroCondition(
             condition=root_copy,
             actions=[],
             else_actions=[],
-            name=self.cond_name_edit.text().strip() or None,
+            name=name,
         )
 
     def _condition_debug_payload(self) -> dict:
@@ -3770,15 +3847,27 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             return bool(target_item) and bool(target_item.flags() & QtCore.Qt.ItemFlag.ItemIsDropEnabled) and self._can_have_children_item(target_item)
         return True
 
+    def _is_seq_column_area(self, pos: QtCore.QPoint) -> bool:
+        """Return True if the drop position is within the 순번(column 0) area."""
+        col = self.columnAt(pos.x())
+        if col == 0:
+            return True
+        # columnAt can return -1 when near the left edge; treat that as 순번 영역 too.
+        if col == -1 and pos.x() <= self.columnWidth(0) + 4:
+            return True
+        return False
+
     def _normalized_indicator(
         self,
         pos: QtCore.QPoint,
         indicator: QtWidgets.QAbstractItemView.DropIndicatorPosition,
         target_item: QtWidgets.QTreeWidgetItem | None,
+        *,
+        force_sibling: bool = False,
     ) -> tuple[QtWidgets.QAbstractItemView.DropIndicatorPosition, bool]:
         """Return adjusted indicator and whether child drop is allowed."""
-        allowed_child = self._is_drop_allowed(indicator, target_item)
-        if indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem and not allowed_child:
+        allowed_child = False if force_sibling else self._is_drop_allowed(indicator, target_item)
+        if indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem and (force_sibling or not allowed_child):
             # fallback: treat as above/below depending on cursor position
             idx = self.indexAt(pos)
             row_rect = self.visualRect(idx) if idx.isValid() else QtCore.QRect()
@@ -3798,7 +3887,15 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         indicator = self.dropIndicatorPosition()
         index = self.indexAt(pos)
         target_item = self.itemFromIndex(index) if index.isValid() else None
-        indicator, allowed_child = self._normalized_indicator(pos, indicator, target_item)
+        force_top_level = self._is_seq_column_area(pos)
+        indicator, _ = self._normalized_indicator(pos, indicator, target_item, force_sibling=force_top_level)
+        display_index = index
+        display_level = self._item_level(index) if index.isValid() else 0
+        if force_top_level and target_item:
+            top_target = self._top_level_ancestor(target_item)
+            if top_target:
+                display_index = self.indexFromItem(top_target)
+                display_level = 0
         mode = "blocked"
         if indicator in (
             QtWidgets.QAbstractItemView.DropIndicatorPosition.AboveItem,
@@ -3812,9 +3909,9 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         self._drop_feedback = {
             "mode": mode,
             "indicator": indicator,
-            "index": index if index.isValid() else None,
+            "index": display_index if display_index and display_index.isValid() else None,
             "pos": pos,
-            "level": self._item_level(index) if index.isValid() else 0,
+            "level": display_level,
         }
         self._update_drag_pixmap_mode(mode)
         self._maybe_show_child_hint(target_item, mode)
@@ -4281,6 +4378,13 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             parent = parent.parent()
         return False
 
+    def _top_level_ancestor(self, item: QtWidgets.QTreeWidgetItem | None) -> QtWidgets.QTreeWidgetItem | None:
+        """Return the highest ancestor (or self) for the given item."""
+        current = item
+        while current and current.parent():
+            current = current.parent()
+        return current
+
     def _item_path_key(self, item: QtWidgets.QTreeWidgetItem) -> tuple[int, ...]:
         path: list[int] = []
         current = item
@@ -4386,28 +4490,54 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         target = self.itemAt(pos)
         indicator = self.dropIndicatorPosition()
-        indicator, allowed_child = self._normalized_indicator(pos, indicator, target)
+        force_top_level = self._is_seq_column_area(pos)
+        indicator, allowed_child = self._normalized_indicator(pos, indicator, target, force_sibling=force_top_level)
+        target_for_insert = self._top_level_ancestor(target) if force_top_level else target
+
+        def compute_parent_and_row(
+            indicator_value: QtWidgets.QAbstractItemView.DropIndicatorPosition,
+            target_item: QtWidgets.QTreeWidgetItem | None,
+            allow_child: bool,
+        ) -> tuple[QtWidgets.QTreeWidgetItem | None, int]:
+            if force_top_level:
+                parent_item = None
+                base_row = self.indexOfTopLevelItem(target_item) if target_item else self.topLevelItemCount()
+                if base_row < 0:
+                    base_row = self.topLevelItemCount()
+                insert_at = base_row
+                if indicator_value == QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem:
+                    insert_at = base_row + 1
+                elif indicator_value == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport:
+                    insert_at = self.topLevelItemCount()
+                return parent_item, insert_at
+
+            if indicator_value == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport:
+                return None, self.topLevelItemCount()
+            if indicator_value == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem and allow_child and target_item:
+                return target_item, target_item.childCount()
+            parent_item = target_item.parent() if target_item else None
+            base_row = (
+                parent_item.indexOfChild(target_item)
+                if parent_item and target_item
+                else self.indexOfTopLevelItem(target_item)
+                if target_item
+                else -1
+            )
+            insert_at = base_row
+            if indicator_value == QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem:
+                insert_at += 1
+            if insert_at < 0:
+                insert_at = self.topLevelItemCount()
+            return parent_item, insert_at
+
         if modifiers & QtCore.Qt.KeyboardModifier.AltModifier and event.source() in (self, self.viewport()):
             selected = self._top_level_selected(self.selectedItems())
             if not selected:
                 event.ignore()
                 return
-            if target is None and indicator != QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport:
+            if target_for_insert is None and indicator != QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport:
                 indicator = QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport
-            parent = None
-            insert_row = -1
-            if indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem:
-                parent = target.parent()
-                insert_row = (parent.indexOfChild(target) + 1) if parent else (self.indexOfTopLevelItem(target) + 1)
-            elif indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.AboveItem:
-                parent = target.parent()
-                insert_row = parent.indexOfChild(target) if parent else self.indexOfTopLevelItem(target)
-            elif indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem:
-                parent = target
-                insert_row = parent.childCount()
-            else:  # OnViewport
-                parent = None
-                insert_row = self.topLevelItemCount()
+            parent, insert_row = compute_parent_and_row(indicator, target_for_insert, allowed_child)
 
             new_items: list[QtWidgets.QTreeWidgetItem] = []
             for item in selected:
@@ -4433,23 +4563,10 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             if not items:
                 self._clear_drop_feedback()
                 return
-            if target in items:
+            if target in items or target_for_insert in items:
                 self._clear_drop_feedback()
                 return
-            if indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport:
-                parent = None
-                insert_row = self.topLevelItemCount()
-            elif indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem and allowed_child:
-                parent = target
-                insert_row = parent.childCount()
-            else:
-                parent = target.parent() if target else None
-                base_row = parent.indexOfChild(target) if parent and target else self.indexOfTopLevelItem(target) if target else -1
-                insert_row = base_row
-                if indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem:
-                    insert_row += 1
-                if insert_row < 0:
-                    insert_row = self.topLevelItemCount()
+            parent, insert_row = compute_parent_and_row(indicator, target_for_insert, allowed_child)
             expanded = self._expanded_keys()
             # detach selected items (reverse order to keep indices valid)
             for item in reversed(items):
@@ -4950,7 +5067,8 @@ class ActionEditDialog(QtWidgets.QDialog):
 
     def _edit_condition(self):
         seed_cond = self._condition or Condition(type="pixel", region=(0, 0, 1, 1), color=(255, 0, 0), tolerance=0)
-        macro_cond = MacroCondition(condition=copy.deepcopy(seed_cond), actions=[], else_actions=[])
+        seed_name = getattr(seed_cond, "name", None)
+        macro_cond = MacroCondition(condition=copy.deepcopy(seed_cond), actions=[], else_actions=[], name=seed_name)
         dlg = ConditionDialog(
             self,
             cond=macro_cond,
@@ -4969,6 +5087,10 @@ class ActionEditDialog(QtWidgets.QDialog):
         try:
             result = dlg.get_condition()
             self._condition = result.condition
+            try:
+                setattr(self._condition, "name", result.name)
+            except Exception:
+                pass
             self.cond_label.setText(_condition_brief(self._condition))
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "조건 오류", str(exc))
@@ -5652,7 +5774,22 @@ class MacroDialog(QtWidgets.QDialog):
         add("마우스 X2 (mouse5)", "mouse5")
         menu.addSeparator()
         add("CapsLock (capslock)", "capslock")
-        for key in ["z", "x", "c", "r", "t", "space", "tab", "shift", "ctrl", "alt"]:
+        for key in [
+            "z",
+            "x",
+            "c",
+            "r",
+            "t",
+            "space",
+            "tab",
+            "shift",
+            "ctrl",
+            "alt",
+            "left",
+            "right",
+            "up",
+            "down",
+        ]:
             add(key, key)
         menu.addSeparator()
         for i in range(1, 13):
@@ -6087,9 +6224,10 @@ class MacroDialog(QtWidgets.QDialog):
             return
         act_data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if isinstance(act_data, dict) and act_data.get("marker") == "__elif__":
-            cond = act_data.get("condition") if isinstance(act_data.get("condition"), Condition) else Condition(
+            cond_src = act_data.get("condition") if isinstance(act_data.get("condition"), Condition) else Condition(
                 type="pixel", region=(0, 0, 1, 1), color=(255, 0, 0)
             )
+            cond = copy.deepcopy(cond_src)
             enabled_flag = item.checkState(5) == QtCore.Qt.CheckState.Checked
             try:
                 setattr(cond, "enabled", enabled_flag)
@@ -6108,8 +6246,8 @@ class MacroDialog(QtWidgets.QDialog):
                         else_actions.append(self.action_tree._action_from_item(child.child(j)))
             temp_act = Action(
                 type="elif",
-                name=None,
-                description=item.text(3) or "",
+                name=item.text(2) or None,
+                description=item.text(4) or "",
                 enabled=enabled_flag,
                 condition=cond,
                 actions=branch_actions,
@@ -6142,7 +6280,8 @@ class MacroDialog(QtWidgets.QDialog):
                 if new_act.type not in ("if", "elif"):
                     QtWidgets.QMessageBox.warning(self, "타입 제한", "ELIF는 조건 타입만 허용됩니다.")
                     return
-                if new_act.type == "if":
+                convert_to_if = new_act.type == "if" and not getattr(new_act, "_as_elif", False)
+                if convert_to_if:
                     parent_if = item.parent()
                     parent_container = parent_if.parent() if parent_if else None
                     insert_after = parent_if
@@ -6164,6 +6303,12 @@ class MacroDialog(QtWidgets.QDialog):
                     setattr(new_cond, "enabled", enabled_flag)
                 except Exception:
                     pass
+                # 조건 이름을 유지
+                if hasattr(cond, "name") and not getattr(new_cond, "name", None):
+                    try:
+                        setattr(new_cond, "name", getattr(cond, "name", None))
+                    except Exception:
+                        pass
                 item.setData(0, QtCore.Qt.ItemDataRole.UserRole, {"marker": "__elif__", "condition": new_cond, "enabled": enabled_flag})
                 self.action_tree._set_type_text(item, "ELIF")
                 item.setText(2, new_act.name or "")
@@ -6879,6 +7024,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.condition_color_compare_edit = QtWidgets.QLineEdit()
         self.condition_color_compare_edit.setPlaceholderText("예: ff00aa")
         _setup_hex_line_edit(self.condition_color_compare_edit)
+        self.condition_compare_chip = _attach_hex_preview_chip(self.condition_color_compare_edit)
         compare_row.addWidget(self.condition_color_compare_edit)
         self.condition_color_compare_btn = QtWidgets.QPushButton("조건과 대조")
         self.condition_color_compare_btn.clicked.connect(self._on_condition_compare_color)
@@ -6909,6 +7055,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.region_input = QtWidgets.QLineEdit("0,0,100,100")
         self.color_input = QtWidgets.QLineEdit("ff0000")
         _setup_hex_line_edit(self.color_input)
+        self.color_input_chip = _attach_hex_preview_chip(self.color_input)
         self.tol_spin = QtWidgets.QSpinBox()
         self.tol_spin.setRange(0, 255)
         self.tol_spin.setValue(self._tolerance)
@@ -8118,19 +8265,51 @@ class DebuggerDialog(QtWidgets.QDialog):
         result_text = "참" if result_bool else "거짓"
         if base_result is not None and base_result != result_bool:
             result_text += f" / base={'참' if base_result else '거짓'}"
-        # 비교 색상 결과 추가
-        if compare_color and cond_type == "pixel":
+
+        color_chip_html = ""
+        tgt_hex = None
+        tooltip_parts: list[str] = []
+
+        # 비교 색상 결과 추가 + 색상 칩 준비
+        if cond_type == "pixel":
             detail = node.get("detail", {}).get("pixel") or {}
             target = detail.get("color")
             tol = int(detail.get("tolerance", 0))
             expect_exists = detail.get("expect_exists", True)
-            if isinstance(target, (list, tuple)) and len(target) == 3:
+            tgt_hex = _rgb_to_hex(target) if isinstance(target, (list, tuple)) and len(target) == 3 else None
+            if tgt_hex:
+                tooltip_parts.append(f"목표 색상: {tgt_hex}")
+            if compare_color and isinstance(target, (list, tuple)) and len(target) == 3:
                 diff = max(abs(int(target[i]) - int(compare_color[i])) for i in range(3))
                 match = diff <= tol
                 final = match if expect_exists else (not match)
+                need = None
+                if not final:
+                    need = f"tol>={diff}" if expect_exists else f"tol<{diff}"
                 result_text = f"{result_text} / 대조={'참' if final else '거짓'} diff={diff}"
+                tooltip_parts.append(f"대조 색상: {_rgb_to_hex(compare_color)} / diff={diff} tol={tol}")
+                if need:
+                    tooltip_parts.append(f"대조 필요: {need}")
+            sample = detail.get("sample_color")
+            if isinstance(sample, (list, tuple)) and len(sample) == 3:
+                sample_hex = _rgb_to_hex(sample)
+                if sample_hex:
+                    tooltip_parts.append(f"샘플: {sample_hex}")
+
         detail_text = self._format_condition_detail(cond_type, node.get("detail") or {}, cond)
         item = QtWidgets.QTreeWidgetItem([label, result_text, detail_text])
+        if tgt_hex:
+            try:
+                color_str = tgt_hex if tgt_hex.startswith("#") else f"#{tgt_hex}"
+                color = QtGui.QColor(color_str)
+                if color.isValid():
+                    pix = QtGui.QPixmap(12, 12)
+                    pix.fill(color)
+                    item.setIcon(2, QtGui.QIcon(pix))
+            except Exception:
+                pass
+        if tooltip_parts:
+            item.setToolTip(2, "\n".join(tooltip_parts))
         self._apply_condition_color(item, node.get("detail") or {}, result_bool)
         for child in node.get("children") or []:
             item.addChild(self._build_condition_item(child, compare_color=compare_color))
@@ -8183,7 +8362,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             region = pix.get("region")
             color = pix.get("color")
             region_txt = ",".join(str(v) for v in region) if region else "-"
-            color_txt = "#" + "".join(f"{c:02x}" for c in color) if isinstance(color, (list, tuple)) else "-"
+            color_txt = _rgb_to_hex(color) or "-"
             expect = "있음" if pix.get("expect_exists", True) else "없음"
             found = "있음" if pix.get("found") else "없음"
             tol = pix.get("tolerance")
@@ -8792,6 +8971,9 @@ class PixelTestDialog(QtWidgets.QDialog):
         _attach_variable_completer(self.region_edit, [])
         self.color_edit = QtWidgets.QLineEdit("ff0000")
         _setup_hex_line_edit(self.color_edit)
+        self.color_preview = _make_hex_preview_label()
+        self.color_edit.textChanged.connect(lambda txt: _update_hex_preview_label(self.color_preview, txt))
+        _update_hex_preview_label(self.color_preview, self.color_edit.text())
         _attach_variable_completer(self.color_edit, [])
         self.tol_spin = QtWidgets.QSpinBox()
         self.tol_spin.setRange(0, 255)
@@ -8805,7 +8987,14 @@ class PixelTestDialog(QtWidgets.QDialog):
         self.interval_spin.setValue(200)
 
         form.addRow("Region x,y,w,h", self.region_edit)
-        form.addRow("색상 (HEX RRGGBB)", self.color_edit)
+        color_row = QtWidgets.QHBoxLayout()
+        color_row.setContentsMargins(0, 0, 0, 0)
+        color_row.setSpacing(6)
+        color_row.addWidget(self.color_edit, 1)
+        color_row.addWidget(self.color_preview)
+        color_wrap = QtWidgets.QWidget()
+        color_wrap.setLayout(color_row)
+        form.addRow("색상", color_wrap)
         form.addRow("Tolerance", self.tol_spin)
         form.addRow("기대 상태", self.expect_combo)
         form.addRow("테스트 주기", self.interval_spin)
