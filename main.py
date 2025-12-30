@@ -9189,6 +9189,8 @@ class PresetTransferDialog(QtWidgets.QDialog):
         theme: dict | None = None,
         log_cb=None,
         profile_path: str | None = None,
+        sample_preset_state: dict | None = None,
+        save_sample_preset_state=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("프리셋 옮기기")
@@ -9204,6 +9206,9 @@ class PresetTransferDialog(QtWidgets.QDialog):
         self._theme = theme or {}
         self._log_cb = log_cb
         self._profile_path = Path(profile_path) if profile_path else None
+        self._sample_preset_state = sample_preset_state or {}
+        self._save_sample_preset_state_cb = save_sample_preset_state
+        self._sample_preset_path: str | None = None
         self._base_res_default = base_res
         self._base_scale_default = base_scale
         self._current_res_default = current_res
@@ -9247,6 +9252,16 @@ class PresetTransferDialog(QtWidgets.QDialog):
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
+        preset_row = QtWidgets.QHBoxLayout()
+        self.sample_preset_label = QtWidgets.QLabel("불러온 좌표 프리셋: (없음)")
+        self.sample_preset_label.setStyleSheet("color: gray;")
+        preset_row.addWidget(self.sample_preset_label, 1)
+        self.sample_preset_load_btn = QtWidgets.QPushButton("좌표 프리셋 불러오기")
+        self.sample_preset_save_btn = QtWidgets.QPushButton("좌표 프리셋 저장")
+        preset_row.addWidget(self.sample_preset_load_btn)
+        preset_row.addWidget(self.sample_preset_save_btn)
+        layout.addLayout(preset_row)
+
         self.sample_table = QtWidgets.QTableWidget(0, 2)
         self.sample_table.setHorizontalHeaderLabels(["기준 (x,y)", "변환 (x',y')"])
         header = self.sample_table.horizontalHeader()
@@ -9287,13 +9302,14 @@ class PresetTransferDialog(QtWidgets.QDialog):
         self.sample_preview.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
         layout.addWidget(self.sample_preview)
 
+        self.sample_preset_load_btn.clicked.connect(self._on_load_sample_preset)
+        self.sample_preset_save_btn.clicked.connect(self._on_save_sample_preset)
         self.add_sample_btn.clicked.connect(self._add_sample_row)
         self.del_sample_btn.clicked.connect(self._remove_sample_rows)
         self.calc_sample_btn.clicked.connect(self._on_calc_samples)
         self.sample_test_btn.clicked.connect(self._on_test_sample_point)
         self.sample_test_input.returnPressed.connect(self._on_test_sample_point)
-        for _ in range(2):
-            self._add_sample_row()
+        self._apply_initial_samples()
 
     def _add_sample_row(self, sample: tuple[float, float, float, float] | None = None):
         row = self.sample_table.rowCount()
@@ -9311,6 +9327,195 @@ class PresetTransferDialog(QtWidgets.QDialog):
             rows = [self.sample_table.rowCount() - 1]
         for r in rows:
             self.sample_table.removeRow(r)
+
+    def _apply_initial_samples(self):
+        preset_state = self._sample_preset_state if isinstance(self._sample_preset_state, dict) else {}
+        preset_path = preset_state.get("path")
+        preset_samples = self._normalize_sample_list(preset_state.get("samples"))
+        if preset_path and Path(preset_path).exists():
+            if self._load_sample_preset_from_path(preset_path, silent=True, remember=False):
+                return
+        if preset_samples:
+            self._sample_preset_path = str(preset_path) if preset_path else None
+            self._set_sample_rows(preset_samples)
+            self._update_sample_preset_label(self._sample_preset_path, True)
+            return
+        self._set_sample_rows([])
+        self._update_sample_preset_label(None, False)
+
+    def _set_sample_rows(self, samples: list[tuple[float, float, float, float]]):
+        self.sample_table.setRowCount(0)
+        for sample in samples:
+            self._add_sample_row(sample)
+        if not samples:
+            for _ in range(2):
+                self._add_sample_row()
+        try:
+            self.sample_test_btn.setEnabled(False)
+            self.sample_test_result.setText("결과: -")
+        except Exception:
+            pass
+        self._last_sample_calc = None
+        try:
+            self.sample_result_label.setText("계수: a/b/c/d, RMS: -")
+            self.sample_preview.setPlainText("")
+        except Exception:
+            pass
+
+    def _update_sample_preset_label(self, path: str | None, has_samples: bool):
+        if not isinstance(getattr(self, "sample_preset_label", None), QtWidgets.QLabel):
+            return
+        if path:
+            name = Path(path).name
+            self.sample_preset_label.setText(f"불러온 좌표 프리셋: {name}")
+            self.sample_preset_label.setToolTip(str(path))
+            self.sample_preset_label.setStyleSheet("")
+        elif has_samples:
+            self.sample_preset_label.setText("불러온 좌표 프리셋: (파일 없음)")
+            self.sample_preset_label.setToolTip("")
+            self.sample_preset_label.setStyleSheet("color: gray;")
+        else:
+            self.sample_preset_label.setText("불러온 좌표 프리셋: (없음)")
+            self.sample_preset_label.setToolTip("")
+            self.sample_preset_label.setStyleSheet("color: gray;")
+
+    def _sample_preset_dir(self) -> Path:
+        if self._sample_preset_path:
+            try:
+                return Path(self._sample_preset_path).parent
+            except Exception:
+                pass
+        if self._profile_path:
+            try:
+                return self._profile_path.parent
+            except Exception:
+                pass
+        return Path.cwd()
+
+    @staticmethod
+    def _normalize_sample_list(raw) -> list[tuple[float, float, float, float]]:
+        items = None
+        if isinstance(raw, dict):
+            if isinstance(raw.get("samples"), list):
+                items = raw.get("samples")
+            elif isinstance(raw.get("transform_matrix"), dict):
+                tm = raw.get("transform_matrix") or {}
+                if isinstance(tm.get("samples"), list):
+                    items = tm.get("samples")
+        elif isinstance(raw, list):
+            items = raw
+        result: list[tuple[float, float, float, float]] = []
+        if not isinstance(items, list):
+            return result
+        for item in items:
+            try:
+                src = None
+                dst = None
+                if isinstance(item, dict):
+                    src = item.get("src") or item.get("source") or item.get("base") or item.get("from")
+                    dst = item.get("dst") or item.get("target") or item.get("to")
+                elif isinstance(item, (list, tuple)):
+                    if len(item) == 2 and all(isinstance(p, (list, tuple)) for p in item):
+                        src, dst = item[0], item[1]
+                    elif len(item) == 4:
+                        src, dst = item[:2], item[2:]
+                if not (isinstance(src, (list, tuple)) and isinstance(dst, (list, tuple))):
+                    continue
+                if len(src) < 2 or len(dst) < 2:
+                    continue
+                sx, sy = float(src[0]), float(src[1])
+                tx, ty = float(dst[0]), float(dst[1])
+                result.append((sx, sy, tx, ty))
+            except Exception:
+                continue
+        return result
+
+    def _load_sample_preset_from_path(self, path: str, *, silent: bool = False, remember: bool = True) -> bool:
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            if not silent:
+                QtWidgets.QMessageBox.warning(self, "불러오기 실패", f"파일을 열 수 없습니다.\n{exc}")
+            else:
+                self._log(f"좌표 프리셋 로드 실패({path}): {exc}")
+            return False
+        samples = self._normalize_sample_list(data)
+        if not samples:
+            if not silent:
+                QtWidgets.QMessageBox.warning(self, "불러오기 실패", "유효한 좌표 샘플을 찾을 수 없습니다.")
+            else:
+                self._log(f"좌표 프리셋 로드 실패({path}): 샘플 없음")
+            return False
+        self._sample_preset_path = str(path)
+        self._set_sample_rows(samples)
+        self._update_sample_preset_label(self._sample_preset_path, True)
+        if remember:
+            self._persist_sample_preset_state(samples)
+        if not silent:
+            self._log(f"좌표 프리셋 불러오기: {path} (샘플 {len(samples)}개)")
+        return True
+
+    def _on_load_sample_preset(self):
+        start_dir = self._sample_preset_dir()
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "좌표 프리셋 불러오기", str(start_dir), "Text Preset (*.txt);;JSON Files (*.json);;All Files (*.*)"
+        )
+        if not path:
+            return
+        self._load_sample_preset_from_path(path)
+
+    def _on_save_sample_preset(self):
+        try:
+            samples = self._collect_samples()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "입력 오류", str(exc))
+            return
+        default_dir = self._sample_preset_dir()
+        default_name = (
+            Path(self._sample_preset_path).name
+            if self._sample_preset_path
+            else (f"{self._profile_path.stem}_samples.txt" if self._profile_path else "sample_preset.txt")
+        )
+        default_path = default_dir / default_name
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "좌표 프리셋 저장", str(default_path), "Text Preset (*.txt);;JSON Files (*.json);;All Files (*.*)"
+        )
+        if not path:
+            return
+        if not Path(path).suffix:
+            path = f"{path}.txt"
+        payload = {
+            "type": "preset_transfer_samples",
+            "version": 1,
+            "samples": [{"src": [sx, sy], "dst": [tx, ty]} for sx, sy, tx, ty in samples],
+            "meta": {
+                "base_resolution": list(self._base_res_default) if self._base_res_default else None,
+                "base_scale_percent": self._base_scale_default,
+            },
+        }
+        try:
+            Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "저장 실패", str(exc))
+            return
+        self._sample_preset_path = str(path)
+        self._update_sample_preset_label(self._sample_preset_path, True)
+        self._persist_sample_preset_state(samples)
+        QtWidgets.QMessageBox.information(self, "저장 완료", f"좌표 프리셋을 저장했습니다.\n{path}")
+        self._log(f"좌표 프리셋 저장: {path} (샘플 {len(samples)}개)")
+
+    def _persist_sample_preset_state(self, samples: list[tuple[float, float, float, float]] | None):
+        if not callable(self._save_sample_preset_state_cb):
+            return
+        payload = {
+            "path": self._sample_preset_path,
+            "samples": [{"src": [sx, sy], "dst": [tx, ty]} for sx, sy, tx, ty in (samples or [])],
+        }
+        self._sample_preset_state = payload
+        try:
+            self._save_sample_preset_state_cb(payload)
+        except Exception:
+            pass
 
     @staticmethod
     def _parse_sample_point_text(text: str) -> tuple[float, float]:
@@ -10600,6 +10805,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._debugger_state = self._state.get("debugger", {}) if isinstance(self._state, dict) else {}
         self._image_viewer_state = self._state.get("image_viewer", {}) if isinstance(self._state, dict) else {}
         self._color_calc_state = self._state.get("color_calc", {}) if isinstance(self._state, dict) else {}
+        self._preset_transfer_state = self._state.get("preset_transfer", {}) if isinstance(self._state, dict) else {}
         self._log_enabled = bool(self._state.get("log_enabled", True)) if isinstance(self._state, dict) else True
         history_state = self._state.get("profile_history", {}) if isinstance(self._state, dict) else {}
         self._recent_profiles: list[str] = self._dedupe_profile_paths(
@@ -11028,6 +11234,10 @@ class MacroWindow(QtWidgets.QMainWindow):
             theme=self._theme,
             log_cb=self._append_log,
             profile_path=self.current_profile_path,
+            sample_preset_state=self._preset_transfer_state.get("sample_preset")
+            if isinstance(self._preset_transfer_state, dict)
+            else {},
+            save_sample_preset_state=self._persist_preset_transfer_state,
         )
         dlg.show()
         dlg.raise_()
@@ -12178,6 +12388,12 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _persist_image_viewer_state(self, data: dict):
         self._image_viewer_state = data or {}
         self._update_state("image_viewer", self._image_viewer_state)
+
+    def _persist_preset_transfer_state(self, data: dict):
+        state = dict(self._preset_transfer_state) if isinstance(self._preset_transfer_state, dict) else {}
+        state["sample_preset"] = data or {}
+        self._preset_transfer_state = state
+        self._update_state("preset_transfer", state)
 
     def _screenshot_hotkeys_info(self) -> dict:
         hk = self.screenshot_manager.hotkeys
