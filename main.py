@@ -5557,6 +5557,13 @@ class MacroDialog(QtWidgets.QDialog):
         self.trigger_main_edit = QtWidgets.QLineEdit()
         self.trigger_main_edit.setPlaceholderText("주 키 (예: w, f1, mouse1)")
         self.trigger_main_edit.setClearButtonEnabled(True)
+        self.hold_threshold_spin = QtWidgets.QDoubleSpinBox()
+        self.hold_threshold_spin.setRange(0.0, 60.0)
+        self.hold_threshold_spin.setDecimals(2)
+        self.hold_threshold_spin.setSingleStep(0.1)
+        self.hold_threshold_spin.setSuffix(" 초 이상 누름")
+        self.hold_threshold_spin.setSpecialValueText("즉시 발동")
+        self.hold_threshold_spin.setToolTip("hold 모드일 때, 이 시간 이상 누르고 있어야 발동. 0이면 바로 발동.")
         trigger_builder_row = QtWidgets.QWidget()
         trigger_builder_layout = QtWidgets.QHBoxLayout(trigger_builder_row)
         trigger_builder_layout.setContentsMargins(0, 0, 0, 0)
@@ -5602,6 +5609,7 @@ class MacroDialog(QtWidgets.QDialog):
         form.addRow("트리거 키", trigger_row)
         form.addRow("조합 구성", trigger_builder_row)
         form.addRow("모드 (hold/toggle)", self.mode_combo)
+        form.addRow("홀드 최소 누름 시간", self.hold_threshold_spin)
         form.addRow(self.enabled_check)
         form.addRow("사이클 횟수(0=무한)", self.cycle_spin)
         form.addRow(self.suppress_checkbox)
@@ -5619,7 +5627,9 @@ class MacroDialog(QtWidgets.QDialog):
             chk.toggled.connect(self._sync_trigger_from_builder)
         self.trigger_main_edit.textChanged.connect(self._sync_trigger_from_builder)
         self.trigger_edit.textChanged.connect(self._sync_builder_from_trigger_text)
+        self.mode_combo.currentIndexChanged.connect(self._sync_hold_threshold_visibility)
         self._sync_builder_from_trigger_text()
+        self._sync_hold_threshold_visibility()
 
         self.action_tree = ActionTreeWidget()
         layout.addWidget(self.action_tree)
@@ -5758,6 +5768,8 @@ class MacroDialog(QtWidgets.QDialog):
             self._scope = "global"
             self._app_targets = []
             self._set_scope_label()
+            self.hold_threshold_spin.setValue(0.0)
+            self._sync_hold_threshold_visibility()
 
     def _populate_trigger_menu(self):
         menu = self.trigger_menu
@@ -5834,6 +5846,13 @@ class MacroDialog(QtWidgets.QDialog):
             self.trigger_edit.setText(normalize_trigger_key(text))
         finally:
             self._updating_trigger_builder = False
+
+    def _sync_hold_threshold_visibility(self):
+        is_hold = (self.mode_combo.currentText() or "hold").lower() == "hold"
+        label = self._form_layout.labelForField(self.hold_threshold_spin) if hasattr(self, "_form_layout") else None
+        self.hold_threshold_spin.setVisible(is_hold)
+        if label:
+            label.setVisible(is_hold)
 
     def _scope_summary_text(self) -> str:
         if self._scope != "app":
@@ -6402,9 +6421,45 @@ class MacroDialog(QtWidgets.QDialog):
             return
         copied: list[Action] = []
         for item in items:
-            act = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-            if isinstance(act, Action):
-                copied.append(copy.deepcopy(act))
+            data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if isinstance(data, Action):
+                copied.append(copy.deepcopy(data))
+                continue
+            if isinstance(data, dict) and data.get("marker") == "__elif__":
+                cond_src = data.get("condition")
+                cond = copy.deepcopy(cond_src) if isinstance(cond_src, Condition) else Condition(
+                    type="pixel", region=(0, 0, 1, 1), color=(255, 0, 0), tolerance=0
+                )
+                enabled_flag = item.checkState(5) == QtCore.Qt.CheckState.Checked
+                try:
+                    setattr(cond, "enabled", enabled_flag)
+                except Exception:
+                    pass
+                branch_actions: list[Action] = []
+                else_actions: list[Action] = []
+                for idx in range(item.childCount()):
+                    child = item.child(idx)
+                    marker = child.data(0, QtCore.Qt.ItemDataRole.UserRole)
+                    if marker == "__else__":
+                        for j in range(child.childCount()):
+                            child_act = self.action_tree._action_from_item(child.child(j))
+                            if child_act:
+                                else_actions.append(child_act)
+                        continue
+                    child_act = self.action_tree._action_from_item(child)
+                    if child_act:
+                        branch_actions.append(child_act)
+                copied.append(
+                    Action(
+                        type="if",
+                        condition=cond,
+                        actions=branch_actions,
+                        else_actions=else_actions,
+                        name=item.text(2) or "",
+                        description=item.text(4) or "",
+                        enabled=enabled_flag,
+                    )
+                )
         if not copied:
             QtWidgets.QMessageBox.information(self, "선택 없음", "액션을 선택하세요.")
             return
@@ -6496,6 +6551,11 @@ class MacroDialog(QtWidgets.QDialog):
         self.trigger_edit.setText(macro.trigger_key)
         self._sync_builder_from_trigger_text()
         self.mode_combo.setCurrentText(macro.mode)
+        try:
+            self.hold_threshold_spin.setValue(max(0.0, float(getattr(macro, "hold_press_seconds", 0.0) or 0.0)))
+        except Exception:
+            self.hold_threshold_spin.setValue(0.0)
+        self._sync_hold_threshold_visibility()
         self.enabled_check.setChecked(getattr(macro, "enabled", True))
         self.suppress_checkbox.setChecked(bool(macro.suppress_trigger))
         self._stop_others_on_trigger = bool(getattr(macro, "stop_others_on_trigger", False))
@@ -6541,6 +6601,9 @@ class MacroDialog(QtWidgets.QDialog):
         name = self.name_edit.text().strip() or None
         description = self.desc_edit.text().strip() or None
         mode = self.mode_combo.currentText() or "hold"
+        hold_press_sec = max(0.0, float(self.hold_threshold_spin.value()))
+        if hold_press_sec == 0:
+            hold_press_sec = None
         suppress = self.suppress_checkbox.isChecked()
         interaction_mode = (self._interaction_mode or "none").lower()
         if interaction_mode not in ("none", "stop", "suspend"):
@@ -6576,6 +6639,7 @@ class MacroDialog(QtWidgets.QDialog):
             cycle_count=cycle_count,
             scope=scope,
             app_targets=app_targets,
+            hold_press_seconds=hold_press_sec,
         )
 
 

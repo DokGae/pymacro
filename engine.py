@@ -899,6 +899,7 @@ class MacroCondition:
 class Macro:
     trigger_key: str
     mode: MacroMode = "hold"
+    hold_press_seconds: Optional[float] = None
     actions: List[Action] = field(default_factory=list)
     stop_actions: List[Action] = field(default_factory=list)
     suppress_trigger: bool = True
@@ -960,9 +961,18 @@ class Macro:
         interaction_mode = str(data.get("interaction_outgoing_mode", "none") or "none").lower()
         if interaction_mode not in ("none", "stop", "suspend"):
             interaction_mode = "none"
+        hold_press_seconds = data.get("hold_press_seconds", None)
+        try:
+            if hold_press_seconds in (None, "", False):
+                hold_press_seconds = None
+            else:
+                hold_press_seconds = max(0.0, float(hold_press_seconds))
+        except Exception:
+            hold_press_seconds = None
         return cls(
             trigger_key=normalize_trigger_key(str(data.get("trigger_key") or data.get("key") or "")),
             mode=data.get("mode", "hold"),
+            hold_press_seconds=hold_press_seconds,
             actions=actions,
             stop_actions=stop_actions,
             suppress_trigger=bool(data.get("suppress_trigger", True)),
@@ -984,6 +994,13 @@ class Macro:
     def __post_init__(self):
         # 정규화된 형태로 유지해 비교/차단 로직을 단순화한다.
         self.trigger_key = normalize_trigger_key(self.trigger_key)
+        try:
+            if self.hold_press_seconds in (None, "", False):
+                self.hold_press_seconds = None
+            else:
+                self.hold_press_seconds = max(0.0, float(self.hold_press_seconds))
+        except Exception:
+            self.hold_press_seconds = None
 
     @property
     def trigger_keys(self) -> List[str]:
@@ -998,6 +1015,7 @@ class Macro:
         return {
             "trigger_key": self.trigger_key,
             "mode": self.mode,
+            "hold_press_seconds": getattr(self, "hold_press_seconds", None),
             "name": self.name,
             "description": self.description,
             "suppress_trigger": self.suppress_trigger,
@@ -2045,6 +2063,7 @@ class MacroEngine:
         self._cond_lock = threading.Lock()
         self._macro_runners: Dict[int, MacroRunner] = {}
         self._hold_release_since: Dict[int, float] = {}
+        self._hold_press_since: Dict[int, float] = {}
         self._recent_sends: Dict[str, float] = {}
         self._guard_macro_idx: Optional[int] = None
         self._suspended_toggle_indices: Set[int] = set()
@@ -3004,6 +3023,7 @@ class MacroEngine:
                     if runner:
                         runner.stop()
                     self._hold_release_since.pop(idx, None)
+                    self._hold_press_since.pop(idx, None)
                     continue
                 if not self._macro_matches_app(macro, app_ctx):
                     runner = self._macro_runners.pop(idx, None)
@@ -3013,19 +3033,28 @@ class MacroEngine:
                             self._guard_macro_idx = None
                             self._resume_suspended_toggles()
                     self._hold_release_since.pop(idx, None)
+                    self._hold_press_since.pop(idx, None)
                     continue
                 runner = self._macro_runners.get(idx)
                 if macro.mode == "hold":
                     pressed, state_detail = self._trigger_state(macro.trigger_key, disallow_extra_modifiers=True)
                     if pressed:
                         self._hold_release_since.pop(idx, None)
+                        now = time.monotonic()
+                        press_since = self._hold_press_since.get(idx)
+                        if press_since is None:
+                            press_since = now
+                            self._hold_press_since[idx] = press_since
+                        press_thresh = max(0.0, getattr(macro, "hold_press_seconds", 0.0) or 0.0)
                         if runner is None:
-                            self._apply_macro_interaction(idx)
-                            runner = MacroRunner(macro, self, idx)
-                            self._macro_runners[idx] = runner
-                            self._log_hold_transition(macro, idx, "start", state_detail)
-                            runner.start()
+                            if press_thresh <= 0.0 or (now - press_since) >= press_thresh:
+                                self._apply_macro_interaction(idx)
+                                runner = MacroRunner(macro, self, idx)
+                                self._macro_runners[idx] = runner
+                                self._log_hold_transition(macro, idx, "start", state_detail, elapsed=now - press_since if press_since else None)
+                                runner.start()
                     else:
+                        self._hold_press_since.pop(idx, None)
                         if runner is not None:
                             now = time.monotonic()
                             first_false = self._hold_release_since.get(idx)
@@ -3072,6 +3101,7 @@ class MacroEngine:
                 self._emit_log(f"매크로 스레드가 아직 종료되지 않음: {runner.macro.trigger_key}")
             self._macro_runners.pop(idx, None)
         self._hold_release_since.clear()
+        self._hold_press_since.clear()
         self._guard_macro_idx = None
         self._suspended_toggle_indices.clear()
 
@@ -3082,6 +3112,7 @@ class MacroEngine:
             runner.stop()
             self._macro_runners.pop(idx, None)
             self._hold_release_since.pop(idx, None)
+            self._hold_press_since.pop(idx, None)
 
     def _suspend_other_macros(self, except_idx: Optional[int] = None):
         for idx, runner in list(self._macro_runners.items()):
@@ -3097,6 +3128,7 @@ class MacroEngine:
             runner.stop()
             self._macro_runners.pop(idx, None)
             self._hold_release_since.pop(idx, None)
+            self._hold_press_since.pop(idx, None)
         if except_idx is not None:
             self._guard_macro_idx = except_idx
 
