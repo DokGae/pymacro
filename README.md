@@ -6,7 +6,7 @@
 
 주요 특징
 ---------
-- 단일 액션 트리: `press/down/up/sleep/if/label/goto/return/continue/break/group/while/pixel_get` 등.
+- 단일 액션 트리: `press/down/up/sleep/macro_stop/if/label/goto/return/continue/break/group/while/pixel_get` 등.
 - 조건: 키/픽셀, 중첩 AND/OR, on_true/on_false 브랜치. 색상/영역 변수 참조 지원(`/var`, `${var}`, `@var`).
 - 픽셀겟: 화면 픽셀을 읽어 전역 color 변수에 저장 → 이후 조건에서 색상 변수로 사용.
 - 흐름 제어: 라벨/점프, 그룹 모드(모두 실행, 첫 참만 실행, 첫 참 후 continue/return, 지정 횟수 반복, 무한 반복 while+break).
@@ -37,6 +37,7 @@ Windows + 관리자 권한 필요(Interception 드라이버 사용).
 - `if`: 조건이 참이면 children, 거짓이면 ELSE children 실행(ELSE는 필요할 때만 추가).
 - `label` / `goto`: 흐름 점프.
 - `return`: 현재 매크로 종료.
+- `macro_stop`: 현재 매크로를 즉시 중단(중단 액션 실행 포함).
 - `continue`: 매크로 사이클 처음으로.
 - `break`: 현재 그룹/while 루프 탈출.
 - `group`: children 실행. 그룹 모드:

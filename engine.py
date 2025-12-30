@@ -34,6 +34,7 @@ ActionType = Literal[
     "mouse_up",
     "mouse_move",
     "sleep",
+    "macro_stop",
     "if",
     "label",
     "goto",
@@ -1804,6 +1805,11 @@ class MacroRunner:
 
         if action.type == "break":
             return end_result(signal="break", status="break")
+
+        if action.type == "macro_stop":
+            # 현재 매크로를 즉시 중단한다.
+            self.stop()
+            return end_result(signal="break", status="macro_stop")
 
         if action.type == "pixel_get":
             region = action.pixel_region

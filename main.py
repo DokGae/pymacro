@@ -4202,6 +4202,8 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 ",".join(str(v) for v in act.pixel_region) if act.pixel_region else ""
             )
             return f"{region_text} -> {act.pixel_target or ''}".strip() + suffix
+        if act.type == "macro_stop":
+            return "현재 매크로 중지" + suffix
         if act.type == "group":
             mode = act.group_mode or "all"
             if mode == "repeat_n":
@@ -4718,6 +4720,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("마우스 떼기 (up)", "mouse_up"),
             ("마우스 이동", "mouse_move"),
             ("대기 (sleep)", "sleep"),
+            ("현재 매크로 중지 (macro_stop)", "macro_stop"),
             ("변수 설정 (set_var)", "set_var"),
             ("타이머 설정 (timer)", "timer"),
             ("조건(if)", "if"),

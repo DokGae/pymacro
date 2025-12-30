@@ -118,7 +118,7 @@
             "var_name": null,
             "var_value_raw": null,
             "var_operator": "eq",
-            "region": "1575,135,1,1",
+            "region": "1135,295,1,1",
             "color": "13E3CD",
             "tolerance": 40,
             "pixel_exists": true,
@@ -679,7 +679,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1817,1423,1,1",
+                    "region": "1377,1583,1,1",
                     "color": "fcfcfc",
                     "tolerance": 5,
                     "pixel_exists": true,
@@ -696,7 +696,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1786,1426,1,1",
+                    "region": "1346,1586,1,1",
                     "color": "0f4c55",
                     "tolerance": 30,
                     "pixel_exists": false,
@@ -713,7 +713,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1806,1386,1,1",
+                    "region": "1366,1546,1,1",
                     "color": "102137",
                     "tolerance": 10,
                     "pixel_exists": true,
@@ -994,7 +994,7 @@
                             "var_name": null,
                             "var_value_raw": null,
                             "var_operator": "eq",
-                            "region": "1944,1420,1,1",
+                            "region": "1504,1580,1,1",
                             "color": "ffffff",
                             "tolerance": 5,
                             "pixel_exists": true,
@@ -1011,7 +1011,7 @@
                             "var_name": null,
                             "var_value_raw": null,
                             "var_operator": "eq",
-                            "region": "1920,1426,1,1",
+                            "region": "1480,1586,1,1",
                             "color": "10474F",
                             "tolerance": 5,
                             "pixel_exists": false,
@@ -1279,7 +1279,7 @@
                 "var_name": null,
                 "var_value_raw": null,
                 "var_operator": "eq",
-                "region": "1856,845,1,1",
+                "region": "1416,1005,1,1",
                 "color": "9a9a9a",
                 "tolerance": 3,
                 "pixel_exists": true,
@@ -1296,7 +1296,7 @@
                 "var_name": null,
                 "var_value_raw": null,
                 "var_operator": "eq",
-                "region": "1857,845,1,1",
+                "region": "1417,1005,1,1",
                 "color": "ffffff",
                 "tolerance": 3,
                 "pixel_exists": true,
@@ -1757,7 +1757,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1817,1423,1,1",
+                    "region": "1377,1583,1,1",
                     "color": "fcfcfc",
                     "tolerance": 5,
                     "pixel_exists": true,
@@ -1774,7 +1774,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1786,1426,1,1",
+                    "region": "1346,1586,1,1",
                     "color": "0f4c55",
                     "tolerance": 30,
                     "pixel_exists": false,
@@ -1791,7 +1791,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1806,1386,1,1",
+                    "region": "1366,1546,1,1",
                     "color": "102137",
                     "tolerance": 10,
                     "pixel_exists": true,
@@ -2072,7 +2072,7 @@
                             "var_name": null,
                             "var_value_raw": null,
                             "var_operator": "eq",
-                            "region": "1944,1420,1,1",
+                            "region": "1504,1580,1,1",
                             "color": "ffffff",
                             "tolerance": 5,
                             "pixel_exists": true,
@@ -2089,7 +2089,7 @@
                             "var_name": null,
                             "var_value_raw": null,
                             "var_operator": "eq",
-                            "region": "1920,1426,1,1",
+                            "region": "1480,1586,1,1",
                             "color": "10474F",
                             "tolerance": 5,
                             "pixel_exists": false,
@@ -2356,7 +2356,7 @@
       ]
     }
   ],
-  "pixel_region": "0,0,100,100",
+  "pixel_region": "-440,160,100,100",
   "pixel_color": "ff0000",
   "pixel_tolerance": 10,
   "pixel_expect_exists": true,
@@ -2389,19 +2389,19 @@
   "variables": {
     "sleep": {},
     "region": {
-      "E스킬L": "1952,1423,1,1",
-      "E스킬쿨중": "1920,1426,1,1",
-      "E스킬활성": "1919,1400,1,1",
-      "검성우클릭범위": "2082,1396,1,1",
-      "검성좌클릭범위": "2008,1396,1,1",
-      "4스킬L": "1549,1420,1,1",
-      "4스킬쿨중범위": "1555,1426,1,1",
-      "스티그마1L": "1629,1423,1,1",
-      "스티그마1사용중": "1597,1426,1,1",
-      "스티그마2L": "1691,1423,1,1",
-      "스티그마2사용중": "1660,1426,1,1",
-      "스티그마3L": "1754,1423,1,1",
-      "스티그마3사용중": "1723,1426,1,1"
+      "E스킬L": "1512,1583,1,1",
+      "E스킬쿨중": "1480,1586,1,1",
+      "E스킬활성": "1479,1560,1,1",
+      "검성우클릭범위": "1642,1556,1,1",
+      "검성좌클릭범위": "1568,1556,1,1",
+      "4스킬L": "1109,1580,1,1",
+      "4스킬쿨중범위": "1115,1586,1,1",
+      "스티그마1L": "1189,1583,1,1",
+      "스티그마1사용중": "1157,1586,1,1",
+      "스티그마2L": "1251,1583,1,1",
+      "스티그마2사용중": "1220,1586,1,1",
+      "스티그마3L": "1314,1583,1,1",
+      "스티그마3사용중": "1283,1586,1,1"
     },
     "color": {
       "left": "000000",
@@ -2419,5 +2419,35 @@
     1920,
     1080
   ],
-  "base_scale_percent": 100.0
+  "base_scale_percent": 100.0,
+  "transform_matrix": {
+    "ax": 1.0,
+    "bx": -440.0,
+    "cy": 1.0,
+    "dy": 160.0,
+    "rms": 0.0,
+    "samples": [
+      {
+        "src": [
+          1363.0,
+          1305.0
+        ],
+        "dst": [
+          923.0,
+          1465.0
+        ]
+      },
+      {
+        "src": [
+          2212.0,
+          1412.0
+        ],
+        "dst": [
+          1772.0,
+          1572.0
+        ]
+      }
+    ],
+    "type": "linear_xy"
+  }
 }
