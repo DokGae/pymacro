@@ -418,6 +418,30 @@ class Condition:
         return payload
 
 
+def _iter_elif_blocks(blocks):
+    for blk in blocks or []:
+        cond = None
+        acts = []
+        desc = ""
+        enabled_override = None
+        if isinstance(blk, (list, tuple)):
+            if len(blk) >= 2:
+                cond, acts = blk[0], blk[1]
+            if len(blk) >= 3:
+                desc_val = blk[2]
+                desc = desc_val if isinstance(desc_val, str) else str(desc_val) if desc_val is not None else ""
+            if len(blk) >= 4 and isinstance(blk[3], bool):
+                enabled_override = blk[3]
+        if not isinstance(cond, Condition):
+            continue
+        if isinstance(enabled_override, bool):
+            try:
+                cond.enabled = enabled_override
+            except Exception:
+                pass
+        yield cond, list(acts or []), desc or ""
+
+
 @dataclass
 class Action:
     type: ActionType
@@ -438,7 +462,7 @@ class Action:
     sleep_range: Optional[tuple[int, int]] = None
     sleep_raw: Optional[str] = None
     condition: Optional[Condition] = None
-    elif_blocks: List[tuple[Condition, List["Action"]]] = field(default_factory=list)
+    elif_blocks: List[tuple[Condition, List["Action"], str | None]] = field(default_factory=list)
     actions: List["Action"] = field(default_factory=list)
     else_actions: List["Action"] = field(default_factory=list)
     label: Optional[str] = None
@@ -543,12 +567,19 @@ class Action:
         cond = Condition.from_dict(cond_data, resolver) if cond_data else None
         actions = [Action.from_dict(s, resolver) for s in data.get("actions", data.get("steps", []))]
         else_actions = [Action.from_dict(s, resolver) for s in data.get("else_actions", [])]
-        elif_blocks: List[tuple[Condition, List["Action"]]] = []
+        elif_blocks: List[tuple[Condition, List["Action"], str | None]] = []
         for blk in data.get("elif_blocks", []) or []:
             try:
                 econd = Condition.from_dict(blk.get("condition", {}), resolver)
                 eacts = [Action.from_dict(a, resolver) for a in blk.get("actions", [])]
-                elif_blocks.append((econd, eacts))
+                desc = blk.get("description") or ""
+                enabled_raw = blk.get("enabled")
+                if isinstance(enabled_raw, bool):
+                    try:
+                        econd.enabled = enabled_raw
+                    except Exception:
+                        pass
+                elif_blocks.append((econd, eacts, desc))
             except Exception:
                 continue
         sleep_ms_raw = data.get("sleep_ms", data.get("sleep", 0))
@@ -704,9 +735,17 @@ class Action:
         if self.actions:
             payload["actions"] = [a.to_dict() for a in self.actions]
         if self.elif_blocks:
-            payload["elif_blocks"] = [
-                {"condition": cond.to_dict(), "actions": [a.to_dict() for a in acts]} for cond, acts in self.elif_blocks
-            ]
+            blocks: list[dict[str, Any]] = []
+            for cond, acts, desc in _iter_elif_blocks(self.elif_blocks):
+                blocks.append(
+                    {
+                        "condition": cond.to_dict(),
+                        "actions": [a.to_dict() for a in acts],
+                        "description": desc or None,
+                    }
+                )
+            if blocks:
+                payload["elif_blocks"] = blocks
         if self.else_actions:
             payload["else_actions"] = [a.to_dict() for a in self.else_actions]
         return payload
@@ -1463,7 +1502,7 @@ class MacroRunner:
             children: List[Action] = []
             if act.type == "if":
                 children.extend(act.actions)
-                for _, eacts in getattr(act, "elif_blocks", []):
+                for _, eacts, _ in _iter_elif_blocks(getattr(act, "elif_blocks", [])):
                     children.extend(eacts)
                 children.extend(getattr(act, "else_actions", []))
             elif act.type == "group":
@@ -1919,7 +1958,8 @@ class MacroRunner:
                 return res
             offset = len(action.actions or [])
             elif_offset = offset
-            for idx, (elif_cond, elif_actions) in enumerate(getattr(action, "elif_blocks", []) or []):
+            elif_blocks = list(_iter_elif_blocks(getattr(action, "elif_blocks", [])))
+            for idx, (elif_cond, elif_actions, _) in enumerate(elif_blocks):
                 if getattr(elif_cond, "enabled", True) is False:
                     elif_offset += len(elif_actions or [])
                     continue
@@ -1951,7 +1991,7 @@ class MacroRunner:
                 labels,
                 path=path + ["else"],
                 idx_path=idx_path,
-                base_offset=offset + sum(len(ea or []) for _, ea in getattr(action, "elif_blocks", []) or []),
+                base_offset=offset + sum(len(ea or []) for _, ea, _ in elif_blocks),
             )
             self._emit_action_event(
                 "action_end", action, path, idx_path, status="branch_else", condition_hit=getattr(res, "condition_hit", False), branch="else"

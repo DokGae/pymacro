@@ -779,10 +779,7 @@ def _apply_affine_transform(
         for idx, child in enumerate(getattr(act, "else_actions", []) or []):
             transform_action(child, macro_ctx, path_parts + [f"{act.type}-else[{idx + 1}]"])
         for blk_idx, blk in enumerate(getattr(act, "elif_blocks", []) or []):
-            try:
-                cond, acts = blk
-            except Exception:
-                continue
+            cond, acts, _, _ = _split_elif_block(blk)
             if cond:
                 transform_condition(cond, f"{macro_ctx} / {path_label} / elif#{blk_idx + 1}")
             for idx, child in enumerate(acts or []):
@@ -1332,6 +1329,27 @@ def _condition_brief(cond: Condition) -> str:
             return f"{cond.name}{suffix}"
         return f"OR 그룹 (하위 {_group_child_count(cond)}개){suffix}"
     return f"{cond.type}{suffix}"
+
+
+def _split_elif_block(blk):
+    cond = None
+    acts = []
+    desc = ""
+    enabled_override = None
+    if isinstance(blk, (list, tuple)):
+        if len(blk) >= 2:
+            cond, acts = blk[0], blk[1]
+        if len(blk) >= 3:
+            desc_val = blk[2]
+            desc = desc_val if isinstance(desc_val, str) else str(desc_val) if desc_val is not None else ""
+        if len(blk) >= 4 and isinstance(blk[3], bool):
+            enabled_override = blk[3]
+    if isinstance(enabled_override, bool) and isinstance(cond, Condition):
+        try:
+            cond.enabled = enabled_override
+        except Exception:
+            pass
+    return cond if isinstance(cond, Condition) else None, list(acts or []), desc or "", enabled_override
 
 
 class ConditionNodeDialog(QtWidgets.QDialog):
@@ -4263,8 +4281,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if act.type == "if":
             for child in act.actions:
                 self._append_action_item(child, item)
-            for econd, eacts in getattr(act, "elif_blocks", []):
-                elif_header = self._create_elif_header(item, econd)
+            for blk in getattr(act, "elif_blocks", []):
+                econd, eacts, edesc, _ = _split_elif_block(blk)
+                if not econd:
+                    continue
+                elif_header = self._create_elif_header(item, econd, edesc)
                 for child in eacts:
                     self._append_action_item(child, elif_header)
             if act.else_actions:
@@ -4311,7 +4332,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         except Exception:
             pass
         header = QtWidgets.QTreeWidgetItem(["", "ELIF", "", _condition_brief(cond), desc or "", ""])
-        header.setData(0, QtCore.Qt.ItemDataRole.UserRole, {"marker": "__elif__", "condition": cond, "enabled": enabled_flag})
+        header.setData(
+            0,
+            QtCore.Qt.ItemDataRole.UserRole,
+            {"marker": "__elif__", "condition": cond, "enabled": enabled_flag, "description": desc or ""},
+        )
         header.setFlags(
             QtCore.Qt.ItemFlag.ItemIsEnabled
             | QtCore.Qt.ItemFlag.ItemIsSelectable
@@ -4620,6 +4645,7 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             if isinstance(marker, dict) and marker.get("marker") == "__elif__":
                 cond = marker.get("condition")
                 cond_enabled = child.checkState(5) == QtCore.Qt.CheckState.Checked
+                desc_text = marker.get("description") or child.text(4) or ""
                 if isinstance(cond, Condition):
                     try:
                         cond.enabled = cond_enabled
@@ -4631,7 +4657,7 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                         child_action = self._action_from_item(child.child(j))
                         if child_action:
                             branch_actions.append(child_action)
-                    act.elif_blocks.append((copy.deepcopy(cond), branch_actions))
+                    act.elif_blocks.append((copy.deepcopy(cond), branch_actions, desc_text))
                 continue
             child_action = self._action_from_item(child)
             if child_action:
@@ -5914,7 +5940,8 @@ class MacroDialog(QtWidgets.QDialog):
                     labels.append(act.label)
                 walk(getattr(act, "actions", []) or [])
                 walk(getattr(act, "else_actions", []) or [])
-                for _, branch in getattr(act, "elif_blocks", []) or []:
+                for blk in getattr(act, "elif_blocks", []) or []:
+                    _, branch, _, _ = _split_elif_block(blk)
                     walk(branch or [])
 
         target_tree = tree or self.action_tree
@@ -6127,18 +6154,23 @@ class MacroDialog(QtWidgets.QDialog):
         except Exception:
             pass
 
-        new_blocks: list[tuple[Condition, list[Action], str, bool]] = [
+        new_blocks: list[tuple[Condition, list[Action], str, bool | None]] = [
             (base_cond, copy.deepcopy(new_act.actions), new_act.description or new_act.name or "", src_enabled)
         ]
         inherit_enabled = src_enabled
-        for c, a in getattr(new_act, "elif_blocks", []) or []:
+        for blk in getattr(new_act, "elif_blocks", []) or []:
+            c, a, desc_text, enabled_override = _split_elif_block(blk)
+            if not c:
+                continue
+            enabled_val = enabled_override if isinstance(enabled_override, bool) else inherit_enabled
             try:
-                setattr(c, "enabled", inherit_enabled)
+                setattr(c, "enabled", enabled_val)
             except Exception:
                 pass
-            new_blocks.append((copy.deepcopy(c), copy.deepcopy(a), "", inherit_enabled))
+            new_blocks.append((copy.deepcopy(c), copy.deepcopy(a), desc_text or "", enabled_val))
 
-        target_act.elif_blocks = (target_act.elif_blocks or []) + new_blocks
+        normalized_blocks = [(cond, acts, desc) for cond, acts, desc, _ in new_blocks]
+        target_act.elif_blocks = (target_act.elif_blocks or []) + normalized_blocks
         if new_act.else_actions:
             if target_act.else_actions:
                 target_act.else_actions.extend(copy.deepcopy(new_act.else_actions))
@@ -6331,7 +6363,11 @@ class MacroDialog(QtWidgets.QDialog):
                         setattr(new_cond, "name", getattr(cond, "name", None))
                     except Exception:
                         pass
-                item.setData(0, QtCore.Qt.ItemDataRole.UserRole, {"marker": "__elif__", "condition": new_cond, "enabled": enabled_flag})
+                item.setData(
+                    0,
+                    QtCore.Qt.ItemDataRole.UserRole,
+                    {"marker": "__elif__", "condition": new_cond, "enabled": enabled_flag, "description": new_act.description or ""},
+                )
                 self.action_tree._set_type_text(item, "ELIF")
                 item.setText(2, new_act.name or "")
                 item.setText(3, _condition_brief(new_cond))
@@ -6399,8 +6435,11 @@ class MacroDialog(QtWidgets.QDialog):
             if new_act.type == "if":
                 for child in new_act.actions:
                     self.action_tree._append_action_item(child, item)
-                for econd, eacts in getattr(new_act, "elif_blocks", []):
-                    elif_header = self.action_tree._create_elif_header(item, econd)
+                for blk in getattr(new_act, "elif_blocks", []):
+                    econd, eacts, edesc, _ = _split_elif_block(blk)
+                    if not econd:
+                        continue
+                    elif_header = self.action_tree._create_elif_header(item, econd, edesc)
                     for child in eacts:
                         self.action_tree._append_action_item(child, elif_header)
                 else_header = self.action_tree._ensure_else_header(item, create_if_missing=bool(new_act.else_actions))
@@ -6434,6 +6473,7 @@ class MacroDialog(QtWidgets.QDialog):
                     type="pixel", region=(0, 0, 1, 1), color=(255, 0, 0), tolerance=0
                 )
                 enabled_flag = item.checkState(5) == QtCore.Qt.CheckState.Checked
+                desc_text = data.get("description") or item.text(4) or ""
                 try:
                     setattr(cond, "enabled", enabled_flag)
                 except Exception:
@@ -6459,7 +6499,7 @@ class MacroDialog(QtWidgets.QDialog):
                         actions=branch_actions,
                         else_actions=else_actions,
                         name=item.text(2) or "",
-                        description=item.text(4) or "",
+                        description=desc_text,
                         enabled=enabled_flag,
                     )
                 )
