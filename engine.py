@@ -59,6 +59,7 @@ _TRIGGER_MOD_ALIASES = {
     "alt": {"alt", "lalt", "ralt", "leftalt", "rightalt", "menu"},
     "win": {"win", "lwin", "rwin", "super", "meta", "cmd", "command", "windows"},
 }
+_TRIGGER_MOD_KEYS = set(_TRIGGER_MOD_ALIASES.keys())
 
 
 def _normalize_trigger_part(key: str) -> str:
@@ -983,7 +984,7 @@ class Macro:
     triggers: List[MacroTrigger] = field(default_factory=list)
     actions: List[Action] = field(default_factory=list)
     stop_actions: List[Action] = field(default_factory=list)
-    suppress_trigger: bool = True
+    suppress_trigger: bool = False
     enabled: bool = True
     name: Optional[str] = None
     cycle_count: Optional[int] = None
@@ -1069,7 +1070,7 @@ class Macro:
             triggers=triggers,
             actions=actions,
             stop_actions=stop_actions,
-            suppress_trigger=bool(data.get("suppress_trigger", True)),
+            suppress_trigger=bool(data.get("suppress_trigger", False)),
             enabled=enabled,
             name=data.get("name"),
             cycle_count=cycle_count,
@@ -2645,6 +2646,7 @@ class MacroEngine:
         ctx = app_ctx if app_ctx is not None else self._get_app_context()
         keys: List[str] = []
         seen: Set[str] = set()
+        mod_keys = _TRIGGER_MOD_KEYS
         for m in self._profile.macros:
             if not getattr(m, "enabled", True) or not m.suppress_trigger:
                 continue
@@ -2652,6 +2654,8 @@ class MacroEngine:
                 continue
             for trig in self._macro_triggers(m):
                 for k in parse_trigger_keys(trig.key):
+                    if k in mod_keys:
+                        continue  # modifier는 삼키지 않아야 다른 앱 단축키/조합이 깨지지 않는다
                     if k in seen:
                         continue
                     seen.add(k)

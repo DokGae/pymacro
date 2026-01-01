@@ -158,7 +158,7 @@ def _default_macro() -> Macro:
         trigger_key="z",
         mode="hold",
         triggers=[MacroTrigger(key="z", mode="hold")],
-        suppress_trigger=True,
+        suppress_trigger=False,
         actions=actions,
     )
 
@@ -5825,7 +5825,7 @@ class MacroDialog(QtWidgets.QDialog):
         if macro:
             self._load_macro(macro)
         else:
-            self.suppress_checkbox.setChecked(True)
+            self.suppress_checkbox.setChecked(False)
             self._load_triggers([MacroTrigger(key="z", mode="hold")])
             self.action_tree.load_actions(
                 [
