@@ -35,6 +35,7 @@ from engine import (
     Condition,
     AppTarget,
     Macro,
+    MacroTrigger,
     MacroCondition,
     MacroEngine,
     MacroProfile,
@@ -153,7 +154,13 @@ def _default_macro() -> Macro:
             else_actions=[Action(type="press", key="f2")],
         ),
     ]
-    return Macro(trigger_key="z", mode="hold", suppress_trigger=True, actions=actions)
+    return Macro(
+        trigger_key="z",
+        mode="hold",
+        triggers=[MacroTrigger(key="z", mode="hold")],
+        suppress_trigger=True,
+        actions=actions,
+    )
 
 
 DEFAULT_PROFILE = MacroProfile(macros=[_default_macro()], pixel_region=(0, 0, 100, 100), pixel_color=(255, 0, 0), pixel_tolerance=10)
@@ -786,7 +793,11 @@ def _apply_affine_transform(
                 transform_action(child, macro_ctx, path_parts + [f"elif#{blk_idx + 1}[{idx + 1}]"])
 
     for macro_idx, macro in enumerate(getattr(profile, "macros", []) or []):
-        macro_ctx = f"매크로#{macro_idx + 1}({macro.name or macro.trigger_key})"
+        try:
+            trigger_label = macro.trigger_label(include_mode=False)
+        except Exception:
+            trigger_label = getattr(macro, "trigger_key", "") or ""
+        macro_ctx = f"매크로#{macro_idx + 1}({macro.name or trigger_label})"
         for idx, act in enumerate(getattr(macro, "actions", []) or []):
             transform_action(act, macro_ctx, [f"action#{idx + 1}"])
 
@@ -5572,7 +5583,7 @@ class MacroDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout()
         self.name_edit = QtWidgets.QLineEdit()
         self.trigger_edit = QtWidgets.QLineEdit()
-        self.trigger_edit.setPlaceholderText("예: w 또는 mouse4 (조합은 아래 체크박스로 설정)")
+        self.trigger_edit.setPlaceholderText("예: w 또는 mouse4 (조합은 아래 체크박스로 설정 후 추가)")
         self.trigger_menu_btn = QtWidgets.QToolButton()
         self.trigger_menu_btn.setText("목록")
         self.trigger_menu_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -5586,13 +5597,29 @@ class MacroDialog(QtWidgets.QDialog):
         self.trigger_main_edit = QtWidgets.QLineEdit()
         self.trigger_main_edit.setPlaceholderText("주 키 (예: w, f1, mouse1)")
         self.trigger_main_edit.setClearButtonEnabled(True)
-        self.hold_threshold_spin = QtWidgets.QDoubleSpinBox()
-        self.hold_threshold_spin.setRange(0.0, 60.0)
-        self.hold_threshold_spin.setDecimals(2)
-        self.hold_threshold_spin.setSingleStep(0.1)
-        self.hold_threshold_spin.setSuffix(" 초 이상 누름")
-        self.hold_threshold_spin.setSpecialValueText("즉시 발동")
-        self.hold_threshold_spin.setToolTip("hold 모드일 때, 이 시간 이상 누르고 있어야 발동. 0이면 바로 발동.")
+        self.trigger_mode_combo = QtWidgets.QComboBox()
+        self.trigger_mode_combo.addItems(["hold", "toggle"])
+        self.trigger_hold_spin = QtWidgets.QDoubleSpinBox()
+        self.trigger_hold_spin.setRange(0.0, 60.0)
+        self.trigger_hold_spin.setDecimals(2)
+        self.trigger_hold_spin.setSingleStep(0.1)
+        self.trigger_hold_spin.setSuffix(" 초 이상 누름")
+        self.trigger_hold_spin.setSpecialValueText("즉시 발동")
+        self.trigger_hold_spin.setToolTip("hold 모드일 때, 이 시간 이상 누르고 있어야 발동. 0이면 바로 발동.")
+        self.trigger_add_btn = QtWidgets.QPushButton("추가")
+        self.trigger_save_btn = QtWidgets.QPushButton("선택 저장")
+        self.trigger_delete_btn = QtWidgets.QPushButton("선택 삭제")
+        self.trigger_up_btn = QtWidgets.QToolButton()
+        self.trigger_up_btn.setText("▲")
+        self.trigger_down_btn = QtWidgets.QToolButton()
+        self.trigger_down_btn.setText("▼")
+        self.trigger_table = QtWidgets.QTableWidget(0, 3)
+        self.trigger_table.setHorizontalHeaderLabels(["트리거", "모드", "홀드 최소"])
+        self.trigger_table.horizontalHeader().setStretchLastSection(True)
+        self.trigger_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.trigger_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.trigger_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.trigger_table.verticalHeader().setVisible(False)
         trigger_builder_row = QtWidgets.QWidget()
         trigger_builder_layout = QtWidgets.QHBoxLayout(trigger_builder_row)
         trigger_builder_layout.setContentsMargins(0, 0, 0, 0)
@@ -5606,13 +5633,25 @@ class MacroDialog(QtWidgets.QDialog):
         trigger_builder_layout.addWidget(self.trigger_main_edit, stretch=1)
         self.desc_edit = QtWidgets.QLineEdit()
         self.desc_edit.setPlaceholderText("이 매크로에 대한 메모/설명")
-        trigger_row = QtWidgets.QWidget()
-        trigger_row_layout = QtWidgets.QHBoxLayout(trigger_row)
-        trigger_row_layout.setContentsMargins(0, 0, 0, 0)
-        trigger_row_layout.addWidget(self.trigger_edit)
-        trigger_row_layout.addWidget(self.trigger_menu_btn)
-        self.mode_combo = QtWidgets.QComboBox()
-        self.mode_combo.addItems(["hold", "toggle"])
+        trigger_input_row = QtWidgets.QWidget()
+        trigger_input_layout = QtWidgets.QHBoxLayout(trigger_input_row)
+        trigger_input_layout.setContentsMargins(0, 0, 0, 0)
+        trigger_input_layout.addWidget(self.trigger_edit, stretch=1)
+        trigger_input_layout.addWidget(self.trigger_menu_btn)
+        trigger_input_layout.addWidget(self.trigger_mode_combo)
+        trigger_input_layout.addWidget(self.trigger_hold_spin)
+        trigger_input_layout.addWidget(self.trigger_add_btn)
+        trigger_input_layout.addWidget(self.trigger_save_btn)
+        trigger_table_box = QtWidgets.QWidget()
+        trigger_table_layout = QtWidgets.QVBoxLayout(trigger_table_box)
+        trigger_table_layout.setContentsMargins(0, 0, 0, 0)
+        trigger_table_layout.addWidget(self.trigger_table)
+        trigger_btn_row = QtWidgets.QHBoxLayout()
+        trigger_btn_row.addWidget(self.trigger_delete_btn)
+        trigger_btn_row.addWidget(self.trigger_up_btn)
+        trigger_btn_row.addWidget(self.trigger_down_btn)
+        trigger_btn_row.addStretch()
+        trigger_table_layout.addLayout(trigger_btn_row)
         self.enabled_check = QtWidgets.QCheckBox("활성")
         self.suppress_checkbox = QtWidgets.QCheckBox("트리거 키 차단")
         self.cycle_spin = QtWidgets.QSpinBox()
@@ -5635,10 +5674,9 @@ class MacroDialog(QtWidgets.QDialog):
 
         form.addRow("이름(선택)", self.name_edit)
         form.addRow("설명(선택)", self.desc_edit)
-        form.addRow("트리거 키", trigger_row)
+        form.addRow("트리거 입력/모드", trigger_input_row)
         form.addRow("조합 구성", trigger_builder_row)
-        form.addRow("모드 (hold/toggle)", self.mode_combo)
-        form.addRow("홀드 최소 누름 시간", self.hold_threshold_spin)
+        form.addRow("트리거 목록", trigger_table_box)
         form.addRow(self.enabled_check)
         form.addRow("사이클 횟수(0=무한)", self.cycle_spin)
         form.addRow(self.suppress_checkbox)
@@ -5656,9 +5694,15 @@ class MacroDialog(QtWidgets.QDialog):
             chk.toggled.connect(self._sync_trigger_from_builder)
         self.trigger_main_edit.textChanged.connect(self._sync_trigger_from_builder)
         self.trigger_edit.textChanged.connect(self._sync_builder_from_trigger_text)
-        self.mode_combo.currentIndexChanged.connect(self._sync_hold_threshold_visibility)
+        self.trigger_mode_combo.currentIndexChanged.connect(self._sync_trigger_hold_visibility)
+        self.trigger_table.itemSelectionChanged.connect(self._on_trigger_selection_changed)
+        self.trigger_add_btn.clicked.connect(lambda: self._add_or_update_trigger(force_new=True))
+        self.trigger_save_btn.clicked.connect(lambda: self._add_or_update_trigger(require_selection=True))
+        self.trigger_delete_btn.clicked.connect(self._delete_selected_trigger)
+        self.trigger_up_btn.clicked.connect(lambda: self._move_trigger_row(-1))
+        self.trigger_down_btn.clicked.connect(lambda: self._move_trigger_row(1))
         self._sync_builder_from_trigger_text()
-        self._sync_hold_threshold_visibility()
+        self._sync_trigger_hold_visibility()
 
         self.action_tree = ActionTreeWidget()
         layout.addWidget(self.action_tree)
@@ -5782,6 +5826,7 @@ class MacroDialog(QtWidgets.QDialog):
             self._load_macro(macro)
         else:
             self.suppress_checkbox.setChecked(True)
+            self._load_triggers([MacroTrigger(key="z", mode="hold")])
             self.action_tree.load_actions(
                 [
                     Action(type="press", key="r"),
@@ -5797,8 +5842,8 @@ class MacroDialog(QtWidgets.QDialog):
             self._scope = "global"
             self._app_targets = []
             self._set_scope_label()
-            self.hold_threshold_spin.setValue(0.0)
-            self._sync_hold_threshold_visibility()
+            self.trigger_hold_spin.setValue(0.0)
+            self._sync_trigger_hold_visibility()
 
     def _populate_trigger_menu(self):
         menu = self.trigger_menu
@@ -5876,12 +5921,172 @@ class MacroDialog(QtWidgets.QDialog):
         finally:
             self._updating_trigger_builder = False
 
-    def _sync_hold_threshold_visibility(self):
-        is_hold = (self.mode_combo.currentText() or "hold").lower() == "hold"
-        label = self._form_layout.labelForField(self.hold_threshold_spin) if hasattr(self, "_form_layout") else None
-        self.hold_threshold_spin.setVisible(is_hold)
-        if label:
-            label.setVisible(is_hold)
+    def _sync_trigger_hold_visibility(self):
+        is_hold = (self.trigger_mode_combo.currentText() or "hold").lower() == "hold"
+        self.trigger_hold_spin.setVisible(is_hold)
+
+    def _format_hold_value(self, hold: float | None) -> str:
+        if hold in (None, "", False):
+            return "즉시"
+        try:
+            val = float(hold)
+        except Exception:
+            return "즉시"
+        if abs(val - round(val)) < 1e-6:
+            return f"{int(round(val))}s" if val > 0 else "즉시"
+        return f"{val:.2f}s"
+
+    def _resize_trigger_table_height(self):
+        table = getattr(self, "trigger_table", None)
+        if not table:
+            return
+        header = table.horizontalHeader()
+        header_h = header.height() if header else 0
+        frame_h = table.frameWidth() * 2
+        rows = table.rowCount()
+        body_h = sum(table.rowHeight(r) for r in range(rows)) if rows > 0 else 0
+        if body_h <= 0:
+            row_h = table.verticalHeader().defaultSectionSize() if table.verticalHeader() else 24
+            body_h = row_h * rows
+        # keep height tight: only as tall as the rows we have (no phantom empty rows)
+        height = int(header_h + body_h + frame_h)
+        min_height = max(1, height if rows > 0 else header_h + frame_h)
+        table.setMinimumHeight(min_height)
+        table.setMaximumHeight(min_height)
+
+    def _set_trigger_row(self, row: int, *, key: str, mode: str, hold: float | None):
+        if row < 0:
+            return
+        if row >= self.trigger_table.rowCount():
+            self.trigger_table.insertRow(row)
+        key_item = QtWidgets.QTableWidgetItem(key)
+        mode_item = QtWidgets.QTableWidgetItem(mode)
+        hold_item = QtWidgets.QTableWidgetItem(self._format_hold_value(hold))
+        hold_item.setData(QtCore.Qt.ItemDataRole.UserRole, hold)
+        self.trigger_table.setItem(row, 0, key_item)
+        self.trigger_table.setItem(row, 1, mode_item)
+        self.trigger_table.setItem(row, 2, hold_item)
+        self._resize_trigger_table_height()
+
+    def _selected_trigger_row(self) -> int:
+        sel = self.trigger_table.selectionModel().selectedRows()
+        return sel[0].row() if sel else -1
+
+    def _find_trigger_row(self, key: str) -> int:
+        target = key.strip().lower()
+        for r in range(self.trigger_table.rowCount()):
+            item = self.trigger_table.item(r, 0)
+            if item and item.text().strip().lower() == target:
+                return r
+        return -1
+
+    def _collect_triggers(self) -> list[MacroTrigger]:
+        triggers: list[MacroTrigger] = []
+        for row in range(self.trigger_table.rowCount()):
+            key_item = self.trigger_table.item(row, 0)
+            mode_item = self.trigger_table.item(row, 1)
+            hold_item = self.trigger_table.item(row, 2)
+            key = normalize_trigger_key(key_item.text().strip() if key_item else "")
+            mode = (mode_item.text() if mode_item else "hold") or "hold"
+            hold_val = hold_item.data(QtCore.Qt.ItemDataRole.UserRole) if hold_item else None
+            try:
+                hold = float(hold_val) if hold_val not in (None, "", False) else None
+            except Exception:
+                hold = None
+            if mode != "hold":
+                hold = None
+            if key:
+                triggers.append(MacroTrigger(key=key, mode=mode, hold_press_seconds=hold))
+        return triggers
+
+    def _load_triggers(self, triggers: list[MacroTrigger]):
+        self.trigger_table.setRowCount(0)
+        for idx, trig in enumerate(triggers or []):
+            self._set_trigger_row(idx, key=trig.key, mode=trig.mode, hold=trig.hold_press_seconds)
+        self.trigger_table.resizeRowsToContents()
+        self._resize_trigger_table_height()
+        if triggers:
+            self.trigger_table.selectRow(0)
+            self._on_trigger_selection_changed()
+
+    def _on_trigger_selection_changed(self):
+        row = self._selected_trigger_row()
+        if row < 0:
+            return
+        key_item = self.trigger_table.item(row, 0)
+        mode_item = self.trigger_table.item(row, 1)
+        hold_item = self.trigger_table.item(row, 2)
+        if key_item:
+            self.trigger_edit.setText(key_item.text())
+            self._sync_builder_from_trigger_text()
+        if mode_item:
+            self.trigger_mode_combo.setCurrentText(mode_item.text())
+        hold_val = hold_item.data(QtCore.Qt.ItemDataRole.UserRole) if hold_item else None
+        try:
+            self.trigger_hold_spin.setValue(float(hold_val) if hold_val not in (None, "", False) else 0.0)
+        except Exception:
+            self.trigger_hold_spin.setValue(0.0)
+        self._sync_trigger_hold_visibility()
+
+    def _move_trigger_row(self, offset: int):
+        if offset == 0:
+            return
+        row = self._selected_trigger_row()
+        if row < 0:
+            return
+        target = row + offset
+        if target < 0 or target >= self.trigger_table.rowCount():
+            return
+        data = []
+        for col in range(self.trigger_table.columnCount()):
+            item = self.trigger_table.takeItem(row, col)
+            data.append(item)
+        self.trigger_table.removeRow(row)
+        self.trigger_table.insertRow(target)
+        for col, item in enumerate(data):
+            self.trigger_table.setItem(target, col, item)
+        self.trigger_table.selectRow(target)
+
+    def _delete_selected_trigger(self):
+        rows = sorted({idx.row() for idx in self.trigger_table.selectionModel().selectedRows()}, reverse=True)
+        if not rows and self.trigger_table.rowCount() > 0:
+            rows = [self.trigger_table.rowCount() - 1]
+        for r in rows:
+            self.trigger_table.removeRow(r)
+        if self.trigger_table.rowCount() > 0:
+            self.trigger_table.selectRow(min(rows[0], self.trigger_table.rowCount() - 1))
+        self._resize_trigger_table_height()
+
+    def _add_or_update_trigger(self, *, force_new: bool = False, require_selection: bool = False):
+        key = normalize_trigger_key(self.trigger_edit.text().strip())
+        if not key:
+            QtWidgets.QMessageBox.information(self, "입력 없음", "추가할 트리거 키를 입력하세요.")
+            return
+        mode = self.trigger_mode_combo.currentText() or "hold"
+        hold_val = None
+        if mode == "hold":
+            try:
+                hold_val = max(0.0, float(self.trigger_hold_spin.value()))
+            except Exception:
+                hold_val = None
+            if hold_val == 0:
+                hold_val = None
+        target_row = self._selected_trigger_row()
+        if require_selection and target_row < 0:
+            QtWidgets.QMessageBox.information(self, "선택 없음", "수정할 트리거를 먼저 선택하세요.")
+            return
+        if force_new:
+            target_row = self.trigger_table.rowCount()
+        else:
+            existing_row = self._find_trigger_row(key)
+            if target_row < 0 and existing_row >= 0:
+                target_row = existing_row
+            if target_row < 0:
+                target_row = self.trigger_table.rowCount()
+        self._set_trigger_row(target_row, key=key, mode=mode, hold=hold_val)
+        self.trigger_table.selectRow(target_row)
+        self.trigger_table.resizeRowsToContents()
+        self._resize_trigger_table_height()
 
     def _scope_summary_text(self) -> str:
         if self._scope != "app":
@@ -6591,14 +6796,22 @@ class MacroDialog(QtWidgets.QDialog):
     def _load_macro(self, macro: Macro):
         self.name_edit.setText(macro.name or "")
         self.desc_edit.setText(getattr(macro, "description", "") or "")
-        self.trigger_edit.setText(macro.trigger_key)
+        triggers = macro.trigger_list()
+        self._load_triggers(triggers)
+        if triggers:
+            primary = triggers[0]
+            self.trigger_edit.setText(primary.key)
+            self.trigger_mode_combo.setCurrentText(primary.mode)
+            try:
+                self.trigger_hold_spin.setValue(max(0.0, float(primary.hold_press_seconds or 0.0)))
+            except Exception:
+                self.trigger_hold_spin.setValue(0.0)
+        else:
+            self.trigger_edit.clear()
+            self.trigger_mode_combo.setCurrentText("hold")
+            self.trigger_hold_spin.setValue(0.0)
         self._sync_builder_from_trigger_text()
-        self.mode_combo.setCurrentText(macro.mode)
-        try:
-            self.hold_threshold_spin.setValue(max(0.0, float(getattr(macro, "hold_press_seconds", 0.0) or 0.0)))
-        except Exception:
-            self.hold_threshold_spin.setValue(0.0)
-        self._sync_hold_threshold_visibility()
+        self._sync_trigger_hold_visibility()
         self.enabled_check.setChecked(getattr(macro, "enabled", True))
         self.suppress_checkbox.setChecked(bool(macro.suppress_trigger))
         self._stop_others_on_trigger = bool(getattr(macro, "stop_others_on_trigger", False))
@@ -6638,15 +6851,12 @@ class MacroDialog(QtWidgets.QDialog):
     def get_macro(self) -> Macro:
         # 빌더 체크박스/입력값을 우선 반영해 텍스트를 최신 상태로 맞춘다.
         self._sync_trigger_from_builder()
-        trigger = normalize_trigger_key(self.trigger_edit.text().strip())
-        if not trigger:
-            raise ValueError("트리거 키를 입력하세요.")
+        triggers = self._collect_triggers()
+        if not triggers:
+            raise ValueError("트리거 키를 하나 이상 입력하세요.")
+        primary = triggers[0]
         name = self.name_edit.text().strip() or None
         description = self.desc_edit.text().strip() or None
-        mode = self.mode_combo.currentText() or "hold"
-        hold_press_sec = max(0.0, float(self.hold_threshold_spin.value()))
-        if hold_press_sec == 0:
-            hold_press_sec = None
         suppress = self.suppress_checkbox.isChecked()
         interaction_mode = (self._interaction_mode or "none").lower()
         if interaction_mode not in ("none", "stop", "suspend"):
@@ -6664,8 +6874,10 @@ class MacroDialog(QtWidgets.QDialog):
         cycle_val = self.cycle_spin.value()
         cycle_count = cycle_val if cycle_val > 0 else None
         return Macro(
-            trigger_key=trigger,
-            mode=mode,
+            trigger_key=primary.key,
+            mode=primary.mode,
+            hold_press_seconds=primary.hold_press_seconds,
+            triggers=triggers,
             actions=actions,
             stop_actions=stop_actions,
             suppress_trigger=suppress,
@@ -6682,7 +6894,6 @@ class MacroDialog(QtWidgets.QDialog):
             cycle_count=cycle_count,
             scope=scope,
             app_targets=app_targets,
-            hold_press_seconds=hold_press_sec,
         )
 
 
@@ -8688,10 +8899,26 @@ class DebuggerDialog(QtWidgets.QDialog):
         elif etype == "pixel_test":
             self._update_pixel_status(event)
         elif etype == "macro_start":
-            label = event.get("macro", {}).get("name") or event.get("macro", {}).get("trigger_key") or "매크로"
+            macro_info = event.get("macro", {}) or {}
+            label = macro_info.get("name") or macro_info.get("trigger_key")
+            if not label:
+                trig_list = macro_info.get("triggers") or []
+                if trig_list and isinstance(trig_list, list):
+                    first = trig_list[0] if trig_list else {}
+                    if isinstance(first, dict):
+                        label = first.get("key")
+            label = label or "매크로"
             self._append_log_line(f"[매크로 시작] {label}")
         elif etype == "macro_stop":
-            label = event.get("macro", {}).get("name") or event.get("macro", {}).get("trigger_key") or "매크로"
+            macro_info = event.get("macro", {}) or {}
+            label = macro_info.get("name") or macro_info.get("trigger_key")
+            if not label:
+                trig_list = macro_info.get("triggers") or []
+                if trig_list and isinstance(trig_list, list):
+                    first = trig_list[0] if trig_list else {}
+                    if isinstance(first, dict):
+                        label = first.get("key")
+            label = label or "매크로"
             self._append_log_line(f"[매크로 종료] {label} ({event.get('reason') or ''})")
         elif etype == "log":
             self._append_log_line(event.get("message", ""))
@@ -11994,7 +12221,11 @@ class MacroWindow(QtWidgets.QMainWindow):
             used_names = self._extract_variable_refs(macro_dict)
             if not used_names:
                 continue
-            label = macro.name or macro.trigger_key or f"#{idx}"
+            try:
+                trig_label = macro.trigger_label(include_mode=False)
+            except Exception:
+                trig_label = getattr(macro, "trigger_key", "")
+            label = macro.name or trig_label or f"#{idx}"
             for cat, name in target_set:
                 if name in used_names:
                     usages[(cat, name)].append(label)
@@ -12532,13 +12763,34 @@ class MacroWindow(QtWidgets.QMainWindow):
             names = names[:3] + ["..."]
         return f"앱: {', '.join(names)}"
 
+    def _macro_trigger_texts(self, macro: Macro) -> tuple[str, str]:
+        try:
+            triggers = macro.trigger_list()
+        except Exception:
+            triggers = list(getattr(macro, "triggers", []) or [])
+        labels: list[str] = []
+        modes: list[str] = []
+        for trig in triggers:
+            key = getattr(trig, "key", "") or ""
+            mode = getattr(trig, "mode", "") or ""
+            if key:
+                labels.append(f"{key} ({mode})" if mode else key)
+            if mode:
+                modes.append(mode)
+        trigger_text = ", ".join(labels[:3]) + ("..." if len(labels) > 3 else "")
+        if not trigger_text:
+            trigger_text = getattr(macro, "trigger_key", "") or ""
+        mode_text = ", ".join(dict.fromkeys(modes)) if modes else (getattr(macro, "mode", "") or "")
+        return trigger_text, mode_text
+
     def _set_macro_row(self, row: int, macro: Macro):
         scope_text = self._macro_scope_text(macro)
+        trigger_text, mode_text = self._macro_trigger_texts(macro)
         values = [
             str(row + 1),
             macro.name or "",
-            macro.trigger_key,
-            macro.mode,
+            trigger_text,
+            mode_text,
             "ON" if getattr(macro, "enabled", True) else "OFF",
             "ON" if macro.suppress_trigger else "OFF",
             scope_text,
@@ -12589,7 +12841,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         return f"액션 {len(macro.actions)}{cycles}"
 
     def _macro_copy_name(self, macro: Macro | None) -> str:
-        base = (macro.name if macro else "") or (macro.trigger_key if macro else "") or ""
+        trigger_label = ""
+        if macro:
+            try:
+                trigger_label = macro.trigger_label(include_mode=False)
+            except Exception:
+                trigger_label = getattr(macro, "trigger_key", "") or ""
+        base = (macro.name if macro else "") or trigger_label or ""
         base = base.strip() or "매크로"
         existing = {m.name for m in self._collect_macros() if isinstance(m, Macro) and m.name}
         candidate = f"{base} 복사본"
@@ -12606,7 +12864,10 @@ class MacroWindow(QtWidgets.QMainWindow):
             if exclude is not None and m is exclude:
                 continue
             name = (m.name or "").strip()
-            trigger = (m.trigger_key or "").strip()
+            try:
+                trigger = m.trigger_label(include_mode=False)
+            except Exception:
+                trigger = (m.trigger_key or "").strip()
             label = name or trigger
             if label:
                 items.append(label)

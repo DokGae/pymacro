@@ -936,10 +936,51 @@ class MacroCondition:
 
 
 @dataclass
+class MacroTrigger:
+    key: str
+    mode: MacroMode = "hold"
+    hold_press_seconds: Optional[float] = None
+
+    def __post_init__(self):
+        self.key = normalize_trigger_key(self.key)
+        try:
+            if self.hold_press_seconds in (None, "", False):
+                self.hold_press_seconds = None
+            else:
+                self.hold_press_seconds = max(0.0, float(self.hold_press_seconds))
+        except Exception:
+            self.hold_press_seconds = None
+        self.mode = self.mode if self.mode in ("hold", "toggle") else "hold"
+
+    @classmethod
+    def from_any(cls, raw: Any, *, default_mode: str = "hold", default_hold: Optional[float] = None) -> Optional["MacroTrigger"]:
+        if raw is None:
+            return None
+        if isinstance(raw, cls):
+            return cls(key=raw.key, mode=raw.mode, hold_press_seconds=raw.hold_press_seconds)
+        if isinstance(raw, str):
+            return cls(key=raw, mode=default_mode, hold_press_seconds=default_hold)
+        if isinstance(raw, dict):
+            key = raw.get("key") or raw.get("trigger_key") or ""
+            mode = raw.get("mode", default_mode)
+            hold = raw.get("hold_press_seconds", raw.get("hold_threshold", default_hold))
+            return cls(key=key, mode=mode, hold_press_seconds=hold)
+        return None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "key": self.key,
+            "mode": self.mode,
+            "hold_press_seconds": self.hold_press_seconds,
+        }
+
+
+@dataclass
 class Macro:
     trigger_key: str
     mode: MacroMode = "hold"
     hold_press_seconds: Optional[float] = None
+    triggers: List[MacroTrigger] = field(default_factory=list)
     actions: List[Action] = field(default_factory=list)
     stop_actions: List[Action] = field(default_factory=list)
     suppress_trigger: bool = True
@@ -1009,10 +1050,23 @@ class Macro:
                 hold_press_seconds = max(0.0, float(hold_press_seconds))
         except Exception:
             hold_press_seconds = None
+        triggers_raw = data.get("triggers", [])
+        triggers: List[MacroTrigger] = []
+        if isinstance(triggers_raw, list):
+            for item in triggers_raw:
+                trig = MacroTrigger.from_any(item, default_mode=data.get("mode", "hold"), default_hold=hold_press_seconds)
+                if trig and trig.key:
+                    triggers.append(trig)
+        primary_key = normalize_trigger_key(str(data.get("trigger_key") or data.get("key") or ""))
+        primary_mode = data.get("mode", "hold")
+        if not triggers:
+            triggers.append(MacroTrigger(key=primary_key, mode=primary_mode, hold_press_seconds=hold_press_seconds))
+        primary_trigger = triggers[0]
         return cls(
-            trigger_key=normalize_trigger_key(str(data.get("trigger_key") or data.get("key") or "")),
-            mode=data.get("mode", "hold"),
-            hold_press_seconds=hold_press_seconds,
+            trigger_key=primary_trigger.key,
+            mode=primary_trigger.mode,
+            hold_press_seconds=primary_trigger.hold_press_seconds,
+            triggers=triggers,
             actions=actions,
             stop_actions=stop_actions,
             suppress_trigger=bool(data.get("suppress_trigger", True)),
@@ -1033,12 +1087,22 @@ class Macro:
 
     def __post_init__(self):
         # 정규화된 형태로 유지해 비교/차단 로직을 단순화한다.
-        self.trigger_key = normalize_trigger_key(self.trigger_key)
+        normalized: List[MacroTrigger] = []
+        for trig in self.triggers or []:
+            t = MacroTrigger.from_any(trig, default_mode=self.mode, default_hold=self.hold_press_seconds)
+            if t and t.key:
+                normalized.append(t)
+        if not normalized:
+            normalized.append(MacroTrigger(key=self.trigger_key, mode=self.mode, hold_press_seconds=self.hold_press_seconds))
+        self.triggers = normalized
+        primary = self.triggers[0]
+        self.trigger_key = normalize_trigger_key(primary.key)
+        self.mode = primary.mode if primary.mode in ("hold", "toggle") else "hold"
         try:
-            if self.hold_press_seconds in (None, "", False):
+            if primary.hold_press_seconds in (None, "", False):
                 self.hold_press_seconds = None
             else:
-                self.hold_press_seconds = max(0.0, float(self.hold_press_seconds))
+                self.hold_press_seconds = max(0.0, float(primary.hold_press_seconds))
         except Exception:
             self.hold_press_seconds = None
 
@@ -1046,16 +1110,40 @@ class Macro:
     def trigger_keys(self) -> List[str]:
         return parse_trigger_keys(self.trigger_key)
 
+    def trigger_list(self) -> List[MacroTrigger]:
+        return list(self.triggers or []) or [MacroTrigger(key=self.trigger_key, mode=self.mode, hold_press_seconds=self.hold_press_seconds)]
+
+    def primary_trigger(self) -> MacroTrigger:
+        lst = self.trigger_list()
+        return lst[0] if lst else MacroTrigger(key=self.trigger_key, mode=self.mode, hold_press_seconds=self.hold_press_seconds)
+
+    def trigger_label(self, *, include_mode: bool = False, max_items: int = 2) -> str:
+        items: List[str] = []
+        for trig in self.trigger_list()[: max(1, max_items)]:
+            if not trig.key:
+                continue
+            label = trig.key
+            if include_mode:
+                label = f"{label} ({trig.mode})"
+            items.append(label)
+        if not items and self.trigger_key:
+            items.append(self.trigger_key)
+        if len(self.trigger_list()) > len(items):
+            items.append("...")
+        return ", ".join(items)
+
     def to_dict(self) -> Dict[str, Any]:
         targets: List[Dict[str, Any]] = []
         for t in getattr(self, "app_targets", []) or []:
             target = AppTarget.from_any(t)
             if target:
                 targets.append(target.to_dict())
+        primary = self.primary_trigger()
         return {
-            "trigger_key": self.trigger_key,
-            "mode": self.mode,
-            "hold_press_seconds": getattr(self, "hold_press_seconds", None),
+            "trigger_key": primary.key,
+            "mode": primary.mode,
+            "hold_press_seconds": getattr(primary, "hold_press_seconds", None),
+            "triggers": [t.to_dict() for t in self.trigger_list()],
             "name": self.name,
             "description": self.description,
             "suppress_trigger": self.suppress_trigger,
@@ -1477,21 +1565,23 @@ class MacroRunner:
     def _macro_label(self) -> str:
         if self.macro.name:
             return self.macro.name
-        base = f"{self.macro.trigger_key}"
+        base = f"{self.macro.trigger_label(include_mode=False) or self.macro.trigger_key}"
         return base if self.index is None else f"{base}#{self.index}"
 
     def _macro_context(self) -> Dict[str, Any]:
+        primary = self.macro.primary_trigger()
         return {
             "index": self.index,
             "name": self.macro.name,
-            "trigger_key": self.macro.trigger_key,
-            "mode": self.macro.mode,
+            "trigger_key": primary.key,
+            "mode": primary.mode,
+            "triggers": [t.to_dict() for t in self.macro.trigger_list()],
         }
 
     def _macro_identifier(self) -> str:
         base = (self.macro.name or "").strip().lower()
         if not base:
-            base = (self.macro.trigger_key or "").strip().lower()
+            base = (self.macro.primary_trigger().key or self.macro.trigger_key or "").strip().lower()
         return base or f"macro-{self.index if self.index is not None else 'unknown'}"
 
     def _build_seq_map(self, actions: List[Action], prefix: List[int]):
@@ -1593,16 +1683,19 @@ class MacroRunner:
         self._stop_event.clear()
         self._sent_stop_event = False
         self._current_cycle = 0
-        self._thread = threading.Thread(target=self._run, name=f"Macro-{self.macro.trigger_key}", daemon=True)
+        name = f"Macro-{self.macro.primary_trigger().key or self.macro.trigger_key}"
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._thread.start()
         limit = self.macro.cycle_count
         if limit == 0:
             limit = None
         limit_text = "inf" if limit is None else str(limit)
-        self.engine._emit_log(f"매크로 시작: {self.macro.trigger_key} (cycle_limit={limit_text})")
+        label = self.macro.trigger_label(include_mode=False) or self.macro.trigger_key
+        self.engine._emit_log(f"매크로 시작: {label} (cycle_limit={limit_text})")
         self._emit_macro_event("macro_start", cycle=0)
 
     def stop(self):
+        label = self.macro.trigger_label(include_mode=False) or self.macro.trigger_key
         self._stop_event.set()
         # on_stop 액션이 있으면 먼저 실행한다.
         self._run_stop_actions()
@@ -1611,10 +1704,10 @@ class MacroRunner:
         if self._thread and threading.current_thread() is not self._thread:
             self._thread.join(timeout=1.0)
             if self._thread.is_alive():
-                self.engine._emit_log(f"매크로 정지 대기 초과: {self.macro.trigger_key}")
+                self.engine._emit_log(f"매크로 정지 대기 초과: {label}")
         # 스레드가 끝난 뒤에도 혹시 남아 있을 입력을 한 번 더 해제한다.
         self._release_held_keys()
-        self.engine._emit_log(f"매크로 정지: {self.macro.trigger_key}")
+        self.engine._emit_log(f"매크로 정지: {label}")
         self._notify_macro_stop("stopped")
 
     def _run_stop_actions(self):
@@ -2108,8 +2201,10 @@ class MacroEngine:
         self._cond_key_states: Dict[str, bool] = {}
         self._cond_lock = threading.Lock()
         self._macro_runners: Dict[int, MacroRunner] = {}
-        self._hold_release_since: Dict[int, float] = {}
-        self._hold_press_since: Dict[int, float] = {}
+        self._hold_release_since: Dict[tuple[int, int], float] = {}
+        self._hold_press_since: Dict[tuple[int, int], float] = {}
+        self._active_hold_triggers: Set[tuple[int, int]] = set()
+        self._toggle_states: Dict[int, bool] = {}
         self._recent_sends: Dict[str, float] = {}
         self._guard_macro_idx: Optional[int] = None
         self._suspended_toggle_indices: Set[int] = set()
@@ -2170,13 +2265,12 @@ class MacroEngine:
                 name = ""
             if name:
                 return name.lower()
-        if getattr(macro, "trigger_key", None):
-            try:
-                key = str(macro.trigger_key).strip()
-            except Exception:
-                key = ""
-            if key:
-                return key.lower()
+        try:
+            key = str(macro.primary_trigger().key if hasattr(macro, "primary_trigger") else macro.trigger_key).strip()
+        except Exception:
+            key = ""
+        if key:
+            return key.lower()
         return f"macro-{idx}" if idx is not None else "macro-unknown"
 
     def set_debug_image_override(self, frame: Optional[np.ndarray], *, label: str | None = None):
@@ -2270,13 +2364,13 @@ class MacroEngine:
             if mode == "stop":
                 runner.stop()
                 self._macro_runners.pop(idx, None)
-                self._hold_release_since.pop(idx, None)
+                self._clear_macro_state(idx)
             elif mode == "suspend":
-                if getattr(target_macro, "mode", None) == "toggle" and runner.is_alive():
+                if runner.is_alive() and any(getattr(t, "mode", "") == "toggle" for t in self._macro_triggers(target_macro)):
                     self._suspended_toggle_indices.add(idx)
                 runner.stop()
                 self._macro_runners.pop(idx, None)
-                self._hold_release_since.pop(idx, None)
+                self._clear_macro_state(idx)
                 suspended = True
         if mode == "suspend" and suspended:
             self._guard_macro_idx = actor_idx
@@ -2529,20 +2623,39 @@ class MacroEngine:
                         return True
         return False
 
+    def _macro_triggers(self, macro: Macro) -> List[MacroTrigger]:
+        triggers: List[MacroTrigger] = []
+        for trig in getattr(macro, "triggers", []) or []:
+            t = MacroTrigger.from_any(trig, default_mode=getattr(macro, "mode", "hold"), default_hold=getattr(macro, "hold_press_seconds", None))
+            if t and t.key:
+                triggers.append(t)
+        if not triggers:
+            triggers.append(MacroTrigger(key=macro.trigger_key, mode=getattr(macro, "mode", "hold"), hold_press_seconds=getattr(macro, "hold_press_seconds", None)))
+        macro.triggers = triggers
+        primary = triggers[0]
+        macro.trigger_key = primary.key
+        macro.mode = primary.mode
+        try:
+            macro.hold_press_seconds = None if primary.hold_press_seconds in (None, "", False) else max(0.0, float(primary.hold_press_seconds))
+        except Exception:
+            macro.hold_press_seconds = None
+        return triggers
+
     def _swallow_keys_locked(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str]:
         ctx = app_ctx if app_ctx is not None else self._get_app_context()
         keys: List[str] = []
         seen: Set[str] = set()
         for m in self._profile.macros:
-            if not getattr(m, "enabled", True) or not m.trigger_key or not m.suppress_trigger:
+            if not getattr(m, "enabled", True) or not m.suppress_trigger:
                 continue
             if not self._macro_matches_app(m, ctx):
                 continue
-            for k in parse_trigger_keys(m.trigger_key):
-                if k in seen:
-                    continue
-                seen.add(k)
-                keys.append(k)
+            for trig in self._macro_triggers(m):
+                for k in parse_trigger_keys(trig.key):
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    keys.append(k)
         return keys
 
     def _swallow_keys(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -3000,13 +3113,14 @@ class MacroEngine:
         self,
         macro: Macro,
         idx: int,
+        trigger: str,
         stage: str,
         state: Dict[str, Any],
         *,
         elapsed: Optional[float] = None,
         note: Optional[str] = None,
     ):
-        parts = [f"[hold:{stage}]", f"key={macro.trigger_key}", f"idx={idx}"]
+        parts = [f"[hold:{stage}]", f"key={trigger}", f"idx={idx}"]
         src = "sw" if state.get("sw_pressed") else ("os" if state.get("os_pressed") else "-")
         parts.append(f"src={src}")
         if state.get("sw_age") is not None:
@@ -3068,8 +3182,7 @@ class MacroEngine:
                     runner = self._macro_runners.pop(idx, None)
                     if runner:
                         runner.stop()
-                    self._hold_release_since.pop(idx, None)
-                    self._hold_press_since.pop(idx, None)
+                    self._clear_macro_state(idx)
                     continue
                 if not self._macro_matches_app(macro, app_ctx):
                     runner = self._macro_runners.pop(idx, None)
@@ -3078,58 +3191,39 @@ class MacroEngine:
                         if self._guard_macro_idx == idx:
                             self._guard_macro_idx = None
                             self._resume_suspended_toggles()
-                    self._hold_release_since.pop(idx, None)
-                    self._hold_press_since.pop(idx, None)
+                    self._clear_macro_state(idx)
                     continue
                 runner = self._macro_runners.get(idx)
-                if macro.mode == "hold":
-                    pressed, state_detail = self._trigger_state(macro.trigger_key, disallow_extra_modifiers=True)
-                    if pressed:
-                        self._hold_release_since.pop(idx, None)
-                        now = time.monotonic()
-                        press_since = self._hold_press_since.get(idx)
-                        if press_since is None:
-                            press_since = now
-                            self._hold_press_since[idx] = press_since
-                        press_thresh = max(0.0, getattr(macro, "hold_press_seconds", 0.0) or 0.0)
-                        if runner is None:
-                            if press_thresh <= 0.0 or (now - press_since) >= press_thresh:
-                                self._apply_macro_interaction(idx)
-                                runner = MacroRunner(macro, self, idx)
-                                self._macro_runners[idx] = runner
-                                self._log_hold_transition(macro, idx, "start", state_detail, elapsed=now - press_since if press_since else None)
-                                runner.start()
+                triggers = self._macro_triggers(macro)
+                toggle_on = bool(self._toggle_states.get(idx, False))
+                active_holds: Set[tuple[int, int]] = {k for k in self._active_hold_triggers if k[0] == idx}
+
+                for trig_idx, trig in enumerate(triggers):
+                    if trig.mode == "hold":
+                        is_active = self._update_hold_trigger(idx, trig_idx, macro, trig)
+                        if is_active:
+                            active_holds.add((idx, trig_idx))
+                        else:
+                            active_holds.discard((idx, trig_idx))
                     else:
-                        self._hold_press_since.pop(idx, None)
-                        if runner is not None:
-                            now = time.monotonic()
-                            first_false = self._hold_release_since.get(idx)
-                            if first_false is None:
-                                self._hold_release_since[idx] = now
-                                self._log_hold_transition(macro, idx, "release_detected", state_detail)
-                            elif (now - first_false) >= self._hold_release_debounce:
-                                elapsed = now - first_false
-                                self._log_hold_transition(macro, idx, "stop", state_detail, elapsed=elapsed, note="key_up")
-                                runner.stop()
-                                self._macro_runners.pop(idx, None)
-                                self._hold_release_since.pop(idx, None)
-                        else:
-                            self._hold_release_since.pop(idx, None)
-                else:  # toggle
-                    ignore_window = self._edge_block_window if runner is not None else 0.0
-                    if self._edge(
-                        macro.trigger_key,
-                        ignore_recent_sec=ignore_window,
-                        disallow_extra_modifiers=True,
-                    ):
-                        if runner is None:
-                            self._apply_macro_interaction(idx)
-                            runner = MacroRunner(macro, self, idx)
-                            self._macro_runners[idx] = runner
-                            runner.start()
-                        else:
-                            runner.stop()
-                            self._macro_runners.pop(idx, None)
+                        ignore_window = self._edge_block_window if runner is not None else 0.0
+                        if self._edge(trig.key, ignore_recent_sec=ignore_window, disallow_extra_modifiers=True):
+                            toggle_on = not toggle_on
+                            self._toggle_states[idx] = toggle_on
+
+                self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != idx} | active_holds
+                self._toggle_states[idx] = toggle_on
+
+                should_run = toggle_on or bool(active_holds)
+                if should_run and runner is None:
+                    self._apply_macro_interaction(idx)
+                    runner = MacroRunner(macro, self, idx)
+                    self._macro_runners[idx] = runner
+                    runner.start()
+                elif not should_run and runner is not None:
+                    runner.stop()
+                    self._macro_runners.pop(idx, None)
+                    self._toggle_states[idx] = False
 
             time.sleep(self.tick)
             self._clear_guard_if_needed()
@@ -3144,10 +3238,12 @@ class MacroEngine:
         for idx, runner in list(self._macro_runners.items()):
             runner.stop()
             if runner.is_alive():
-                self._emit_log(f"매크로 스레드가 아직 종료되지 않음: {runner.macro.trigger_key}")
+                self._emit_log(f"매크로 스레드가 아직 종료되지 않음: {runner.macro.trigger_label(include_mode=False) or runner.macro.trigger_key}")
             self._macro_runners.pop(idx, None)
         self._hold_release_since.clear()
         self._hold_press_since.clear()
+        self._active_hold_triggers.clear()
+        self._toggle_states.clear()
         self._guard_macro_idx = None
         self._suspended_toggle_indices.clear()
 
@@ -3157,8 +3253,7 @@ class MacroEngine:
                 continue
             runner.stop()
             self._macro_runners.pop(idx, None)
-            self._hold_release_since.pop(idx, None)
-            self._hold_press_since.pop(idx, None)
+            self._clear_macro_state(idx)
 
     def _suspend_other_macros(self, except_idx: Optional[int] = None):
         for idx, runner in list(self._macro_runners.items()):
@@ -3169,12 +3264,11 @@ class MacroEngine:
                 macro = self._profile.macros[idx]
             except Exception:
                 macro = None
-            if macro and getattr(macro, "mode", None) == "toggle" and runner.is_alive():
+            if macro and runner.is_alive() and any(getattr(t, "mode", "") == "toggle" for t in self._macro_triggers(macro)):
                 self._suspended_toggle_indices.add(idx)
             runner.stop()
             self._macro_runners.pop(idx, None)
-            self._hold_release_since.pop(idx, None)
-            self._hold_press_since.pop(idx, None)
+            self._clear_macro_state(idx)
         if except_idx is not None:
             self._guard_macro_idx = except_idx
 
@@ -3188,12 +3282,67 @@ class MacroEngine:
                 runner = MacroRunner(macro, self, idx)
                 self._macro_runners[idx] = runner
                 runner.start()
+                self._toggle_states[idx] = True
             self._suspended_toggle_indices.discard(idx)
 
     def _clear_guard_if_needed(self):
         if self._guard_macro_idx is not None and self._guard_macro_idx not in self._macro_runners:
             self._guard_macro_idx = None
             self._resume_suspended_toggles()
+
+    def _clear_macro_state(self, macro_idx: int):
+        to_remove = [k for k in self._hold_press_since if k[0] == macro_idx]
+        for key in to_remove:
+            self._hold_press_since.pop(key, None)
+            self._hold_release_since.pop(key, None)
+        self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != macro_idx}
+        self._toggle_states.pop(macro_idx, None)
+
+    def _update_hold_trigger(self, macro_idx: int, trig_idx: int, macro: Macro, trigger: MacroTrigger) -> bool:
+        key = (macro_idx, trig_idx)
+        pressed, state_detail = self._trigger_state(trigger.key, disallow_extra_modifiers=True)
+        now = time.monotonic()
+        threshold = trigger.hold_press_seconds
+        if threshold is None:
+            threshold = getattr(macro, "hold_press_seconds", 0.0) or 0.0
+        try:
+            threshold = max(0.0, float(threshold or 0.0))
+        except Exception:
+            threshold = 0.0
+
+        if pressed:
+            self._hold_release_since.pop(key, None)
+            press_since = self._hold_press_since.get(key)
+            if press_since is None:
+                press_since = now
+                self._hold_press_since[key] = press_since
+            if key not in self._active_hold_triggers:
+                if threshold <= 0.0 or (now - press_since) >= threshold:
+                    self._active_hold_triggers.add(key)
+                    self._log_hold_transition(
+                        macro,
+                        macro_idx,
+                        trigger.key,
+                        "start",
+                        state_detail,
+                        elapsed=now - press_since if press_since else None,
+                    )
+            return key in self._active_hold_triggers
+
+        self._hold_press_since.pop(key, None)
+        if key in self._active_hold_triggers:
+            first_false = self._hold_release_since.get(key)
+            if first_false is None:
+                self._hold_release_since[key] = now
+                self._log_hold_transition(macro, macro_idx, trigger.key, "release_detected", state_detail)
+            elif (now - first_false) >= self._hold_release_debounce:
+                elapsed = now - first_false
+                self._active_hold_triggers.discard(key)
+                self._hold_release_since.pop(key, None)
+                self._log_hold_transition(macro, macro_idx, trigger.key, "stop", state_detail, elapsed=elapsed, note="key_up")
+        else:
+            self._hold_release_since.pop(key, None)
+        return key in self._active_hold_triggers
 
     def _reset_condition_states(self):
         with self._cond_lock:

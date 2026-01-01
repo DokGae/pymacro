@@ -2,8 +2,20 @@
   "macros": [
     {
       "trigger_key": "mouse4",
-      "mode": "toggle",
+      "mode": "hold",
       "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "mouse4",
+          "mode": "hold",
+          "hold_press_seconds": null
+        },
+        {
+          "key": "ctrl+mouse4",
+          "mode": "toggle",
+          "hold_press_seconds": null
+        }
+      ],
       "name": "메인(재의부름)",
       "description": null,
       "suppress_trigger": true,
@@ -2153,6 +2165,13 @@
       "trigger_key": "ctrl+mouse4",
       "mode": "toggle",
       "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "ctrl+mouse4",
+          "mode": "toggle",
+          "hold_press_seconds": null
+        }
+      ],
       "name": "메인(평캔)",
       "description": null,
       "suppress_trigger": true,
@@ -4462,6 +4481,13 @@
       "trigger_key": "mouse5",
       "mode": "hold",
       "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "mouse5",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
       "name": "메인(pk) 복사본",
       "description": null,
       "suppress_trigger": true,
@@ -6098,6 +6124,13 @@
       "trigger_key": "ctrl+mouse5",
       "mode": "toggle",
       "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "ctrl+mouse5",
+          "mode": "toggle",
+          "hold_press_seconds": null
+        }
+      ],
       "name": "평캔(닥사)",
       "description": null,
       "suppress_trigger": true,
@@ -7695,6 +7728,13 @@
       "trigger_key": "esc",
       "mode": "hold",
       "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "esc",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
       "name": "esc",
       "description": null,
       "suppress_trigger": false,
@@ -7721,6 +7761,13 @@
       "trigger_key": "mouse3",
       "mode": "hold",
       "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "mouse3",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
       "name": "휠",
       "description": null,
       "suppress_trigger": false,
@@ -7747,6 +7794,13 @@
       "trigger_key": "shift",
       "mode": "hold",
       "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "shift",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
       "name": "shiftq",
       "description": null,
       "suppress_trigger": false,
@@ -7773,6 +7827,13 @@
       "trigger_key": "mouse2",
       "mode": "hold",
       "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "mouse2",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
       "name": "오른쪽마우스",
       "description": null,
       "suppress_trigger": false,
