@@ -3272,6 +3272,9 @@ class MacroEngine:
                         else:
                             active_holds.discard((idx, trig_idx))
                     else:
+                        if active_holds:
+                            # 홀드가 잡혀 있으면 토글 트리거는 무시해 오동작을 막는다.
+                            continue
                         ignore_window = self._edge_block_window if runner is not None else 0.0
                         if self._edge(trig.key, ignore_recent_sec=ignore_window, disallow_extra_modifiers=True):
                             toggle_on = not toggle_on
