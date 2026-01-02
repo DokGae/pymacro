@@ -1988,7 +1988,7 @@
           "type": "if",
           "name": null,
           "description": "스티그마2",
-          "enabled": true,
+          "enabled": false,
           "once_per_macro": false,
           "key": null,
           "repeat": 1,
@@ -2012,7 +2012,7 @@
             "timer_index": null,
             "timer_value": null,
             "timer_operator": "ge",
-            "enabled": true,
+            "enabled": false,
             "conditions": [
               {
                 "type": "all",
@@ -7801,7 +7801,7 @@
           "hold_press_seconds": null
         }
       ],
-      "name": "shiftq",
+      "name": "shift",
       "description": null,
       "suppress_trigger": false,
       "enabled": true,
