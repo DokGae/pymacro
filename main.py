@@ -4190,7 +4190,12 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         super().mousePressEvent(event)
 
     def _format_value(self, act: Action) -> str:
-        suffix = " (1회)" if getattr(act, "once_per_macro", False) else ""
+        suffix_bits = []
+        if getattr(act, "once_per_macro", False):
+            suffix_bits.append("1회")
+        if getattr(act, "force_first_run", False):
+            suffix_bits.append("첫입력")
+        suffix = f" ({', '.join(suffix_bits)})" if suffix_bits else ""
         if act.type in ("press", "down", "up"):
             rep = max(1, int(getattr(act, "repeat", 1) or 1))
             rep_txt = f" ({rep}회)" if rep > 1 else ""
@@ -4254,10 +4259,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         return getattr(act, "description", "") or ""
 
     def _apply_once_style(self, item: QtWidgets.QTreeWidgetItem, act: Action):
-        """색상으로 1회 실행 액션을 표시."""
+        """색상으로 1회 실행/첫 입력 보장 액션을 표시."""
         default_brush = QtGui.QBrush(self.palette().color(QtGui.QPalette.ColorRole.Text))
         once_brush = QtGui.QBrush(QtGui.QColor("#1f6feb"))
-        brush = once_brush if getattr(act, "once_per_macro", False) else default_brush
+        has_flag = getattr(act, "once_per_macro", False) or getattr(act, "force_first_run", False)
+        brush = once_brush if has_flag else default_brush
         for col in range(item.columnCount()):
             item.setForeground(col, brush)
 
@@ -4777,6 +4783,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.enabled_check.setChecked(True)
         self.enabled_check.setChecked(getattr(action, "enabled", True) if action else True)
         self.once_check = QtWidgets.QCheckBox("첫 사이클만 실행")
+        self.force_first_check = QtWidgets.QCheckBox("첫 입력 1회 무조건 실행(트리거 상태 무시)")
+        self.force_first_check.setToolTip("트리거가 풀려도 첫 사이클을 한 번은 끝까지 실행")
         self.key_edit = QtWidgets.QLineEdit()
         self.key_edit.setPlaceholderText("예: r / space / ctrl+shift+t")
         self.mouse_button_combo = QtWidgets.QComboBox()
@@ -4873,6 +4881,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("설명", self.desc_edit)
         form.addRow(self.enabled_check)
         form.addRow(self.once_check)
+        form.addRow(self.force_first_check)
         form.addRow("키", self.key_edit)
         form.addRow("마우스 버튼", self.mouse_button_combo)
         form.addRow("마우스 좌표 x,y (선택)", self.mouse_pos_edit)
@@ -5141,6 +5150,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.desc_edit.setText(getattr(act, "description", "") or "")
         self.enabled_check.setChecked(getattr(act, "enabled", True))
         self.once_check.setChecked(getattr(act, "once_per_macro", False))
+        self.force_first_check.setChecked(getattr(act, "force_first_run", False))
         self.key_edit.setText(getattr(act, "key_raw", None) or act.key or "")
         if getattr(act, "repeat_raw", None):
             repeat_raw_txt = str(act.repeat_raw).strip()
@@ -5218,7 +5228,14 @@ class ActionEditDialog(QtWidgets.QDialog):
         enabled = self.enabled_check.isChecked()
         is_elif = typ == "elif"
         typ_for_build = "if" if is_elif else typ
-        act = Action(type=typ_for_build, name=name, description=description, enabled=enabled, once_per_macro=self.once_check.isChecked())
+        act = Action(
+            type=typ_for_build,
+            name=name,
+            description=description,
+            enabled=enabled,
+            once_per_macro=self.once_check.isChecked(),
+            force_first_run=self.force_first_check.isChecked(),
+        )
         act.actions = copy.deepcopy(self._existing_children)
         act.else_actions = copy.deepcopy(self._existing_else)
         act.elif_blocks = copy.deepcopy(self._existing_elifs) if typ_for_build == "if" else []

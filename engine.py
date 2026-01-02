@@ -450,6 +450,7 @@ class Action:
     description: Optional[str] = None
     enabled: bool = True
     once_per_macro: bool = False
+    force_first_run: bool = False
     key: Optional[str] = None
     key_raw: Optional[str] = None
     repeat: int = 1
@@ -671,6 +672,7 @@ class Action:
             description=data.get("description"),
             enabled=bool(data.get("enabled", True)),
             once_per_macro=bool(data.get("once_per_macro", False)),
+            force_first_run=bool(data.get("force_first_run", False)),
             key=key_resolved,
             key_raw=str(key_raw) if key_raw is not None else None,
             repeat=repeat_val,
@@ -710,6 +712,7 @@ class Action:
             "description": self.description,
             "enabled": self.enabled,
             "once_per_macro": self.once_per_macro,
+            "force_first_run": getattr(self, "force_first_run", False),
             "key": self.key_raw if self.key_raw is not None else self.key,
             "repeat": self.repeat,
             "repeat_raw": self.repeat_raw if self.repeat_raw is not None else None,
@@ -1552,6 +1555,27 @@ class MacroRunner:
         self._held_lock = threading.Lock()
         self._if_false_streaks: Dict[tuple[int, ...], int] = {}
         self._running_stop_actions = False
+        self._stop_request_after_cycle = False
+        self._stop_actions_run = False
+        self._stop_logged = False
+        self._first_cycle_done = False
+        self._force_first_cycle = self._has_force_first_action(self.macro.actions)
+
+    def _has_force_first_action(self, actions: List[Action]) -> bool:
+        for act in actions:
+            if getattr(act, "force_first_run", False):
+                return True
+            children: List[Action] = []
+            if act.type == "if":
+                children.extend(act.actions)
+                for _, eacts, _ in _iter_elif_blocks(getattr(act, "elif_blocks", [])):
+                    children.extend(eacts)
+                children.extend(getattr(act, "else_actions", []))
+            elif act.type == "group":
+                children.extend(act.actions)
+            if children and self._has_force_first_action(children):
+                return True
+        return False
 
     def is_alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -1683,6 +1707,11 @@ class MacroRunner:
             return
         self._stop_event.clear()
         self._sent_stop_event = False
+        self._stop_request_after_cycle = False
+        self._stop_actions_run = False
+        self._stop_logged = False
+        self._first_cycle_done = False
+        self._force_first_cycle = self._has_force_first_action(self.macro.actions)
         self._current_cycle = 0
         name = f"Macro-{self.macro.primary_trigger().key or self.macro.trigger_key}"
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
@@ -1697,6 +1726,7 @@ class MacroRunner:
 
     def stop(self):
         label = self.macro.trigger_label(include_mode=False) or self.macro.trigger_key
+        self._stop_request_after_cycle = False
         self._stop_event.set()
         # on_stop 액션이 있으면 먼저 실행한다.
         self._run_stop_actions()
@@ -1709,11 +1739,27 @@ class MacroRunner:
         # 스레드가 끝난 뒤에도 혹시 남아 있을 입력을 한 번 더 해제한다.
         self._release_held_keys()
         self.engine._emit_log(f"매크로 정지: {label}")
+        self._stop_logged = True
         self._notify_macro_stop("stopped")
 
+    def request_stop_after_cycle(self):
+        self._stop_request_after_cycle = True
+
+    def should_finish_first_cycle(self) -> bool:
+        return bool(self._force_first_cycle)
+
+    def first_cycle_done(self) -> bool:
+        return bool(self._first_cycle_done)
+
+    def is_stop_after_cycle_requested(self) -> bool:
+        return bool(self._stop_request_after_cycle)
+
     def _run_stop_actions(self):
+        if self._stop_actions_run:
+            return
         actions = getattr(self.macro, "stop_actions", []) or []
         if not actions:
+            self._stop_actions_run = True
             return
         labels = self._label_index(actions)
         self._running_stop_actions = True
@@ -1721,6 +1767,7 @@ class MacroRunner:
             self._run_actions(copy.deepcopy(actions), labels, root=True, path=[f"{self._macro_label()}-on_stop"])
         finally:
             self._running_stop_actions = False
+            self._stop_actions_run = True
 
     def _run(self):
         labels = self._label_index(self.macro.actions)
@@ -1740,10 +1787,23 @@ class MacroRunner:
                 if self._stop_event.is_set():
                     break
                 cycle += 1
+                if cycle >= 1:
+                    self._first_cycle_done = True
+                if self._stop_request_after_cycle and self._first_cycle_done:
+                    break
                 if result.signal == "return":
                     break
                 self._stop_event.wait(self.engine.tick)
-            self._notify_macro_stop("finished")
+            stopped = self._stop_event.is_set() or self._stop_request_after_cycle
+            if stopped and not self._stop_actions_run:
+                self._run_stop_actions()
+            if stopped:
+                if not self._stop_logged:
+                    self.engine._emit_log(f"매크로 정지: {self.macro.trigger_label(include_mode=False) or self.macro.trigger_key}")
+                    self._stop_logged = True
+                self._notify_macro_stop("stopped")
+            else:
+                self._notify_macro_stop("finished")
         finally:
             self._release_held_keys()
 
@@ -2209,6 +2269,8 @@ class MacroEngine:
         self._recent_sends: Dict[str, float] = {}
         self._guard_macro_idx: Optional[int] = None
         self._suspended_toggle_indices: Set[int] = set()
+        # cycle_count가 있는 홀드 매크로는 트리거를 뗄 때까지 재시작을 막는다.
+        self._hold_exhausted_indices: Set[int] = set()
         self._app_ctx: Optional[Dict[str, Any]] = None
         self._app_ctx_ts: float = 0.0
         # 홀드 상태가 일시적으로 끊겼을 때 재시작을 막기 위해 약간 여유를 둔다.
@@ -3218,16 +3280,43 @@ class MacroEngine:
                 self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != idx} | active_holds
                 self._toggle_states[idx] = toggle_on
 
+                # cycle_count 설정된 홀드 매크로는 트리거를 뗄 때까지 재시작하지 않는다.
+                hold_blocked = False
+                if macro.mode == "hold" and idx in self._hold_exhausted_indices:
+                    if active_holds:
+                        hold_blocked = True
+                    else:
+                        self._hold_exhausted_indices.discard(idx)
+
                 should_run = toggle_on or bool(active_holds)
+                if hold_blocked:
+                    should_run = False
+
                 if should_run and runner is None:
                     self._apply_macro_interaction(idx)
                     runner = MacroRunner(macro, self, idx)
                     self._macro_runners[idx] = runner
                     runner.start()
                 elif not should_run and runner is not None:
-                    runner.stop()
+                    self._toggle_states[idx] = False
+                    if runner.should_finish_first_cycle():
+                        if not runner.first_cycle_done():
+                            runner.request_stop_after_cycle()
+                        elif runner.is_stop_after_cycle_requested():
+                            pass
+                        else:
+                            runner.stop()
+                            self._macro_runners.pop(idx, None)
+                    else:
+                        runner.stop()
+                        self._macro_runners.pop(idx, None)
+
+                runner = self._macro_runners.get(idx)
+                if runner is not None and not runner.is_alive():
                     self._macro_runners.pop(idx, None)
                     self._toggle_states[idx] = False
+                    if macro.mode == "hold" and getattr(macro, "cycle_count", None) not in (None, 0):
+                        self._hold_exhausted_indices.add(idx)
 
             time.sleep(self.tick)
             self._clear_guard_if_needed()
@@ -3250,6 +3339,7 @@ class MacroEngine:
         self._toggle_states.clear()
         self._guard_macro_idx = None
         self._suspended_toggle_indices.clear()
+        self._hold_exhausted_indices.clear()
 
     def _stop_other_macros(self, except_idx: Optional[int] = None):
         for idx, runner in list(self._macro_runners.items()):
@@ -3301,6 +3391,7 @@ class MacroEngine:
             self._hold_release_since.pop(key, None)
         self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != macro_idx}
         self._toggle_states.pop(macro_idx, None)
+        self._hold_exhausted_indices.discard(macro_idx)
 
     def _update_hold_trigger(self, macro_idx: int, trig_idx: int, macro: Macro, trigger: MacroTrigger) -> bool:
         key = (macro_idx, trig_idx)
