@@ -3270,6 +3270,11 @@ class MacroEngine:
                         is_active = self._update_hold_trigger(idx, trig_idx, macro, trig)
                         if is_active:
                             active_holds.add((idx, trig_idx))
+                            # 홀드가 잡히는 순간 토글 상태를 강제로 해제하여
+                            # 토글→홀드 전환 시 홀드 업에 맞춰 멈추도록 한다.
+                            if toggle_on:
+                                toggle_on = False
+                                self._toggle_states[idx] = False
                         else:
                             active_holds.discard((idx, trig_idx))
                     else:
