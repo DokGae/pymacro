@@ -10286,6 +10286,417 @@ class PresetTransferDialog(QtWidgets.QDialog):
             self._save_from_scale()
 
 
+class InputTimingTestDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, *, on_apply_keyboard=None, on_apply_mouse=None):
+        super().__init__(parent)
+        self.setWindowTitle("입력 속도 테스트")
+        self.setModal(False)
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.resize(780, 520)
+        self._apply_keyboard_cb = on_apply_keyboard
+        self._apply_mouse_cb = on_apply_mouse
+        self._queue: queue.Queue = queue.Queue()
+        self._stop_event = threading.Event()
+        self._listener_thread: threading.Thread | None = None
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(120)
+        self._timer.timeout.connect(self._drain_queue)
+        self._pending: dict = {}
+        self._last_down_ts: float | None = None
+        self._press_samples: list[float] = []
+        self._gap_samples: list[float] = []
+        self._max_rows = 180
+        self._friendly_map: dict[str, str] = {}
+        self._build_ui()
+        self._update_stats()
+        self._timer.start()
+        self._start_listener()
+
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        self.status_label = QtWidgets.QLabel("키보드나 마우스를 연타해보세요. 누름 시간과 입력 사이 지연을 측정합니다.")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        stats = QtWidgets.QGridLayout()
+        stats.addWidget(QtWidgets.QLabel("누름 시간"), 0, 0)
+        self.press_stat_label = QtWidgets.QLabel("-")
+        stats.addWidget(self.press_stat_label, 0, 1)
+        stats.addWidget(QtWidgets.QLabel("입력 사이 지연"), 1, 0)
+        self.gap_stat_label = QtWidgets.QLabel("-")
+        stats.addWidget(self.gap_stat_label, 1, 1)
+        layout.addLayout(stats)
+
+        self.last_sample_label = QtWidgets.QLabel("최근: -")
+        self.last_sample_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.last_sample_label)
+
+        ctrl_row = QtWidgets.QHBoxLayout()
+        self.toggle_btn = QtWidgets.QPushButton("측정 중지")
+        self.reset_btn = QtWidgets.QPushButton("초기화")
+        self.apply_keyboard_btn = QtWidgets.QPushButton("키보드 적용")
+        self.apply_mouse_btn = QtWidgets.QPushButton("마우스 적용")
+        ctrl_row.addWidget(self.toggle_btn)
+        ctrl_row.addWidget(self.reset_btn)
+        ctrl_row.addWidget(self.apply_keyboard_btn)
+        ctrl_row.addWidget(self.apply_mouse_btn)
+        ctrl_row.addStretch()
+        layout.addLayout(ctrl_row)
+
+        self.table = QtWidgets.QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["시간", "장치", "입력", "누름(ms)", "입력 사이(ms)", "HWID / Friendly"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        layout.addWidget(self.table)
+
+        self.toggle_btn.clicked.connect(self._toggle_listener)
+        self.reset_btn.clicked.connect(self._reset)
+        self.apply_keyboard_btn.clicked.connect(self._apply_to_keyboard)
+        self.apply_mouse_btn.clicked.connect(self._apply_to_mouse)
+
+    def set_apply_callbacks(self, *, keyboard=None, mouse=None):
+        self._apply_keyboard_cb = keyboard
+        self._apply_mouse_cb = mouse
+
+    def _toggle_listener(self):
+        if self._listener_thread and self._listener_thread.is_alive():
+            self._stop_listener()
+        else:
+            self._start_listener()
+
+    def _start_listener(self):
+        if self._listener_thread and self._listener_thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._pending = {}
+        self._last_down_ts = None
+        self._listener_thread = threading.Thread(target=self._listen_loop, name="InputTimingListener", daemon=True)
+        self._listener_thread.start()
+        self.toggle_btn.setText("측정 중지")
+        self.status_label.setText("측정 중: 키보드나 마우스를 연타해보세요.")
+
+    def _stop_listener(self, *, message: str | None = None):
+        self._stop_event.set()
+        t = self._listener_thread
+        if t and t.is_alive():
+            t.join(timeout=1.0)
+        self._listener_thread = None
+        self.toggle_btn.setText("측정 시작")
+        if message:
+            self.status_label.setText(message)
+        else:
+            self.status_label.setText("중지됨: 다시 시작하려면 측정 시작을 누르세요.")
+
+    def _listen_loop(self):
+        try:
+            inter = Interception()
+            inter.set_keyboard_filter(KeyFilter.All)
+            inter.set_mouse_filter(MouseFilter.All)
+            ctx = getattr(inter, "_context", [])
+            try:
+                friendly_info = kbutil.list_interception_devices(friendly=True)
+                friendly_map = {info.get("hardware_id", "").lower(): info.get("friendly_name", "") for info in friendly_info}
+                self._queue.put({"type": "friendly_map", "map": friendly_map})
+            except Exception:
+                pass
+        except Exception as exc:
+            self._queue.put({"type": "error", "message": str(exc)})
+            return
+        while not self._stop_event.is_set():
+            device = inter.wait_receive(200)
+            if not device:
+                continue
+            now = time.time()
+            try:
+                entry = self._build_entry(device, ctx, now)
+                if entry:
+                    self._queue.put(entry)
+            except Exception as exc:
+                self._queue.put({"type": "error", "message": str(exc)})
+                break
+            try:
+                device.send()
+            except Exception:
+                pass
+
+    def _build_entry(self, device, ctx, now: float) -> dict | None:
+        hwid = ""
+        try:
+            hwid = device.get_hardware_id() or ""
+        except Exception:
+            hwid = ""
+        device_id = None
+        try:
+            device_id = ctx.index(device) + 1 if ctx else None
+        except ValueError:
+            device_id = None
+        stroke = getattr(device, "stroke", None)
+        if getattr(device, "is_keyboard", False):
+            info = self._parse_keyboard_stroke(stroke)
+            if not info:
+                return None
+            return self._handle_timing_event(
+                key_id=("keyboard", device_id, info.get("code")),
+                action=info.get("action"),
+                label=info.get("label") or "키보드",
+                kind="키보드",
+                hwid=hwid,
+                device_id=device_id,
+                now=now,
+            )
+        info = self._parse_mouse_stroke(stroke)
+        if not info:
+            return None
+        return self._handle_timing_event(
+            key_id=("mouse", device_id, info.get("button")),
+            action=info.get("action"),
+            label=info.get("label") or "마우스",
+            kind="마우스",
+            hwid=hwid,
+            device_id=device_id,
+            now=now,
+        )
+
+    def _parse_keyboard_stroke(self, stroke) -> dict | None:
+        if stroke is None:
+            return None
+        try:
+            state = KeyState(stroke.state)
+        except Exception:
+            state = None
+        down_states = {getattr(KeyState, "Down", None), getattr(KeyState, "E0Down", None), getattr(KeyState, "E1Down", None)}
+        up_states = {getattr(KeyState, "Up", None), getattr(KeyState, "E0Up", None), getattr(KeyState, "E1Up", None)}
+        if state in down_states:
+            action = "down"
+        elif state in up_states:
+            action = "up"
+        else:
+            return None
+        return {"action": action, "code": getattr(stroke, "code", None), "label": self._describe_key(stroke)}
+
+    def _parse_mouse_stroke(self, stroke) -> dict | None:
+        ms = MouseState if "MouseState" in globals() else None
+        if stroke is None or ms is None:
+            return None
+        try:
+            state = ms(stroke.state)
+        except Exception:
+            return None
+        down_map = {
+            getattr(ms, "LeftButtonDown", None): ("left", "좌클릭"),
+            getattr(ms, "RightButtonDown", None): ("right", "우클릭"),
+            getattr(ms, "MiddleButtonDown", None): ("middle", "휠 클릭"),
+            getattr(ms, "XButton1Down", None): ("x1", "X1 클릭"),
+            getattr(ms, "XButton2Down", None): ("x2", "X2 클릭"),
+        }
+        up_map = {
+            getattr(ms, "LeftButtonUp", None): ("left", "좌클릭"),
+            getattr(ms, "RightButtonUp", None): ("right", "우클릭"),
+            getattr(ms, "MiddleButtonUp", None): ("middle", "휠 클릭"),
+            getattr(ms, "XButton1Up", None): ("x1", "X1 클릭"),
+            getattr(ms, "XButton2Up", None): ("x2", "X2 클릭"),
+        }
+        if state in down_map:
+            button, label = down_map[state]
+            return {"action": "down", "button": button, "label": label}
+        if state in up_map:
+            button, label = up_map[state]
+            return {"action": "up", "button": button, "label": label}
+        return None
+
+    def _handle_timing_event(
+        self,
+        *,
+        key_id,
+        action: str,
+        label: str,
+        kind: str,
+        hwid: str,
+        device_id,
+        now: float,
+    ) -> dict | None:
+        if action == "down":
+            gap_ms = None
+            if self._last_down_ts:
+                gap_ms = (now - self._last_down_ts) * 1000.0
+            self._last_down_ts = now
+            self._pending[key_id] = {"ts": now, "gap_ms": gap_ms, "label": label, "kind": kind, "hwid": hwid, "device_id": device_id}
+            return None
+        if action != "up":
+            return None
+        pending = self._pending.pop(key_id, None)
+        if not pending:
+            return None
+        hold_ms = (now - pending["ts"]) * 1000.0
+        gap_ms = pending.get("gap_ms")
+        return {
+            "type": "sample",
+            "ts": now,
+            "kind": kind,
+            "label": label,
+            "hold_ms": hold_ms,
+            "gap_ms": gap_ms,
+            "hwid": hwid or pending.get("hwid"),
+            "device_id": device_id or pending.get("device_id"),
+        }
+
+    def _drain_queue(self):
+        dirty = False
+        while True:
+            try:
+                msg = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            mtype = msg.get("type")
+            if mtype == "error":
+                self._stop_listener(message=f"오류: {msg.get('message')}")
+                continue
+            if mtype == "friendly_map":
+                self._friendly_map = msg.get("map") or {}
+                continue
+            if mtype == "sample":
+                hold_ms = float(msg.get("hold_ms") or 0.0)
+                gap_ms = msg.get("gap_ms")
+                self._press_samples.append(hold_ms)
+                if len(self._press_samples) > 500:
+                    self._press_samples = self._press_samples[-500:]
+                if gap_ms is not None:
+                    try:
+                        gap_val = float(gap_ms)
+                        self._gap_samples.append(gap_val)
+                        if len(self._gap_samples) > 500:
+                            self._gap_samples = self._gap_samples[-500:]
+                    except Exception:
+                        pass
+                self._add_row(msg)
+                self._last_sample_label(msg)
+                dirty = True
+        if dirty:
+            self._update_stats()
+
+    def _last_sample_label(self, msg: dict):
+        label = msg.get("label") or "-"
+        hold_ms = float(msg.get("hold_ms") or 0.0)
+        gap_ms = msg.get("gap_ms")
+        gap_txt = f", 사이 {gap_ms:.1f}ms" if isinstance(gap_ms, (int, float)) else ""
+        self.last_sample_label.setText(f"최근: {label} · 누름 {hold_ms:.1f}ms{gap_txt}")
+
+    def _add_row(self, msg: dict):
+        row = 0
+        self.table.insertRow(row)
+        ts = float(msg.get("ts", time.time()))
+        base = time.strftime("%H:%M:%S", time.localtime(ts))
+        ms = int((ts - int(ts)) * 1000)
+        ts_txt = f"{base}.{ms:03d}"
+        device_txt = f"#{msg.get('device_id')}" if msg.get("device_id") else "-"
+        hwid = msg.get("hwid") or ""
+        friendly = self._friendly_from_hwid(hwid)
+        vidpid = _short_hwid(hwid)
+        hwid_cell = vidpid
+        if friendly and vidpid:
+            hwid_cell = f"{vidpid} ({friendly})"
+        elif friendly:
+            hwid_cell = friendly
+        elif hwid:
+            hwid_cell = hwid
+        self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(ts_txt))
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(msg.get("kind") or "-"))
+        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(msg.get("label") or "-"))
+        self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{float(msg.get('hold_ms') or 0):.1f}"))
+        gap_val = msg.get("gap_ms")
+        gap_txt = f"{float(gap_val):.1f}" if isinstance(gap_val, (int, float)) else "-"
+        self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(gap_txt))
+        self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(hwid_cell))
+        if self.table.rowCount() > self._max_rows:
+            self.table.removeRow(self.table.rowCount() - 1)
+        self.table.resizeRowsToContents()
+
+    def _friendly_from_hwid(self, hwid: str) -> str:
+        if not hwid:
+            return ""
+        return self._friendly_map.get(hwid.lower(), "") or self._friendly_map.get(hwid.upper(), "")
+
+    def _describe_key(self, stroke) -> str:
+        base = f"SC {getattr(stroke, 'code', '-')}"
+        try:
+            vk = map_virtual_key(int(getattr(stroke, "code", 0)), MapVk.ScToVk)
+            if vk:
+                ch = chr(vk)
+                vk_txt = f"{ch.upper()} (VK {vk})" if ch.isprintable() and len(ch) == 1 else f"VK {vk}"
+                base = f"{vk_txt} / {base}"
+        except Exception:
+            pass
+        return base
+
+    def _update_stats(self):
+        self.press_stat_label.setText(self._format_stat(self._press_samples))
+        self.gap_stat_label.setText(self._format_stat(self._gap_samples))
+
+    def _format_stat(self, samples: list[float]) -> str:
+        if not samples:
+            return "- (샘플 0)"
+        avg = sum(samples) / len(samples)
+        return f"{avg:.1f} ms (샘플 {len(samples)}, 최소 {min(samples):.1f}, 최대 {max(samples):.1f})"
+
+    def _reset(self):
+        self._press_samples = []
+        self._gap_samples = []
+        self._pending = {}
+        self._last_down_ts = None
+        self.table.setRowCount(0)
+        self.last_sample_label.setText("최근: -")
+        self._update_stats()
+
+    def _apply_to_keyboard(self):
+        hold, gap = self._current_ms()
+        if not callable(self._apply_keyboard_cb):
+            self.status_label.setText("키보드 적용 콜백이 연결되지 않았습니다.")
+            return
+        if hold is None and gap is None:
+            self.status_label.setText("샘플이 없습니다. 눌러서 측정 후 적용하세요.")
+            return
+        self._apply_keyboard_cb(hold, gap)
+        self.status_label.setText(
+            f"키보드 적용 완료: 누름 {hold if hold is not None else '-'} ms, 사이 {gap if gap is not None else '-'} ms"
+        )
+
+    def _apply_to_mouse(self):
+        hold, gap = self._current_ms()
+        if not callable(self._apply_mouse_cb):
+            self.status_label.setText("마우스 적용 콜백이 연결되지 않았습니다.")
+            return
+        if hold is None and gap is None:
+            self.status_label.setText("샘플이 없습니다. 눌러서 측정 후 적용하세요.")
+            return
+        self._apply_mouse_cb(hold, gap)
+        self.status_label.setText(
+            f"마우스 적용 완료: 누름 {hold if hold is not None else '-'} ms, 사이 {gap if gap is not None else '-'} ms"
+        )
+
+    def _current_ms(self) -> tuple[int | None, int | None]:
+        hold = round(sum(self._press_samples) / len(self._press_samples)) if self._press_samples else None
+        gap = round(sum(self._gap_samples) / len(self._gap_samples)) if self._gap_samples else None
+        return hold, gap
+
+    def set_friendly_map(self, friendly: dict[str, str] | None):
+        self._friendly_map = friendly or {}
+
+    def closeEvent(self, event):
+        try:
+            self._stop_listener()
+        finally:
+            super().closeEvent(event)
+
+
 class KeyboardSettingsDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -10317,6 +10728,7 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         self._activity_timer.timeout.connect(self._drain_activity_queue)
         self._activity_running = False
         self._max_activity_rows = 150
+        self._input_rate_dialog: InputTimingTestDialog | None = None
         self.setWindowTitle("키보드 설정")
         self.resize(840, 680)
         self._anti_cheat_tip = "안티치트 환경에서는 하드웨어/소프트웨어 입력 모두 탐지될 수 있으며, 사용 책임은 사용자에게 있습니다."
@@ -10477,6 +10889,8 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         test_row.addWidget(self.test_key_combo)
         self.test_btn = QtWidgets.QPushButton("테스트 보내기")
         test_row.addWidget(self.test_btn)
+        self.input_rate_btn = QtWidgets.QPushButton("입력 속도 테스트")
+        test_row.addWidget(self.input_rate_btn)
         test_row.addStretch()
         layout.addLayout(test_row)
 
@@ -10497,6 +10911,7 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         self.apply_btn.clicked.connect(self._apply_clicked)
         self.close_btn.clicked.connect(self.close)
         self.test_btn.clicked.connect(self._test_clicked)
+        self.input_rate_btn.clicked.connect(self._open_input_rate_dialog)
 
     def _build_delay_group(self) -> QtWidgets.QGroupBox:
         group = QtWidgets.QGroupBox("딜레이 설정 (글로벌 기본)")
@@ -10693,6 +11108,8 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
             self.mouse_table.selectRow(mouse_target_row)
 
         self._update_activity_hint(installed=installed, admin_ok=admin_ok, has_device=bool(kb_devices or mouse_devices))
+        if self._input_rate_dialog:
+            self._input_rate_dialog.set_friendly_map(self._friendly_map)
         self._set_mode_ui()
 
     def _set_mode_ui(self):
@@ -10769,6 +11186,45 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         key = self.test_key_combo.currentData() or "f24"
         ok, msg = self.engine.test_keyboard(key)
         QtWidgets.QMessageBox.information(self, "테스트", msg if ok else f"실패: {msg}")
+
+    def _open_input_rate_dialog(self):
+        if self._input_rate_dialog is None:
+            self._input_rate_dialog = InputTimingTestDialog(
+                parent=self,
+                on_apply_keyboard=self._apply_input_timing_to_keyboard,
+                on_apply_mouse=self._apply_input_timing_to_mouse,
+            )
+            self._input_rate_dialog.set_friendly_map(self._friendly_map)
+            try:
+                self._input_rate_dialog.destroyed.connect(lambda: setattr(self, "_input_rate_dialog", None))
+            except Exception:
+                pass
+        else:
+            self._input_rate_dialog.set_friendly_map(self._friendly_map)
+            self._input_rate_dialog.set_apply_callbacks(
+                keyboard=self._apply_input_timing_to_keyboard, mouse=self._apply_input_timing_to_mouse
+            )
+        self._input_rate_dialog.show()
+        self._input_rate_dialog.raise_()
+        self._input_rate_dialog.activateWindow()
+
+    def _apply_input_timing_to_keyboard(self, hold_ms: int | None, gap_ms: int | None):
+        derived_gap = None
+        if hold_ms is not None and gap_ms is not None:
+            derived_gap = max(int(gap_ms) - int(hold_ms), 0)
+        if hold_ms is not None:
+            self.press_delay_edit.setText(str(int(hold_ms)))
+        if gap_ms is not None:
+            self.gap_delay_edit.setText(str(int(derived_gap if derived_gap is not None else gap_ms)))
+
+    def _apply_input_timing_to_mouse(self, hold_ms: int | None, gap_ms: int | None):
+        derived_gap = None
+        if hold_ms is not None and gap_ms is not None:
+            derived_gap = max(int(gap_ms) - int(hold_ms), 0)
+        if hold_ms is not None:
+            self.mouse_press_delay_edit.setText(str(int(hold_ms)))
+        if gap_ms is not None:
+            self.mouse_gap_delay_edit.setText(str(int(derived_gap if derived_gap is not None else gap_ms)))
 
     # 실시간 입력 감지 ---------------------------------------------------------
     def _update_activity_hint(self, *, installed: bool, admin_ok: bool, has_device: bool):
