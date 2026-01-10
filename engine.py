@@ -3261,6 +3261,7 @@ class MacroEngine:
                     continue
                 runner = self._macro_runners.get(idx)
                 triggers = self._macro_triggers(macro)
+                was_active_hold = any(k[0] == idx for k in self._active_hold_triggers)
                 toggle_on = bool(self._toggle_states.get(idx, False))
                 active_holds: Set[tuple[int, int]] = {k for k in self._active_hold_triggers if k[0] == idx}
 
@@ -3272,7 +3273,9 @@ class MacroEngine:
                         else:
                             active_holds.discard((idx, trig_idx))
                     else:
-                        if active_holds:
+                        # 이미 이전 루프부터 홀드가 유지 중이면 토글을 무시하지만,
+                        # 이번 루프에 처음 홀드가 잡힌 순간(예: Ctrl을 먼저 누르고 mouse4를 눌러 토글 의도)에는 허용한다.
+                        if active_holds and was_active_hold:
                             # 홀드가 잡혀 있으면 토글 트리거는 무시해 오동작을 막는다.
                             continue
                         ignore_window = self._edge_block_window if runner is not None else 0.0
@@ -3398,7 +3401,19 @@ class MacroEngine:
 
     def _update_hold_trigger(self, macro_idx: int, trig_idx: int, macro: Macro, trigger: MacroTrigger) -> bool:
         key = (macro_idx, trig_idx)
-        pressed, state_detail = self._trigger_state(trigger.key, disallow_extra_modifiers=True)
+        # 기본적으로는 모디파이어를 허용하지 않는(strict) 판정을 사용하되,
+        # 이미 잡힌 홀드가 있는 상태에서 추가 모디파이어 때문에 strict가 풀리는 경우에는
+        # 홀드를 유지하여 토글 오동작을 막는다.
+        pressed_strict, strict_detail = self._trigger_state(trigger.key, disallow_extra_modifiers=True)
+        pressed_raw, state_detail = self._trigger_state(trigger.key, disallow_extra_modifiers=False)
+        blocked = strict_detail.get("blocked_by_extra_mods", False)
+        state_detail["blocked_by_extra_mods"] = blocked
+
+        if not pressed_strict and blocked and key in self._active_hold_triggers:
+            pressed = True
+        else:
+            pressed = pressed_strict
+        state_detail["raw_pressed"] = pressed_raw
         now = time.monotonic()
         threshold = trigger.hold_press_seconds
         if threshold is None:
