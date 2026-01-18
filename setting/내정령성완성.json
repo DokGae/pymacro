@@ -23,13 +23,13 @@
       "cycle_count": null,
       "actions": [
         {
-          "type": "down",
+          "type": "mouse_down",
           "name": null,
           "description": null,
           "enabled": true,
           "once_per_macro": true,
           "force_first_run": false,
-          "key": "9",
+          "key": null,
           "repeat": 1,
           "repeat_raw": null,
           "var_name": null,
@@ -39,7 +39,7 @@
           "condition": null,
           "label": null,
           "goto_label": null,
-          "mouse_button": null,
+          "mouse_button": "mouse1",
           "mouse_pos": null,
           "mouse_pos_raw": null,
           "pixel_region": null,
@@ -83,13 +83,13 @@
           "key_delay_override": null
         },
         {
-          "type": "press",
+          "type": "mouse_click",
           "name": null,
           "description": null,
           "enabled": true,
           "once_per_macro": false,
           "force_first_run": false,
-          "key": "0",
+          "key": null,
           "repeat": 1,
           "repeat_raw": null,
           "var_name": null,
@@ -99,7 +99,7 @@
           "condition": null,
           "label": null,
           "goto_label": null,
-          "mouse_button": null,
+          "mouse_button": "mouse2",
           "mouse_pos": null,
           "mouse_pos_raw": null,
           "pixel_region": null,
@@ -615,7 +615,7 @@
         {
           "type": "if",
           "name": null,
-          "description": "바정활성화시 저주",
+          "description": "4번스킬",
           "enabled": true,
           "once_per_macro": false,
           "force_first_run": false,
@@ -628,7 +628,7 @@
           "sleep_ms": 0,
           "condition": {
             "type": "any",
-            "name": "q(바정활성화시)",
+            "name": "4번스킬체크(움직이지않을때만)",
             "key": null,
             "key_mode": null,
             "var_name": null,
@@ -668,7 +668,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1889,1422,1,1",
+                    "region": "/4스킬L",
                     "color": "ffffff",
                     "tolerance": 3,
                     "pixel_exists": true,
@@ -685,7 +685,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1857,1426,1,1",
+                    "region": "/4스킬쿨중범위",
                     "color": "/일반스킬쿨중색5",
                     "tolerance": 30,
                     "pixel_exists": false,
@@ -695,25 +695,8 @@
                     "enabled": true
                   },
                   {
-                    "type": "pixel",
-                    "name": "바정소환시확인되는거",
-                    "key": null,
-                    "key_mode": null,
-                    "var_name": null,
-                    "var_value_raw": null,
-                    "var_operator": "eq",
-                    "region": "2084,1251,1,1",
-                    "color": "ffffff",
-                    "tolerance": 10,
-                    "pixel_exists": true,
-                    "timer_index": null,
-                    "timer_value": null,
-                    "timer_operator": "ge",
-                    "enabled": true
-                  },
-                  {
                     "type": "all",
-                    "name": "키 w,a,s,d,space (released)",
+                    "name": "키 w,a,s,d (released)",
                     "key": null,
                     "key_mode": null,
                     "var_name": null,
@@ -795,23 +778,6 @@
                         "timer_value": null,
                         "timer_operator": "ge",
                         "enabled": true
-                      },
-                      {
-                        "type": "key",
-                        "name": null,
-                        "key": "space",
-                        "key_mode": "released",
-                        "var_name": null,
-                        "var_value_raw": null,
-                        "var_operator": "eq",
-                        "region": null,
-                        "color": null,
-                        "tolerance": 0,
-                        "pixel_exists": true,
-                        "timer_index": null,
-                        "timer_value": null,
-                        "timer_operator": "ge",
-                        "enabled": true
                       }
                     ]
                   }
@@ -841,7 +807,7 @@
               "enabled": true,
               "once_per_macro": false,
               "force_first_run": false,
-              "key": "q",
+              "key": "4",
               "repeat": 1,
               "repeat_raw": null,
               "var_name": null,
@@ -1166,7 +1132,7 @@
         {
           "type": "if",
           "name": null,
-          "description": "4번스킬",
+          "description": "Q스킬",
           "enabled": true,
           "once_per_macro": false,
           "force_first_run": false,
@@ -1179,7 +1145,7 @@
           "sleep_ms": 0,
           "condition": {
             "type": "any",
-            "name": "4번스킬체크(분쇄파동 연속기)",
+            "name": "q",
             "key": null,
             "key_mode": null,
             "var_name": null,
@@ -1219,7 +1185,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "/4스킬L",
+                    "region": "1889,1422,1,1",
                     "color": "ffffff",
                     "tolerance": 3,
                     "pixel_exists": true,
@@ -1236,7 +1202,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "/4스킬쿨중범위",
+                    "region": "1857,1426,1,1",
                     "color": "/일반스킬쿨중색5",
                     "tolerance": 30,
                     "pixel_exists": false,
@@ -1271,7 +1237,7 @@
               "enabled": true,
               "once_per_macro": false,
               "force_first_run": false,
-              "key": "4",
+              "key": "q",
               "repeat": 1,
               "repeat_raw": null,
               "var_name": null,
@@ -1666,6 +1632,23 @@
                 "conditions": [
                   {
                     "type": "pixel",
+                    "name": "고대정령",
+                    "key": null,
+                    "key_mode": null,
+                    "var_name": null,
+                    "var_value_raw": null,
+                    "var_operator": "eq",
+                    "region": "2084,1251,1,1",
+                    "color": "7f6600",
+                    "tolerance": 10,
+                    "pixel_exists": false,
+                    "timer_index": null,
+                    "timer_value": null,
+                    "timer_operator": "ge",
+                    "enabled": true
+                  },
+                  {
+                    "type": "pixel",
                     "name": null,
                     "key": null,
                     "key_mode": null,
@@ -1855,6 +1838,23 @@
                     "region": "/1스킬사용중",
                     "color": "/일반스킬쿨중색5",
                     "tolerance": 30,
+                    "pixel_exists": false,
+                    "timer_index": null,
+                    "timer_value": null,
+                    "timer_operator": "ge",
+                    "enabled": true
+                  },
+                  {
+                    "type": "pixel",
+                    "name": "고대정령",
+                    "key": null,
+                    "key_mode": null,
+                    "var_name": null,
+                    "var_value_raw": null,
+                    "var_operator": "eq",
+                    "region": "2084,1251,1,1",
+                    "color": "7f6600",
+                    "tolerance": 10,
                     "pixel_exists": false,
                     "timer_index": null,
                     "timer_value": null,
@@ -2144,39 +2144,9 @@
           "name": null,
           "description": null,
           "enabled": true,
-          "once_per_macro": false,
-          "force_first_run": false,
-          "key": "w",
-          "repeat": 1,
-          "repeat_raw": null,
-          "var_name": null,
-          "var_value_raw": null,
-          "confirm_fails": 1,
-          "sleep_ms": 0,
-          "condition": null,
-          "label": null,
-          "goto_label": null,
-          "mouse_button": null,
-          "mouse_pos": null,
-          "mouse_pos_raw": null,
-          "pixel_region": null,
-          "pixel_region_raw": null,
-          "pixel_target": null,
-          "group_mode": null,
-          "group_repeat": null,
-          "timer_index": null,
-          "timer_value": null,
-          "key_delay_override_enabled": false,
-          "key_delay_override": null
-        },
-        {
-          "type": "down",
-          "name": null,
-          "description": null,
-          "enabled": true,
           "once_per_macro": true,
           "force_first_run": false,
-          "key": "9",
+          "key": "w",
           "repeat": 1,
           "repeat_raw": null,
           "var_name": null,
@@ -2230,13 +2200,13 @@
           "key_delay_override": null
         },
         {
-          "type": "press",
+          "type": "mouse_click",
           "name": null,
           "description": null,
           "enabled": true,
           "once_per_macro": false,
           "force_first_run": false,
-          "key": "0",
+          "key": null,
           "repeat": 1,
           "repeat_raw": null,
           "var_name": null,
@@ -2246,7 +2216,37 @@
           "condition": null,
           "label": null,
           "goto_label": null,
-          "mouse_button": null,
+          "mouse_button": "mouse1",
+          "mouse_pos": null,
+          "mouse_pos_raw": null,
+          "pixel_region": null,
+          "pixel_region_raw": null,
+          "pixel_target": null,
+          "group_mode": null,
+          "group_repeat": null,
+          "timer_index": null,
+          "timer_value": null,
+          "key_delay_override_enabled": false,
+          "key_delay_override": null
+        },
+        {
+          "type": "mouse_click",
+          "name": null,
+          "description": null,
+          "enabled": true,
+          "once_per_macro": false,
+          "force_first_run": false,
+          "key": null,
+          "repeat": 1,
+          "repeat_raw": null,
+          "var_name": null,
+          "var_value_raw": null,
+          "confirm_fails": 1,
+          "sleep_ms": 0,
+          "condition": null,
+          "label": null,
+          "goto_label": null,
+          "mouse_button": "mouse2",
           "mouse_pos": null,
           "mouse_pos_raw": null,
           "pixel_region": null,
@@ -4615,7 +4615,7 @@
           "type": "if",
           "name": null,
           "description": "스티그마2",
-          "enabled": true,
+          "enabled": false,
           "once_per_macro": false,
           "force_first_run": false,
           "key": null,
@@ -4640,7 +4640,7 @@
             "timer_index": null,
             "timer_value": null,
             "timer_operator": "ge",
-            "enabled": true,
+            "enabled": false,
             "conditions": [
               {
                 "type": "all",
@@ -4941,7 +4941,7 @@
           "type": "if",
           "name": null,
           "description": "스티그마1",
-          "enabled": true,
+          "enabled": false,
           "once_per_macro": false,
           "force_first_run": false,
           "key": null,
@@ -4966,7 +4966,7 @@
             "timer_index": null,
             "timer_value": null,
             "timer_operator": "ge",
-            "enabled": true,
+            "enabled": false,
             "conditions": [
               {
                 "type": "all",
@@ -5104,7 +5104,7 @@
           "type": "if",
           "name": null,
           "description": "스티그마3",
-          "enabled": true,
+          "enabled": false,
           "once_per_macro": false,
           "force_first_run": false,
           "key": null,
@@ -5129,7 +5129,7 @@
             "timer_index": null,
             "timer_value": null,
             "timer_operator": "ge",
-            "enabled": true,
+            "enabled": false,
             "conditions": [
               {
                 "type": "all",
@@ -7956,12 +7956,274 @@
       "description": null,
       "suppress_trigger": false,
       "enabled": true,
+      "cycle_count": null,
+      "actions": [
+        {
+          "type": "press",
+          "name": null,
+          "description": null,
+          "enabled": true,
+          "once_per_macro": false,
+          "force_first_run": false,
+          "key": "q",
+          "repeat": 1,
+          "repeat_raw": null,
+          "var_name": null,
+          "var_value_raw": null,
+          "confirm_fails": 1,
+          "sleep_ms": 0,
+          "condition": null,
+          "label": null,
+          "goto_label": null,
+          "mouse_button": null,
+          "mouse_pos": null,
+          "mouse_pos_raw": null,
+          "pixel_region": null,
+          "pixel_region_raw": null,
+          "pixel_target": null,
+          "group_mode": null,
+          "group_repeat": null,
+          "timer_index": null,
+          "timer_value": null,
+          "key_delay_override_enabled": false,
+          "key_delay_override": null
+        }
+      ],
+      "stop_actions": [],
+      "stop_others_on_trigger": false,
+      "suspend_others_while_running": true,
+      "interaction_outgoing_mode": "suspend",
+      "interaction_targets": [],
+      "interaction_exclude_targets": [],
+      "interaction_incoming_allow": [],
+      "interaction_incoming_block": [],
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
+    },
+    {
+      "trigger_key": "r",
+      "mode": "hold",
+      "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "r",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
+      "name": "R",
+      "description": null,
+      "suppress_trigger": false,
+      "enabled": true,
       "cycle_count": 1,
       "actions": [],
       "stop_actions": [],
       "stop_others_on_trigger": true,
       "suspend_others_while_running": false,
       "interaction_outgoing_mode": "stop",
+      "interaction_targets": [],
+      "interaction_exclude_targets": [],
+      "interaction_incoming_allow": [],
+      "interaction_incoming_block": [],
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
+    },
+    {
+      "trigger_key": "z",
+      "mode": "hold",
+      "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "z",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
+      "name": "z",
+      "description": null,
+      "suppress_trigger": false,
+      "enabled": true,
+      "cycle_count": 1,
+      "actions": [],
+      "stop_actions": [],
+      "stop_others_on_trigger": false,
+      "suspend_others_while_running": true,
+      "interaction_outgoing_mode": "suspend",
+      "interaction_targets": [],
+      "interaction_exclude_targets": [],
+      "interaction_incoming_allow": [],
+      "interaction_incoming_block": [],
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
+    },
+    {
+      "trigger_key": "x",
+      "mode": "hold",
+      "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "x",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
+      "name": "x",
+      "description": null,
+      "suppress_trigger": false,
+      "enabled": true,
+      "cycle_count": 1,
+      "actions": [],
+      "stop_actions": [],
+      "stop_others_on_trigger": false,
+      "suspend_others_while_running": true,
+      "interaction_outgoing_mode": "suspend",
+      "interaction_targets": [],
+      "interaction_exclude_targets": [],
+      "interaction_incoming_allow": [],
+      "interaction_incoming_block": [],
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
+    },
+    {
+      "trigger_key": "c",
+      "mode": "hold",
+      "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "c",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
+      "name": "c",
+      "description": null,
+      "suppress_trigger": false,
+      "enabled": true,
+      "cycle_count": 1,
+      "actions": [],
+      "stop_actions": [],
+      "stop_others_on_trigger": false,
+      "suspend_others_while_running": true,
+      "interaction_outgoing_mode": "suspend",
+      "interaction_targets": [],
+      "interaction_exclude_targets": [],
+      "interaction_incoming_allow": [],
+      "interaction_incoming_block": [],
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
+    },
+    {
+      "trigger_key": "v",
+      "mode": "hold",
+      "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "v",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
+      "name": "v",
+      "description": null,
+      "suppress_trigger": false,
+      "enabled": true,
+      "cycle_count": 1,
+      "actions": [],
+      "stop_actions": [],
+      "stop_others_on_trigger": false,
+      "suspend_others_while_running": true,
+      "interaction_outgoing_mode": "suspend",
+      "interaction_targets": [],
+      "interaction_exclude_targets": [],
+      "interaction_incoming_allow": [],
+      "interaction_incoming_block": [],
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
+    },
+    {
+      "trigger_key": "1",
+      "mode": "hold",
+      "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "1",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
+      "name": "1",
+      "description": null,
+      "suppress_trigger": false,
+      "enabled": true,
+      "cycle_count": 1,
+      "actions": [],
+      "stop_actions": [],
+      "stop_others_on_trigger": false,
+      "suspend_others_while_running": true,
+      "interaction_outgoing_mode": "suspend",
+      "interaction_targets": [],
+      "interaction_exclude_targets": [],
+      "interaction_incoming_allow": [],
+      "interaction_incoming_block": [],
+      "scope": "app",
+      "app_targets": [
+        {
+          "name": "Aion2.exe",
+          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
+        }
+      ]
+    },
+    {
+      "trigger_key": "2",
+      "mode": "hold",
+      "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "2",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
+      "name": "2",
+      "description": null,
+      "suppress_trigger": false,
+      "enabled": true,
+      "cycle_count": 1,
+      "actions": [],
+      "stop_actions": [],
+      "stop_others_on_trigger": false,
+      "suspend_others_while_running": true,
+      "interaction_outgoing_mode": "suspend",
       "interaction_targets": [],
       "interaction_exclude_targets": [],
       "interaction_incoming_allow": [],
@@ -7990,75 +8252,11 @@
       "suppress_trigger": false,
       "enabled": true,
       "cycle_count": 1,
-      "actions": [
-        {
-          "type": "press",
-          "name": null,
-          "description": null,
-          "enabled": true,
-          "once_per_macro": false,
-          "force_first_run": true,
-          "key": "shift",
-          "repeat": 3,
-          "repeat_raw": null,
-          "var_name": null,
-          "var_value_raw": null,
-          "confirm_fails": 1,
-          "sleep_ms": 0,
-          "condition": null,
-          "label": null,
-          "goto_label": null,
-          "mouse_button": null,
-          "mouse_pos": null,
-          "mouse_pos_raw": null,
-          "pixel_region": null,
-          "pixel_region_raw": null,
-          "pixel_target": null,
-          "group_mode": null,
-          "group_repeat": null,
-          "timer_index": null,
-          "timer_value": null,
-          "key_delay_override_enabled": false,
-          "key_delay_override": null
-        }
-      ],
-      "stop_actions": [],
-      "stop_others_on_trigger": true,
-      "suspend_others_while_running": false,
-      "interaction_outgoing_mode": "stop",
-      "interaction_targets": [],
-      "interaction_exclude_targets": [],
-      "interaction_incoming_allow": [],
-      "interaction_incoming_block": [],
-      "scope": "app",
-      "app_targets": [
-        {
-          "name": "Aion2.exe",
-          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
-        }
-      ]
-    },
-    {
-      "trigger_key": "mouse2",
-      "mode": "hold",
-      "hold_press_seconds": null,
-      "triggers": [
-        {
-          "key": "mouse2",
-          "mode": "hold",
-          "hold_press_seconds": null
-        }
-      ],
-      "name": "오른쪽마우스",
-      "description": null,
-      "suppress_trigger": false,
-      "enabled": true,
-      "cycle_count": 1,
       "actions": [],
       "stop_actions": [],
-      "stop_others_on_trigger": true,
-      "suspend_others_while_running": false,
-      "interaction_outgoing_mode": "stop",
+      "stop_others_on_trigger": false,
+      "suspend_others_while_running": true,
+      "interaction_outgoing_mode": "suspend",
       "interaction_targets": [],
       "interaction_exclude_targets": [],
       "interaction_incoming_allow": [],
@@ -8076,31 +8274,31 @@
   "pixel_color": "ff0000",
   "pixel_tolerance": 10,
   "pixel_expect_exists": true,
-  "keyboard_device_id": 2,
-  "keyboard_hardware_id": "HID\\VID_29EA&PID_0102&REV_0100&MI_01",
-  "mouse_device_id": 12,
-  "mouse_hardware_id": "HID\\VID_373B&PID_1040&REV_0215&MI_02",
+  "keyboard_device_id": 1,
+  "keyboard_hardware_id": "HID\\VID_05AC&PID_024F&REV_0138&MI_00",
+  "mouse_device_id": 11,
+  "mouse_hardware_id": "HID\\VID_05AC&PID_024F&REV_0138&MI_01",
   "keyboard_test_key": "f24",
   "input_mode": "hardware",
   "key_delay": {
-    "press_delay_ms": 40,
+    "press_delay_ms": 60,
     "press_delay_random": true,
-    "press_delay_min_ms": 40,
+    "press_delay_min_ms": 60,
     "press_delay_max_ms": 80,
-    "gap_delay_ms": 0,
-    "gap_delay_random": false,
-    "gap_delay_min_ms": 0,
-    "gap_delay_max_ms": 0
+    "gap_delay_ms": 60,
+    "gap_delay_random": true,
+    "gap_delay_min_ms": 60,
+    "gap_delay_max_ms": 80
   },
   "mouse_delay": {
-    "press_delay_ms": 40,
+    "press_delay_ms": 60,
     "press_delay_random": true,
-    "press_delay_min_ms": 40,
+    "press_delay_min_ms": 60,
     "press_delay_max_ms": 80,
-    "gap_delay_ms": 0,
-    "gap_delay_random": false,
-    "gap_delay_min_ms": 0,
-    "gap_delay_max_ms": 0
+    "gap_delay_ms": 60,
+    "gap_delay_random": true,
+    "gap_delay_min_ms": 60,
+    "gap_delay_max_ms": 80
   },
   "variables": {
     "sleep": {

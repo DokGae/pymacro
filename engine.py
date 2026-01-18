@@ -1560,6 +1560,7 @@ class MacroRunner:
         self._stop_logged = False
         self._first_cycle_done = False
         self._force_first_cycle = self._has_force_first_action(self.macro.actions)
+        self._start_cycle = 0
 
     def _has_force_first_action(self, actions: List[Action]) -> bool:
         for act in actions:
@@ -1702,17 +1703,21 @@ class MacroRunner:
             except Exception:
                 pass
 
-    def start(self):
+    def start(self, *, start_cycle: int = 0):
         if self._thread and self._thread.is_alive():
             return
+        try:
+            self._start_cycle = max(0, int(start_cycle))
+        except Exception:
+            self._start_cycle = 0
         self._stop_event.clear()
         self._sent_stop_event = False
         self._stop_request_after_cycle = False
         self._stop_actions_run = False
         self._stop_logged = False
-        self._first_cycle_done = False
+        self._first_cycle_done = bool(self._start_cycle > 0)
         self._force_first_cycle = self._has_force_first_action(self.macro.actions)
-        self._current_cycle = 0
+        self._current_cycle = self._start_cycle
         name = f"Macro-{self.macro.primary_trigger().key or self.macro.trigger_key}"
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._thread.start()
@@ -1722,7 +1727,7 @@ class MacroRunner:
         limit_text = "inf" if limit is None else str(limit)
         label = self.macro.trigger_label(include_mode=False) or self.macro.trigger_key
         self.engine._emit_log(f"매크로 시작: {label} (cycle_limit={limit_text})")
-        self._emit_macro_event("macro_start", cycle=0)
+        self._emit_macro_event("macro_start", cycle=self._start_cycle)
 
     def stop(self):
         label = self.macro.trigger_label(include_mode=False) or self.macro.trigger_key
@@ -1754,6 +1759,9 @@ class MacroRunner:
     def is_stop_after_cycle_requested(self) -> bool:
         return bool(self._stop_request_after_cycle)
 
+    def current_cycle(self) -> int:
+        return getattr(self, "_current_cycle", 0)
+
     def _run_stop_actions(self):
         if self._stop_actions_run:
             return
@@ -1771,8 +1779,8 @@ class MacroRunner:
 
     def _run(self):
         labels = self._label_index(self.macro.actions)
-        cycle = 0
-        self._current_cycle = 0
+        cycle = max(0, getattr(self, "_start_cycle", 0))
+        self._current_cycle = cycle
         try:
             # cycle_count가 0이면 무한 반복, None이면 제한 없음.
             max_cycles = self.macro.cycle_count
@@ -2264,11 +2272,14 @@ class MacroEngine:
         self._macro_runners: Dict[int, MacroRunner] = {}
         self._hold_release_since: Dict[tuple[int, int], float] = {}
         self._hold_press_since: Dict[tuple[int, int], float] = {}
+        self._hold_raw_state: Dict[tuple[int, int], bool] = {}
         self._active_hold_triggers: Set[tuple[int, int]] = set()
         self._toggle_states: Dict[int, bool] = {}
         self._recent_sends: Dict[str, float] = {}
         self._guard_macro_idx: Optional[int] = None
         self._suspended_toggle_indices: Set[int] = set()
+        self._suspended_toggle_states: Dict[int, bool] = {}
+        self._suspended_toggle_cycles: Dict[int, int] = {}
         # cycle_count가 있는 홀드 매크로는 트리거를 뗄 때까지 재시작을 막는다.
         self._hold_exhausted_indices: Set[int] = set()
         self._app_ctx: Optional[Dict[str, Any]] = None
@@ -2308,6 +2319,19 @@ class MacroEngine:
         self._backend_status: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------ 상호작용 규칙
+    def _resume_cycle_for_runner(self, runner: MacroRunner) -> int:
+        try:
+            cycle = max(0, int(runner.current_cycle()))
+        except Exception:
+            cycle = 0
+        try:
+            first_done = bool(runner.first_cycle_done())
+        except Exception:
+            first_done = False
+        if first_done and cycle < 1:
+            cycle = 1
+        return cycle
+
     @staticmethod
     def _normalize_targets(raw: Optional[List[str]]) -> Set[str]:
         items: Set[str] = set()
@@ -2431,6 +2455,8 @@ class MacroEngine:
             elif mode == "suspend":
                 if runner.is_alive() and any(getattr(t, "mode", "") == "toggle" for t in self._macro_triggers(target_macro)):
                     self._suspended_toggle_indices.add(idx)
+                    self._suspended_toggle_states[idx] = bool(self._toggle_states.get(idx, False))
+                    self._suspended_toggle_cycles[idx] = self._resume_cycle_for_runner(runner)
                 runner.stop()
                 self._macro_runners.pop(idx, None)
                 self._clear_macro_state(idx)
@@ -3264,6 +3290,13 @@ class MacroEngine:
                 was_active_hold = any(k[0] == idx for k in self._active_hold_triggers)
                 toggle_on = bool(self._toggle_states.get(idx, False))
                 active_holds: Set[tuple[int, int]] = {k for k in self._active_hold_triggers if k[0] == idx}
+                hold_raw_prev: Dict[int, bool] = {}
+                hold_key_sets: Dict[int, Set[str]] = {}
+                for trig_idx, trig in enumerate(triggers):
+                    if trig.mode != "hold":
+                        continue
+                    hold_raw_prev[trig_idx] = self._hold_raw_state.get((idx, trig_idx), False)
+                    hold_key_sets[trig_idx] = set(parse_trigger_keys(trig.key))
 
                 for trig_idx, trig in enumerate(triggers):
                     if trig.mode == "hold":
@@ -3280,7 +3313,19 @@ class MacroEngine:
                     else:
                         # 이미 이전 루프부터 홀드가 유지 중이면 토글을 무시하지만,
                         # 이번 루프에 처음 홀드가 잡힌 순간(예: Ctrl을 먼저 누르고 mouse4를 눌러 토글 의도)에는 허용한다.
-                        if active_holds and was_active_hold:
+                        toggle_keys = set(parse_trigger_keys(trig.key))
+                        hold_was_down_prev = any(
+                            hold_raw_prev.get(h_idx, False)
+                            and bool(toggle_keys & hold_key_sets.get(h_idx, set()))
+                            for h_idx in hold_key_sets
+                        )
+                        hold_was_down_cur = any(
+                            # 홀드 키를 이미 누른 상태에서 모디파이어만 추가되면 토글로 전환되지 않도록 막는다.
+                            self._hold_raw_state.get((idx, h_idx), False)
+                            and bool(toggle_keys & hold_key_sets.get(h_idx, set()))
+                            for h_idx in hold_key_sets
+                        )
+                        if (active_holds and was_active_hold) or hold_was_down_prev or hold_was_down_cur:
                             # 홀드가 잡혀 있으면 토글 트리거는 무시해 오동작을 막는다.
                             continue
                         ignore_window = self._edge_block_window if runner is not None else 0.0
@@ -3346,10 +3391,13 @@ class MacroEngine:
             self._macro_runners.pop(idx, None)
         self._hold_release_since.clear()
         self._hold_press_since.clear()
+        self._hold_raw_state.clear()
         self._active_hold_triggers.clear()
         self._toggle_states.clear()
         self._guard_macro_idx = None
         self._suspended_toggle_indices.clear()
+        self._suspended_toggle_states.clear()
+        self._suspended_toggle_cycles.clear()
         self._hold_exhausted_indices.clear()
 
     def _stop_other_macros(self, except_idx: Optional[int] = None):
@@ -3371,6 +3419,8 @@ class MacroEngine:
                 macro = None
             if macro and runner.is_alive() and any(getattr(t, "mode", "") == "toggle" for t in self._macro_triggers(macro)):
                 self._suspended_toggle_indices.add(idx)
+                self._suspended_toggle_states[idx] = bool(self._toggle_states.get(idx, False))
+                self._suspended_toggle_cycles[idx] = self._resume_cycle_for_runner(runner)
             runner.stop()
             self._macro_runners.pop(idx, None)
             self._clear_macro_state(idx)
@@ -3379,29 +3429,46 @@ class MacroEngine:
 
     def _resume_suspended_toggles(self):
         for idx in list(self._suspended_toggle_indices):
+            start_cycle = self._suspended_toggle_cycles.pop(idx, 0)
+            was_on = self._suspended_toggle_states.pop(idx, False)
             try:
                 macro = self._profile.macros[idx]
             except Exception:
                 macro = None
-            if macro and getattr(macro, "enabled", True):
+            if macro and getattr(macro, "enabled", True) and was_on:
                 runner = MacroRunner(macro, self, idx)
                 self._macro_runners[idx] = runner
-                runner.start()
+                runner.start(start_cycle=start_cycle)
                 self._toggle_states[idx] = True
             self._suspended_toggle_indices.discard(idx)
+            self._suspended_toggle_cycles.pop(idx, None)
+            self._suspended_toggle_states.pop(idx, None)
 
     def _clear_guard_if_needed(self):
-        if self._guard_macro_idx is not None and self._guard_macro_idx not in self._macro_runners:
-            self._guard_macro_idx = None
-            self._resume_suspended_toggles()
+        guard_idx = self._guard_macro_idx
+        if guard_idx is None:
+            return
+        if guard_idx in self._macro_runners:
+            return
+        # 홀드 기반 가드 매크로는 스레드가 cycle_limit으로 종료되어도 키를 떼기 전까지는
+        # 다른 매크로를 막아야 하므로, 홀드가 유지되는 동안 가드를 유지한다.
+        still_holding_guard = any(k[0] == guard_idx for k in self._active_hold_triggers)
+        if still_holding_guard:
+            return
+        self._guard_macro_idx = None
+        self._resume_suspended_toggles()
 
     def _clear_macro_state(self, macro_idx: int):
-        to_remove = [k for k in self._hold_press_since if k[0] == macro_idx]
+        to_remove = [k for k in set(self._hold_press_since) | set(self._hold_raw_state) if k[0] == macro_idx]
         for key in to_remove:
             self._hold_press_since.pop(key, None)
             self._hold_release_since.pop(key, None)
+            self._hold_raw_state.pop(key, None)
         self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != macro_idx}
         self._toggle_states.pop(macro_idx, None)
+        if macro_idx not in self._suspended_toggle_indices:
+            self._suspended_toggle_cycles.pop(macro_idx, None)
+            self._suspended_toggle_states.pop(macro_idx, None)
         self._hold_exhausted_indices.discard(macro_idx)
 
     def _update_hold_trigger(self, macro_idx: int, trig_idx: int, macro: Macro, trigger: MacroTrigger) -> bool:
@@ -3411,6 +3478,7 @@ class MacroEngine:
         # 홀드를 유지하여 토글 오동작을 막는다.
         pressed_strict, strict_detail = self._trigger_state(trigger.key, disallow_extra_modifiers=True)
         pressed_raw, state_detail = self._trigger_state(trigger.key, disallow_extra_modifiers=False)
+        self._hold_raw_state[key] = bool(pressed_raw)
         blocked = strict_detail.get("blocked_by_extra_mods", False)
         state_detail["blocked_by_extra_mods"] = blocked
 
