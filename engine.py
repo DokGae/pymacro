@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Set, Tuple
 
 import numpy as np
 from PIL import Image
@@ -1537,7 +1537,15 @@ class KeySwallower:
 
 
 class MacroRunner:
-    def __init__(self, macro: Macro, engine: "MacroEngine", index: Optional[int] = None):
+    def __init__(
+        self,
+        macro: Macro,
+        engine: "MacroEngine",
+        index: Optional[int] = None,
+        *,
+        inherit_held_keys: Optional[Iterable[str]] = None,
+        inherit_held_mouse: Optional[Iterable[str]] = None,
+    ):
         self.macro = macro
         self.engine = engine
         self.index = index
@@ -1550,8 +1558,8 @@ class MacroRunner:
         self._seq_map: Dict[tuple[int, ...], int] = {}
         self._seq_counter = 1
         self._build_seq_map(self.macro.actions, [])
-        self._held_keys: Set[str] = set()
-        self._held_mouse: Set[str] = set()
+        self._held_keys: Set[str] = set(inherit_held_keys or [])
+        self._held_mouse: Set[str] = set(inherit_held_mouse or [])
         self._held_lock = threading.Lock()
         self._if_false_streaks: Dict[tuple[int, ...], int] = {}
         self._running_stop_actions = False
@@ -1561,6 +1569,7 @@ class MacroRunner:
         self._first_cycle_done = False
         self._force_first_cycle = self._has_force_first_action(self.macro.actions)
         self._start_cycle = 0
+        self._release_inputs_on_stop = True
 
     def _has_force_first_action(self, actions: List[Action]) -> bool:
         for act in actions:
@@ -1686,7 +1695,9 @@ class MacroRunner:
         self._sent_stop_event = True
         self._emit_macro_event("macro_stop", reason=reason, cycle=getattr(self, "_current_cycle", 0))
 
-    def _release_held_keys(self):
+    def _release_held_keys(self, *, force: bool = False):
+        if not force and not getattr(self, "_release_inputs_on_stop", True):
+            return
         with self._held_lock:
             keys = list(self._held_keys)
             mouse_buttons = list(self._held_mouse)
@@ -1703,6 +1714,10 @@ class MacroRunner:
             except Exception:
                 pass
 
+    def snapshot_held_inputs(self) -> tuple[Set[str], Set[str]]:
+        with self._held_lock:
+            return set(self._held_keys), set(self._held_mouse)
+
     def start(self, *, start_cycle: int = 0):
         if self._thread and self._thread.is_alive():
             return
@@ -1711,6 +1726,7 @@ class MacroRunner:
         except Exception:
             self._start_cycle = 0
         self._stop_event.clear()
+        self._release_inputs_on_stop = True
         self._sent_stop_event = False
         self._stop_request_after_cycle = False
         self._stop_actions_run = False
@@ -1729,20 +1745,26 @@ class MacroRunner:
         self.engine._emit_log(f"매크로 시작: {label} (cycle_limit={limit_text})")
         self._emit_macro_event("macro_start", cycle=self._start_cycle)
 
-    def stop(self):
+    def stop(self, *, release_inputs: bool = True, run_stop_actions: bool = True):
         label = self.macro.trigger_label(include_mode=False) or self.macro.trigger_key
         self._stop_request_after_cycle = False
         self._stop_event.set()
-        # on_stop 액션이 있으면 먼저 실행한다.
-        self._run_stop_actions()
+        self._release_inputs_on_stop = bool(release_inputs)
+        if not run_stop_actions:
+            self._stop_actions_run = True
+        else:
+            # on_stop 액션이 있으면 먼저 실행한다.
+            self._run_stop_actions()
         # 중단 요청이 들어오면 바로 입력을 풀어준다.
-        self._release_held_keys()
+        if release_inputs:
+            self._release_held_keys()
         if self._thread and threading.current_thread() is not self._thread:
             self._thread.join(timeout=1.0)
             if self._thread.is_alive():
                 self.engine._emit_log(f"매크로 정지 대기 초과: {label}")
         # 스레드가 끝난 뒤에도 혹시 남아 있을 입력을 한 번 더 해제한다.
-        self._release_held_keys()
+        if release_inputs:
+            self._release_held_keys()
         self.engine._emit_log(f"매크로 정지: {label}")
         self._stop_logged = True
         self._notify_macro_stop("stopped")
@@ -2280,6 +2302,7 @@ class MacroEngine:
         self._suspended_toggle_indices: Set[int] = set()
         self._suspended_toggle_states: Dict[int, bool] = {}
         self._suspended_toggle_cycles: Dict[int, int] = {}
+        self._suspended_hold_inputs: Dict[int, Dict[str, Set[str]]] = {}
         # cycle_count가 있는 홀드 매크로는 트리거를 뗄 때까지 재시작을 막는다.
         self._hold_exhausted_indices: Set[int] = set()
         self._app_ctx: Optional[Dict[str, Any]] = None
@@ -2331,6 +2354,36 @@ class MacroEngine:
         if first_done and cycle < 1:
             cycle = 1
         return cycle
+
+    def _record_suspended_holds(self, idx: int, runner: MacroRunner):
+        try:
+            keys, mouse = runner.snapshot_held_inputs()
+        except Exception:
+            keys, mouse = set(), set()
+        if keys or mouse:
+            self._suspended_hold_inputs[idx] = {"keys": set(keys), "mouse": set(mouse)}
+        else:
+            self._suspended_hold_inputs.pop(idx, None)
+
+    def _release_hold_inputs(self, entry: Optional[Dict[str, Set[str]]]):
+        if not entry:
+            return
+        for key in list(entry.get("keys", set())):
+            try:
+                self._send_key("up", key, hold_ms=0)
+            except Exception:
+                pass
+        for btn in list(entry.get("mouse", set())):
+            try:
+                self._send_mouse("mouse_up", btn, hold_ms=0)
+            except Exception:
+                pass
+
+    def _release_suspended_hold_inputs(self):
+        items = list(self._suspended_hold_inputs.items())
+        self._suspended_hold_inputs.clear()
+        for _, entry in items:
+            self._release_hold_inputs(entry)
 
     @staticmethod
     def _normalize_targets(raw: Optional[List[str]]) -> Set[str]:
@@ -2448,16 +2501,20 @@ class MacroEngine:
                 continue
             if not self._interaction_target_allowed(actor_macro, actor_idx, target_macro, idx):
                 continue
+            is_toggle_runner = runner.is_alive() and any(getattr(t, "mode", "") == "toggle" for t in self._macro_triggers(target_macro))
             if mode == "stop":
                 runner.stop()
                 self._macro_runners.pop(idx, None)
                 self._clear_macro_state(idx)
             elif mode == "suspend":
-                if runner.is_alive() and any(getattr(t, "mode", "") == "toggle" for t in self._macro_triggers(target_macro)):
+                if is_toggle_runner:
                     self._suspended_toggle_indices.add(idx)
                     self._suspended_toggle_states[idx] = bool(self._toggle_states.get(idx, False))
                     self._suspended_toggle_cycles[idx] = self._resume_cycle_for_runner(runner)
-                runner.stop()
+                    runner.stop(release_inputs=False, run_stop_actions=False)
+                    self._record_suspended_holds(idx, runner)
+                else:
+                    runner.stop()
                 self._macro_runners.pop(idx, None)
                 self._clear_macro_state(idx)
                 suspended = True
@@ -3398,6 +3455,7 @@ class MacroEngine:
         self._suspended_toggle_indices.clear()
         self._suspended_toggle_states.clear()
         self._suspended_toggle_cycles.clear()
+        self._release_suspended_hold_inputs()
         self._hold_exhausted_indices.clear()
 
     def _stop_other_macros(self, except_idx: Optional[int] = None):
@@ -3417,11 +3475,15 @@ class MacroEngine:
                 macro = self._profile.macros[idx]
             except Exception:
                 macro = None
-            if macro and runner.is_alive() and any(getattr(t, "mode", "") == "toggle" for t in self._macro_triggers(macro)):
+            is_toggle_runner = macro and runner.is_alive() and any(getattr(t, "mode", "") == "toggle" for t in self._macro_triggers(macro))
+            if is_toggle_runner:
                 self._suspended_toggle_indices.add(idx)
                 self._suspended_toggle_states[idx] = bool(self._toggle_states.get(idx, False))
                 self._suspended_toggle_cycles[idx] = self._resume_cycle_for_runner(runner)
-            runner.stop()
+                runner.stop(release_inputs=False, run_stop_actions=False)
+                self._record_suspended_holds(idx, runner)
+            else:
+                runner.stop()
             self._macro_runners.pop(idx, None)
             self._clear_macro_state(idx)
         if except_idx is not None:
@@ -3431,15 +3493,24 @@ class MacroEngine:
         for idx in list(self._suspended_toggle_indices):
             start_cycle = self._suspended_toggle_cycles.pop(idx, 0)
             was_on = self._suspended_toggle_states.pop(idx, False)
+            held = self._suspended_hold_inputs.pop(idx, None)
             try:
                 macro = self._profile.macros[idx]
             except Exception:
                 macro = None
             if macro and getattr(macro, "enabled", True) and was_on:
-                runner = MacroRunner(macro, self, idx)
+                runner = MacroRunner(
+                    macro,
+                    self,
+                    idx,
+                    inherit_held_keys=set(held.get("keys", set())) if held else None,
+                    inherit_held_mouse=set(held.get("mouse", set())) if held else None,
+                )
                 self._macro_runners[idx] = runner
                 runner.start(start_cycle=start_cycle)
                 self._toggle_states[idx] = True
+            else:
+                self._release_hold_inputs(held)
             self._suspended_toggle_indices.discard(idx)
             self._suspended_toggle_cycles.pop(idx, None)
             self._suspended_toggle_states.pop(idx, None)
@@ -3469,6 +3540,7 @@ class MacroEngine:
         if macro_idx not in self._suspended_toggle_indices:
             self._suspended_toggle_cycles.pop(macro_idx, None)
             self._suspended_toggle_states.pop(macro_idx, None)
+            self._suspended_hold_inputs.pop(macro_idx, None)
         self._hold_exhausted_indices.discard(macro_idx)
 
     def _update_hold_trigger(self, macro_idx: int, trig_idx: int, macro: Macro, trigger: MacroTrigger) -> bool:
