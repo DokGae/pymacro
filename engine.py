@@ -2305,6 +2305,7 @@ class MacroEngine:
         self._suspended_hold_inputs: Dict[int, Dict[str, Set[str]]] = {}
         # cycle_count가 있는 홀드 매크로는 트리거를 뗄 때까지 재시작을 막는다.
         self._hold_exhausted_indices: Set[int] = set()
+        self._hold_blocked_by_extra_mods: Dict[tuple[int, int], bool] = {}
         self._app_ctx: Optional[Dict[str, Any]] = None
         self._app_ctx_ts: float = 0.0
         # 홀드 상태가 일시적으로 끊겼을 때 재시작을 막기 위해 약간 여유를 둔다.
@@ -3374,12 +3375,14 @@ class MacroEngine:
                         hold_was_down_prev = any(
                             hold_raw_prev.get(h_idx, False)
                             and bool(toggle_keys & hold_key_sets.get(h_idx, set()))
+                            and not self._hold_blocked_by_extra_mods.get((idx, h_idx), False)
                             for h_idx in hold_key_sets
                         )
                         hold_was_down_cur = any(
                             # 홀드 키를 이미 누른 상태에서 모디파이어만 추가되면 토글로 전환되지 않도록 막는다.
                             self._hold_raw_state.get((idx, h_idx), False)
                             and bool(toggle_keys & hold_key_sets.get(h_idx, set()))
+                            and not self._hold_blocked_by_extra_mods.get((idx, h_idx), False)
                             for h_idx in hold_key_sets
                         )
                         if (active_holds and was_active_hold) or hold_was_down_prev or hold_was_down_cur:
@@ -3449,6 +3452,7 @@ class MacroEngine:
         self._hold_release_since.clear()
         self._hold_press_since.clear()
         self._hold_raw_state.clear()
+        self._hold_blocked_by_extra_mods.clear()
         self._active_hold_triggers.clear()
         self._toggle_states.clear()
         self._guard_macro_idx = None
@@ -3535,6 +3539,7 @@ class MacroEngine:
             self._hold_press_since.pop(key, None)
             self._hold_release_since.pop(key, None)
             self._hold_raw_state.pop(key, None)
+            self._hold_blocked_by_extra_mods.pop(key, None)
         self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != macro_idx}
         self._toggle_states.pop(macro_idx, None)
         if macro_idx not in self._suspended_toggle_indices:
@@ -3553,6 +3558,7 @@ class MacroEngine:
         self._hold_raw_state[key] = bool(pressed_raw)
         blocked = strict_detail.get("blocked_by_extra_mods", False)
         state_detail["blocked_by_extra_mods"] = blocked
+        self._hold_blocked_by_extra_mods[key] = bool(blocked)
 
         if not pressed_strict and blocked and key in self._active_hold_triggers:
             pressed = True
