@@ -4948,6 +4948,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.repeat_edit = QtWidgets.QLineEdit("1")
         self.repeat_edit.setPlaceholderText("예: 1 (1회), 5 (5회), 3~10 또는 3-10 (랜덤 반복)")
         self.repeat_edit.setToolTip("반복 횟수 입력: 1=1회, 5=5회, 3~10/3-10=3~10 사이 랜덤 반복. 프레스/다운/업/마우스 입력에 적용.")
+        self.pause_keep_check = QtWidgets.QCheckBox("일시중지 중에도 눌림 유지")
+        self.pause_keep_check.setToolTip("끄면 일시중지/대기 시 자동으로 뗐다가 재개 시 다시 눌러줍니다. 켜면 일시중지 중에도 계속 누른 상태로 유지합니다.")
         self.pixel_target_edit = QtWidgets.QLineEdit("momo")
         self.group_mode_combo = QtWidgets.QComboBox()
         self.group_mode_combo.addItem("모두 실행", "all")
@@ -5011,6 +5013,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("마우스 버튼", self.mouse_button_combo)
         form.addRow("마우스 좌표 x,y (선택)", self.mouse_pos_edit)
         form.addRow("반복 횟수", self.repeat_edit)
+        form.addRow("일시중지 시 유지", self.pause_keep_check)
         form.addRow("Sleep(ms 또는 범위)", self.sleep_edit)
         form.addRow("라벨 이름", self.label_edit)
         form.addRow("점프 대상 라벨", self.goto_combo)
@@ -5189,6 +5192,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_override = typ in ("press", "down", "up") or typ in mouse_types
         show_repeat = typ in ("press", "down", "up") or typ in mouse_types
         show_group_repeat = show_group and self.group_mode_combo.currentData() == "repeat_n"
+        show_pause_keep = typ in ("down", "mouse_down")
 
         self._set_field_visible(self.key_edit, show_key)
         self.key_edit.setEnabled(show_key)
@@ -5198,6 +5202,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_pos_edit.setEnabled(show_mouse_pos)
         self._set_field_visible(self.repeat_edit, show_repeat)
         self.repeat_edit.setEnabled(show_repeat)
+        self._set_field_visible(self.pause_keep_check, show_pause_keep)
+        self.pause_keep_check.setEnabled(show_pause_keep)
         self._set_field_visible(self.sleep_edit, show_sleep)
         self.sleep_edit.setEnabled(show_sleep)
         self._set_field_visible(self.label_edit, show_label)
@@ -5289,6 +5295,10 @@ class ActionEditDialog(QtWidgets.QDialog):
                 self.repeat_edit.setText(str(max(1, int(getattr(act, "repeat", 1) or 1))))
             except Exception:
                 self.repeat_edit.setText("1")
+        try:
+            self.pause_keep_check.setChecked(bool(getattr(act, "hold_keep_on_pause", False)))
+        except Exception:
+            self.pause_keep_check.setChecked(False)
         if act.type in ("mouse_click", "mouse_down", "mouse_up", "mouse_move"):
             btn_val = getattr(act, "mouse_button", None) or getattr(act, "key", None) or "mouse1"
             idx = self.mouse_button_combo.findData(btn_val)
@@ -5376,6 +5386,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             act.repeat = repeat_val
             act.repeat_range = repeat_range
             act.repeat_raw = repeat_raw
+            act.hold_keep_on_pause = self.pause_keep_check.isChecked() if typ == "down" else False
             act.key_delay_override_enabled = self.delay_override_check.isChecked()
             if act.key_delay_override_enabled:
                 press_val, press_rand, press_min, press_max = _parse_delay_text(self.override_press_edit.text())
@@ -5405,6 +5416,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             act.repeat = repeat_val
             act.repeat_range = repeat_range
             act.repeat_raw = repeat_raw
+            act.hold_keep_on_pause = self.pause_keep_check.isChecked() if typ == "mouse_down" else False
             act.key_delay_override_enabled = self.delay_override_check.isChecked()
             if act.key_delay_override_enabled:
                 press_val, press_rand, press_min, press_max = _parse_delay_text(self.override_press_edit.text())
