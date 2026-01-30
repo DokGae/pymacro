@@ -6,7 +6,8 @@ mss 우선 사용, 없을 경우 PIL.ImageGrab로 폴백합니다.
 from __future__ import annotations
 
 import threading
-from typing import Tuple
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 
 try:
     import mss
@@ -26,6 +27,76 @@ except ImportError:  # pragma: no cover - numpy 미설치 시
 
 Region = Tuple[int, int, int, int]  # (x, y, w, h)
 RGB = Tuple[int, int, int]
+
+
+# ----------------------- Pixel pattern -----------------------
+
+@dataclass
+class PixelPatternPoint:
+    dx: int
+    dy: int
+    color: RGB
+    tolerance: Optional[int] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "dx": int(self.dx),
+            "dy": int(self.dy),
+            "color": list(self.color),
+            "tolerance": int(self.tolerance) if self.tolerance is not None else None,
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> "PixelPatternPoint":
+        return PixelPatternPoint(
+            dx=int(data.get("dx", 0)),
+            dy=int(data.get("dy", 0)),
+            color=tuple(int(c) for c in data.get("color", (0, 0, 0)))[:3],  # type: ignore[arg-type]
+            tolerance=int(data["tolerance"]) if data.get("tolerance") is not None else None,
+        )
+
+
+@dataclass
+class PixelPattern:
+    name: str
+    points: List[PixelPatternPoint] = field(default_factory=list)
+    tolerance: int = 10
+    description: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "tolerance": int(self.tolerance),
+            "description": self.description,
+            "points": [p.to_dict() for p in self.points],
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> "PixelPattern":
+        pts_raw = data.get("points", []) or []
+        points = []
+        for p in pts_raw:
+            if isinstance(p, dict):
+                points.append(PixelPatternPoint.from_dict(p))
+        return PixelPattern(
+            name=str(data.get("name") or "pattern"),
+            points=points,
+            tolerance=int(data.get("tolerance", 10)),
+            description=data.get("description"),
+        )
+
+    def normalized(self) -> "PixelPattern":
+        """Anchor pattern so that min dx/dy start at 0, returning new instance."""
+        if not self.points:
+            return PixelPattern(name=self.name, points=[], tolerance=self.tolerance, description=self.description)
+        min_dx = min(p.dx for p in self.points)
+        min_dy = min(p.dy for p in self.points)
+        if min_dx == 0 and min_dy == 0:
+            return self
+        shifted = [
+            PixelPatternPoint(dx=p.dx - min_dx, dy=p.dy - min_dy, color=p.color, tolerance=p.tolerance) for p in self.points
+        ]
+        return PixelPattern(name=self.name, points=shifted, tolerance=self.tolerance, description=self.description)
 
 
 class PixelBackendError(RuntimeError):
@@ -117,4 +188,48 @@ def find_color_in_region(region: Region, rgb: RGB, tolerance: int = 0):
     if mask.any():
         py, px = np.argwhere(mask)[0]
         return True, (x + int(px), y + int(py))
+    return False, None
+
+
+def find_pattern_in_region(
+    region: Region,
+    pattern: PixelPattern,
+    tolerance: int = 0,
+):
+    """
+    영역 내에 픽셀 패턴이 존재하는지 검색합니다.
+    패턴은 기준점(0,0) 기준 상대좌표 목록으로 저장되어 있다고 가정합니다.
+    tolerance: 패턴 전체 공통 허용오차. 개별 포인트에 tolerance가 지정되면 우선 사용.
+    반환: (found: bool, 좌표: (x, y) | None) - 좌표는 영역 내 패턴의 좌측 상단(정규화 기준).
+    """
+    _require_backend()
+    if not pattern.points:
+        return False, None
+
+    arr = capture_region_np(region)
+    x0, y0, w, h = region
+
+    # 정규화된 패턴 사용
+    norm_pat = pattern.normalized()
+    max_dx = max(p.dx for p in norm_pat.points)
+    max_dy = max(p.dy for p in norm_pat.points)
+    # 패턴이 영역보다 크면 실패
+    if w - max_dx <= 0 or h - max_dy <= 0:
+        return False, None
+
+    work_w = w - max_dx
+    work_h = h - max_dy
+    mask_all = np.ones((work_h, work_w), dtype=bool)
+
+    for pt in norm_pat.points:
+        pt_tol = int(pt.tolerance if pt.tolerance is not None else tolerance if tolerance is not None else pattern.tolerance)
+        sub = arr[pt.dy : pt.dy + work_h, pt.dx : pt.dx + work_w]
+        diff = np.abs(sub.astype(np.int16) - np.array(pt.color, dtype=np.int16)).max(axis=2)
+        mask_all &= diff <= pt_tol
+        if not mask_all.any():
+            return False, None
+
+    if mask_all.any():
+        py, px = np.argwhere(mask_all)[0]
+        return True, (x0 + int(px), y0 + int(py))
     return False, None

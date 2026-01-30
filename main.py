@@ -52,7 +52,7 @@ from lib import keyboard as kbutil
 from lib.interception import Interception, KeyFilter, KeyState, MapVk, MouseFilter, MouseState, map_virtual_key
 from lib.keyboard import get_keystate
 from lib.processes import get_foreground_process, list_processes
-from lib.pixel import RGB, Region, capture_region
+from lib.pixel import RGB, Region, PixelPattern, PixelPatternPoint, capture_region
 
 MAX_RECENT_PROFILES = 15
 
@@ -1308,8 +1308,11 @@ def _condition_brief(cond: Condition) -> str:
         return f"키/마우스 {cond.key} ({mode}){suffix}"
     if cond.type == "pixel":
         region = cond.region_raw or ",".join(str(v) for v in cond.region or [])
-        color_hex = cond.color_raw or (_rgb_to_hex(cond.color) or "------")
         state = "있음" if getattr(cond, "pixel_exists", True) else "없음"
+        if getattr(cond, "pixel_pattern", None):
+            pat = getattr(cond, "pixel_pattern", "")
+            return f"픽셀패턴 {pat} @ {region} tol={cond.tolerance} ({state}일 때 참){suffix}"
+        color_hex = cond.color_raw or (_rgb_to_hex(cond.color) or "------")
         return f"픽셀 {region} #{color_hex} tol={cond.tolerance} ({state}일 때 참){suffix}"
     if cond.type == "var":
         op_text = "!=" if getattr(cond, "var_operator", "eq") == "ne" else "=="
@@ -1373,6 +1376,8 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         variable_provider=None,
         resolver: VariableResolver | None = None,
         open_debugger=None,
+        pattern_provider=None,
+        open_pattern_manager=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("조건 설정")
@@ -1388,6 +1393,8 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self._variable_provider = variable_provider
         self._resolver = resolver
         self._open_debugger_fn = open_debugger
+        self._pattern_provider = pattern_provider
+        self._open_pattern_manager = open_pattern_manager
 
         self._child_conditions: List[Condition] = []
 
@@ -1427,6 +1434,12 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         _update_hex_preview_label(self.color_preview, self.color_edit.text())
         self._install_var_completer(self.region_edit, "region")
         self._install_var_completer(self.color_edit, "color")
+        self.pattern_check = QtWidgets.QCheckBox("패턴 사용")
+        self.pattern_combo = QtWidgets.QComboBox()
+        self.pattern_manage_btn = QtWidgets.QPushButton("패턴 관리")
+        self.pattern_manage_btn.clicked.connect(self._open_pattern_manager_cb)
+        self.pattern_check.stateChanged.connect(self._sync_type_visibility)
+        self._reload_patterns()
         self.var_name_edit = QtWidgets.QLineEdit()
         self.var_value_edit = QtWidgets.QLineEdit()
         self._install_var_completer(self.var_value_edit, "var")
@@ -1477,7 +1490,17 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         color_row.addWidget(self.color_preview)
         color_wrap = QtWidgets.QWidget()
         color_wrap.setLayout(color_row)
+        self.color_wrap = color_wrap
         self.form.addRow("색상", color_wrap)
+        pattern_row = QtWidgets.QHBoxLayout()
+        pattern_row.setContentsMargins(0, 0, 0, 0)
+        pattern_row.setSpacing(6)
+        pattern_row.addWidget(self.pattern_check)
+        pattern_row.addWidget(self.pattern_combo, 1)
+        pattern_row.addWidget(self.pattern_manage_btn)
+        pattern_wrap = QtWidgets.QWidget()
+        pattern_wrap.setLayout(pattern_row)
+        self.form.addRow("패턴", pattern_wrap)
         self.form.addRow("Tolerance", self.tol_spin)
         self.form.addRow("픽셀 상태", self.pixel_expect_combo)
         self.form.addRow("변수 이름", self.var_name_edit)
@@ -1534,10 +1557,28 @@ class ConditionNodeDialog(QtWidgets.QDialog):
 
         _toggle((self.key_edit, self.key_mode_combo, self.key_group_mode_combo), visible=is_key, enabled=is_key)
         _toggle(
-            (self.region_edit, self.region_offset_edit, self.color_edit, self.tol_spin, self.pixel_expect_combo, self.test_btn),
+            (
+                self.region_edit,
+                self.region_offset_edit,
+                self.color_edit,
+                self.tol_spin,
+                self.pixel_expect_combo,
+                self.test_btn,
+                self.pattern_check,
+                self.pattern_combo,
+                self.pattern_manage_btn,
+            ),
             visible=is_pixel,
             enabled=is_pixel,
         )
+        if is_pixel:
+            use_pat = self.pattern_check.isChecked()
+            # 색상 입력 필드는 패턴 사용 시 숨김
+            self.color_wrap.setVisible(not use_pat)
+            if self.form.labelForField(self.color_wrap):
+                self.form.labelForField(self.color_wrap).setVisible(not use_pat)
+        else:
+            self.color_wrap.setVisible(False)
         _toggle((self.var_name_edit, self.var_value_edit, self.var_op_combo), visible=is_var, enabled=is_var)
         _toggle((self.timer_slot_combo, self.timer_value_spin, self.timer_op_combo), visible=is_timer, enabled=is_timer)
         self.group_hint.setVisible(is_group)
@@ -1554,6 +1595,13 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             base_txt, offset_txt = _split_region_offset(raw_region) if raw_region else ("", "")
             self.region_edit.setText(base_txt)
             self.region_offset_edit.setText(offset_txt)
+            if getattr(cond, "pixel_pattern", None):
+                self.pattern_check.setChecked(True)
+                idx_pat = self.pattern_combo.findData(cond.pixel_pattern)
+                if idx_pat >= 0:
+                    self.pattern_combo.setCurrentIndex(idx_pat)
+            else:
+                self.pattern_check.setChecked(False)
             if cond.color_raw is not None:
                 self.color_edit.setText(cond.color_raw)
             else:
@@ -1598,13 +1646,20 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             return Condition(type=group_type, name=summary, conditions=children)
         if typ == "pixel":
             region_text = _compose_region_raw(self.region_edit.text(), self.region_offset_edit.text())
-            color_text = self.color_edit.text()
             region = _parse_region(region_text, resolver=self._resolver)
-            # 변수 참조(/, ${}, @)는 값 검증 없이 raw로 저장하고 런타임에 resolver로 해석하도록 한다.
-            if any(color_text.strip().startswith(prefix) for prefix in ("/", "$", "@")):
+            color_text = self.color_edit.text()
+            use_pattern = self.pattern_check.isChecked()
+            pattern_name = self.pattern_combo.currentData() if use_pattern else None
+            if use_pattern and not pattern_name:
+                raise ValueError("사용할 픽셀 패턴을 선택하세요.")
+            if use_pattern:
                 color = None
             else:
-                color = _parse_hex_color(color_text, resolver=self._resolver)
+                # 변수 참조(/, ${}, @)는 값 검증 없이 raw로 저장하고 런타임에 resolver로 해석하도록 한다.
+                if any(color_text.strip().startswith(prefix) for prefix in ("/", "$", "@")):
+                    color = None
+                else:
+                    color = _parse_hex_color(color_text, resolver=self._resolver)
             pixel_exists = bool(self.pixel_expect_combo.currentData()) if self.pixel_expect_combo.currentIndex() >= 0 else True
             return Condition(
                 type="pixel",
@@ -1612,7 +1667,8 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 region=region,
                 region_raw=region_text,
                 color=color,
-                color_raw=color_text,
+                color_raw=color_text if not use_pattern else None,
+                pixel_pattern=str(pattern_name) if use_pattern else None,
                 tolerance=int(self.tol_spin.value()),
                 pixel_exists=pixel_exists,
             )
@@ -1636,7 +1692,8 @@ class ConditionNodeDialog(QtWidgets.QDialog):
     def _toggle_pixel_test(self):
         try:
             region = _parse_region(_compose_region_raw(self.region_edit.text(), self.region_offset_edit.text()), resolver=self._resolver)
-            color = _parse_hex_color(self.color_edit.text(), resolver=self._resolver)
+            use_pattern = self.pattern_check.isChecked()
+            color = None if use_pattern else _parse_hex_color(self.color_edit.text(), resolver=self._resolver)
             tolerance = int(self.tol_spin.value())
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "입력 오류", str(exc))
@@ -1650,6 +1707,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             "region_raw": self.region_edit.text().strip(),
             "color": color,
             "color_raw": self.color_edit.text().strip(),
+            "pattern": self.pattern_combo.currentData() if use_pattern else None,
             "tolerance": tolerance,
             "expect_exists": expect_exists,
             "label": self.name_edit.text().strip() or "조건 테스트",
@@ -1664,6 +1722,26 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             return
         names = self._variable_provider(category)
         _attach_variable_completer(edit, names)
+
+    def _reload_patterns(self):
+        self.pattern_combo.clear()
+        self.pattern_combo.addItem("선택 안 함", None)
+        names = []
+        if callable(self._pattern_provider):
+            try:
+                names = self._pattern_provider() or []
+            except Exception:
+                names = []
+        for name in names:
+            self.pattern_combo.addItem(str(name), str(name))
+
+    def _open_pattern_manager_cb(self):
+        if callable(self._open_pattern_manager):
+            try:
+                self._open_pattern_manager(parent=self)
+            except Exception:
+                pass
+        self._reload_patterns()
 
 
 class ConditionTreeWidget(QtWidgets.QTreeWidget):
@@ -1700,6 +1778,8 @@ class ConditionDialog(QtWidgets.QDialog):
         open_screenshot_dialog=None,
         screenshot_hotkeys_provider=None,
         screenshot_manager=None,
+        pattern_provider=None,
+        open_pattern_manager=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("조건 편집")
@@ -1724,6 +1804,8 @@ class ConditionDialog(QtWidgets.QDialog):
         self._screenshot_manager = screenshot_manager
         self._debug_stop_cb = None
         self._viewer_image_provider = None
+        self._pattern_provider = pattern_provider
+        self._open_pattern_manager = open_pattern_manager
 
         self.root_condition: Condition | None = None
 
@@ -1738,7 +1820,7 @@ class ConditionDialog(QtWidgets.QDialog):
         viewer_row = QtWidgets.QHBoxLayout()
         self.viewer_btn = QtWidgets.QPushButton("이미지 뷰어/피커")
         self.debug_test_btn = QtWidgets.QPushButton("디버그 테스트")
-        self._viewer_status_hint = "F1=좌표, F2=색상, F5=새로고침, Delete=삭제"
+        self._viewer_status_hint = "F1=좌표, F2=색상, F3=패턴포인트, F5=새로고침, Delete=삭제"
         self.viewer_status = QtWidgets.QLabel(self._viewer_status_hint)
         self.viewer_status.setStyleSheet("color: gray;")
         last_dir = self._image_viewer_state.get("last_dir") if isinstance(self._image_viewer_state, dict) else None
@@ -1803,6 +1885,14 @@ class ConditionDialog(QtWidgets.QDialog):
         else:
             self.root_condition = Condition(type="any", conditions=[])
             self._refresh_condition_tree()
+
+    def _pattern_names(self) -> list[str]:
+        if callable(self._pattern_provider):
+            try:
+                return self._pattern_provider() or []
+            except Exception:
+                return []
+        return []
 
     def _load(self, cond: MacroCondition):
         self.cond_name_edit.setText(cond.name or "")
@@ -2081,6 +2171,8 @@ class ConditionDialog(QtWidgets.QDialog):
             variable_provider=self._variable_provider,
             resolver=self._resolver,
             open_debugger=self._open_debugger_fn,
+            pattern_provider=self._pattern_names,
+            open_pattern_manager=self._open_pattern_manager,
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -2106,6 +2198,8 @@ class ConditionDialog(QtWidgets.QDialog):
             variable_provider=self._variable_provider,
             resolver=self._resolver,
             open_debugger=self._open_debugger_fn,
+            pattern_provider=self._pattern_names,
+            open_pattern_manager=self._open_pattern_manager,
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -2170,6 +2264,8 @@ class ConditionDialog(QtWidgets.QDialog):
             variable_provider=self._variable_provider,
             resolver=self._resolver,
             open_debugger=self._open_debugger_fn,
+            pattern_provider=self._pattern_names,
+            open_pattern_manager=self._open_pattern_manager,
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -2291,6 +2387,8 @@ class ConditionDialog(QtWidgets.QDialog):
             variable_provider=self._variable_provider,
             resolver=self._resolver,
             open_debugger=self._open_debugger_fn,
+            pattern_provider=self._pattern_names,
+            open_pattern_manager=self._open_pattern_manager,
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -2486,6 +2584,7 @@ class ConditionDialog(QtWidgets.QDialog):
 class _ImageCanvas(QtWidgets.QWidget):
     sampleChanged = QtCore.pyqtSignal(object)
     zoomChanged = QtCore.pyqtSignal(float)
+    imageChanged = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2504,6 +2603,7 @@ class _ImageCanvas(QtWidgets.QWidget):
         self._drag_start = QtCore.QPointF()
         self._center_start = QtCore.QPointF()
         self._space_pan = False
+        self._overlays: list[tuple[int, int, int, int]] = []
 
     def clear_image(self):
         self._image = None
@@ -2516,6 +2616,7 @@ class _ImageCanvas(QtWidgets.QWidget):
         self.update()
         self.sampleChanged.emit(None)
         self.zoomChanged.emit(self._user_zoom)
+        self.imageChanged.emit()
 
     def set_image(self, path: Path | None) -> bool:
         if path is None:
@@ -2534,7 +2635,12 @@ class _ImageCanvas(QtWidgets.QWidget):
         self.update()
         self.sampleChanged.emit(None)
         self.zoomChanged.emit(self._user_zoom)
+        self.imageChanged.emit()
         return True
+
+    def set_overlays(self, rects: list[tuple[int, int, int, int]] | None):
+        self._overlays = rects or []
+        self.update()
 
     def _clamp_center(self):
         if not self._image:
@@ -2707,6 +2813,17 @@ class _ImageCanvas(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, False)
         painter.drawPixmap(self._draw_rect, self._pixmap, QtCore.QRectF(self._pixmap.rect()))
 
+        # overlays in image coordinates -> convert to widget coords
+        if self._overlays and self._image and not self._draw_rect.isNull() and self._scale > 0:
+            pen = QtGui.QPen(QtGui.QColor(255, 80, 80), 2)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+            for ox, oy, ow, oh in self._overlays:
+                wx = self._draw_rect.left() + ox * self._scale
+                wy = self._draw_rect.top() + oy * self._scale
+                painter.drawRect(QtCore.QRectF(wx, wy, ow * self._scale, oh * self._scale))
+
         if not self._sample:
             return
         pos = self._sample["widget_pos"]
@@ -2771,6 +2888,10 @@ class _ImageCanvas(QtWidgets.QWidget):
             self._dragging = True
             self._drag_start = QtCore.QPointF(pos)
             self._center_start = QtCore.QPointF(self._view_center)
+            event.accept()
+            return
+        if event.button() == QtCore.Qt.MouseButton.RightButton:
+            # 우클릭 동작 차단 (색상 복사/컨텍스트 없음)
             event.accept()
             return
         super().mousePressEvent(event)
@@ -4721,6 +4842,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         open_screenshot_dialog=None,
         screenshot_hotkeys_provider=None,
         screenshot_manager=None,
+        pattern_provider=None,
+        open_pattern_manager=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("액션 설정")
@@ -4745,6 +4868,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._open_screenshot_dialog_fn = open_screenshot_dialog
         self._screenshot_hotkeys_provider = screenshot_hotkeys_provider
         self._screenshot_manager = screenshot_manager
+        self._pattern_provider = pattern_provider
+        self._open_pattern_manager = open_pattern_manager
         self._condition: Condition | None = None
         self._existing_children: List[Action] = []
         self._existing_else: List[Action] = []
@@ -5130,6 +5255,8 @@ class ActionEditDialog(QtWidgets.QDialog):
             open_screenshot_dialog=self._open_screenshot_dialog_fn,
             screenshot_hotkeys_provider=self._screenshot_hotkeys_provider,
             screenshot_manager=self._screenshot_manager,
+            pattern_provider=self._pattern_provider if hasattr(self, "_pattern_provider") else None,
+            open_pattern_manager=self._open_pattern_manager if hasattr(self, "_open_pattern_manager") else None,
         )
         if not _run_dialog_non_modal(dlg):
             return
@@ -5582,6 +5709,11 @@ class MacroDialog(QtWidgets.QDialog):
         self._open_screenshot_dialog_fn = open_screenshot_dialog
         self._screenshot_hotkeys_provider = screenshot_hotkeys_provider
         self._screenshot_manager = screenshot_manager
+        parent_for_patterns = parent if parent is not None else getattr(self, "parent", lambda: None)()
+        self._pattern_names = getattr(parent_for_patterns, "_pattern_names", None)
+        if not callable(self._pattern_names):
+            self._pattern_names = lambda: []
+        self._open_pattern_manager = getattr(parent_for_patterns, "_open_pattern_manager", None)
         self._apply_scope_all_cb = apply_scope_all
         self._macro_list_provider = macro_list_provider
         self._scope: str = "global"
@@ -6274,6 +6406,8 @@ class MacroDialog(QtWidgets.QDialog):
             open_screenshot_dialog=self._open_screenshot_dialog_fn,
             screenshot_hotkeys_provider=self._screenshot_hotkeys_provider,
             screenshot_manager=self._screenshot_manager,
+            pattern_provider=self._pattern_names,
+            open_pattern_manager=self._open_pattern_manager,
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -6546,6 +6680,8 @@ class MacroDialog(QtWidgets.QDialog):
                 open_screenshot_dialog=self._open_screenshot_dialog_fn,
                 screenshot_hotkeys_provider=self._screenshot_hotkeys_provider,
                 screenshot_manager=self._screenshot_manager,
+                pattern_provider=self._pattern_names,
+                open_pattern_manager=self._open_pattern_manager,
             )
             if _run_dialog_non_modal(dlg):
                 try:
@@ -6631,6 +6767,8 @@ class MacroDialog(QtWidgets.QDialog):
             open_screenshot_dialog=self._open_screenshot_dialog_fn,
             screenshot_hotkeys_provider=self._screenshot_hotkeys_provider,
             screenshot_manager=self._screenshot_manager,
+            pattern_provider=self._pattern_names,
+            open_pattern_manager=self._open_pattern_manager,
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -9292,6 +9430,565 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         return super().closeEvent(event)
 
 
+class PixelPatternManagerDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, *, patterns: dict | None = None, open_image_viewer=None, sample_provider=None):
+        super().__init__(parent)
+        self._owner = parent
+        # 부모와 포커스 연동을 끊어 메인 창이 앞에 뜨는 것을 막는다.
+        self.setParent(None)
+        self.setWindowTitle("픽셀 패턴 관리자")
+        self.setModal(False)
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.patterns: dict[str, PixelPattern] = copy.deepcopy(patterns or {})
+        self._current_name: Optional[str] = None
+        self._anchor_pos: Optional[tuple[int, int]] = None
+        self._anchor_image_pos: Optional[tuple[int, int]] = None
+        self._loading_patterns = False
+        self._loading_points = False
+        self._open_image_viewer = open_image_viewer
+        self._sample_provider = sample_provider
+        self._overlay_visible = False
+        self._viewer_connected = False
+        self._build_ui()
+        self._load_patterns()
+        self._attach_viewer_change_listener()
+
+    def _attach_viewer_change_listener(self):
+        self._ensure_viewer_listener()
+
+    def _ensure_viewer_listener(self):
+        if self._viewer_connected:
+            return
+        viewer = getattr(self._owner, "_image_viewer_dialog", None)
+        if not viewer or not hasattr(viewer, "canvas"):
+            return
+        canvas = viewer.canvas
+        try:
+            if hasattr(canvas, "imageChanged"):
+                canvas.imageChanged.connect(self._on_viewer_changed)
+            self._viewer_connected = True
+        except Exception:
+            self._viewer_connected = False
+
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        top_row = QtWidgets.QHBoxLayout()
+        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.PreventContextMenu)
+        self.list_widget.currentItemChanged.connect(self._on_select_pattern)
+        list_btns = QtWidgets.QVBoxLayout()
+        self.add_btn = QtWidgets.QPushButton("새 패턴")
+        self.dup_btn = QtWidgets.QPushButton("복제")
+        self.del_btn = QtWidgets.QPushButton("삭제")
+        self.stay_on_top_check = QtWidgets.QCheckBox("항상 위")
+        self.stay_on_top_check.toggled.connect(self._toggle_stay_on_top)
+        self.open_viewer_btn = QtWidgets.QPushButton("이미지 뷰어")
+        self.open_viewer_btn.clicked.connect(self._open_viewer)
+        for b in (self.add_btn, self.dup_btn, self.del_btn):
+            list_btns.addWidget(b)
+        list_btns.addWidget(self.stay_on_top_check)
+        list_btns.addWidget(self.open_viewer_btn)
+        list_btns.addStretch()
+        top_row.addWidget(self.list_widget, 2)
+        list_btn_wrap = QtWidgets.QWidget()
+        list_btn_wrap.setLayout(list_btns)
+        top_row.addWidget(list_btn_wrap)
+        layout.addLayout(top_row)
+
+        form = QtWidgets.QFormLayout()
+        self.name_edit = QtWidgets.QLineEdit()
+        self.desc_edit = QtWidgets.QLineEdit()
+        self.tol_spin = QtWidgets.QSpinBox()
+        self.tol_spin.setRange(0, 255)
+        self.tol_spin.setValue(10)
+        form.addRow("이름", self.name_edit)
+        form.addRow("설명", self.desc_edit)
+        form.addRow("기본 허용오차", self.tol_spin)
+
+        point_btn_row = QtWidgets.QHBoxLayout()
+        self.add_point_btn = QtWidgets.QPushButton("커서 픽셀 추가 (F3)")
+        self.del_point_btn = QtWidgets.QPushButton("포인트 삭제")
+        self.clear_point_btn = QtWidgets.QPushButton("모두 지우기")
+        point_btn_row.addWidget(self.add_point_btn)
+        point_btn_row.addWidget(self.del_point_btn)
+        point_btn_row.addWidget(self.clear_point_btn)
+
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["x", "y", "color", "tol(옵션)"])
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.PreventContextMenu)
+        self.table.itemChanged.connect(lambda *_: self._update_preview())
+
+        preview_wrap = QtWidgets.QVBoxLayout()
+        self.preview_label = QtWidgets.QLabel("미리보기")
+        self.preview_label.setFixedHeight(160)
+        self.preview_label.setFrameShape(QtWidgets.QFrame.Shape.Box)
+        self.preview_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setStyleSheet("background: transparent;")
+        self.preview_label.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.PreventContextMenu)
+        self.size_label = QtWidgets.QLabel("")
+        preview_wrap.addWidget(self.preview_label)
+        preview_wrap.addWidget(self.size_label)
+        # 배경 선택 & 오버레이 토글
+        bg_row = QtWidgets.QHBoxLayout()
+        bg_row.addWidget(QtWidgets.QLabel("배경"))
+        self.preview_bg_combo = QtWidgets.QComboBox()
+        self.preview_bg_combo.addItems(["체커보드", "검정", "흰색", "주황"])
+        self.preview_bg_combo.currentIndexChanged.connect(lambda *_: self._update_preview())
+        bg_row.addWidget(self.preview_bg_combo, 1)
+        self.overlay_btn = QtWidgets.QPushButton("패턴 표시(뷰어)")
+        self.overlay_btn.setCheckable(True)
+        self.overlay_btn.toggled.connect(self._show_pattern_on_viewer)
+        bg_row.addWidget(self.overlay_btn)
+        self.overlay_status = QtWidgets.QLabel("")
+        self.overlay_status.setStyleSheet("color: gray;")
+        bg_row.addWidget(self.overlay_status, 2)
+        preview_wrap.addLayout(bg_row)
+
+        layout.addLayout(form)
+        layout.addLayout(point_btn_row)
+        layout.addWidget(self.table)
+        layout.addLayout(preview_wrap)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch()
+        self.save_btn = QtWidgets.QPushButton("저장")
+        self.close_btn = QtWidgets.QPushButton("닫기")
+        btn_row.addWidget(self.save_btn)
+        btn_row.addWidget(self.close_btn)
+        layout.addLayout(btn_row)
+
+        # Signals
+        self.add_btn.clicked.connect(self._add_pattern)
+        self.dup_btn.clicked.connect(self._dup_pattern)
+        self.del_btn.clicked.connect(self._del_pattern)
+        self.add_point_btn.clicked.connect(self._add_point_from_cursor)
+        self.del_point_btn.clicked.connect(self._del_points)
+        self.clear_point_btn.clicked.connect(self._clear_points)
+        self.save_btn.clicked.connect(self._save_and_mark_dirty)
+        self.close_btn.clicked.connect(self.accept)
+        QtGui.QShortcut(
+            QtGui.QKeySequence("F3"),
+            self,
+            self._add_point_from_cursor,
+            context=QtCore.Qt.ShortcutContext.ApplicationShortcut,
+        )
+
+        self.resize(520, 640)
+
+    def _load_patterns(self):
+        self._loading_patterns = True
+        prev_block = self.list_widget.blockSignals(True)
+        self.list_widget.clear()
+        self._anchor_image_pos = None
+        self._overlay_visible = False
+        self.overlay_btn.setChecked(False)
+        self.overlay_status.setText("")
+        for name in sorted(self.patterns.keys()):
+            self.list_widget.addItem(name)
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(0)
+        self.list_widget.blockSignals(prev_block)
+        self._loading_patterns = False
+
+    def _current_pattern(self) -> PixelPattern:
+        if not self._current_name or self._current_name not in self.patterns:
+            self._current_name = self.list_widget.currentItem().text() if self.list_widget.currentItem() else None
+        if self._current_name and self._current_name in self.patterns:
+            return self.patterns[self._current_name]
+        pat = PixelPattern(name="pattern1", points=[], tolerance=10)
+        self.patterns[pat.name] = pat
+        self._current_name = pat.name
+        return pat
+
+    def _save_current_pattern(self, *, name_hint: str | None = None):
+        # name_hint: 저장 대상 패턴명(이전 선택 항목). 없으면 현재 이름을 사용.
+        old_name = name_hint or self._current_name
+        if not old_name:
+            return
+        pat = self.patterns.get(old_name)
+        if pat is None:
+            pat = self._current_pattern()
+        new_name = self.name_edit.text().strip() or pat.name
+        if new_name != old_name and new_name in self.patterns:
+            # 이름 충돌 시 접미사 부여
+            base = new_name
+            i = 2
+            while f"{base}_{i}" in self.patterns:
+                i += 1
+            new_name = f"{base}_{i}"
+        pat.name = new_name
+        pat.description = self.desc_edit.text().strip() or None
+        pat.tolerance = int(self.tol_spin.value())
+        pat.points = []
+        anchor_x, anchor_y = self._anchor_image_pos or (0, 0)
+        for row in range(self.table.rowCount()):
+            x_val = int(self.table.item(row, 0).text())
+            y_val = int(self.table.item(row, 1).text())
+            dx = x_val - anchor_x
+            dy = y_val - anchor_y
+            color_txt = self.table.item(row, 2).text().strip().lstrip("#")
+            color = tuple(int(color_txt[i : i + 2], 16) for i in (0, 2, 4))
+            tol_item = self.table.item(row, 3)
+            pt_tol = int(tol_item.text()) if tol_item and tol_item.text().strip() else None
+            pat.points.append(PixelPatternPoint(dx=dx, dy=dy, color=color, tolerance=pt_tol))
+        pat = pat.normalized()
+        self.patterns.pop(old_name, None)
+        self.patterns[pat.name] = pat
+        # 리스트 항목 텍스트 갱신
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item and item.text() == old_name:
+                item.setText(pat.name)
+                break
+        self._current_name = pat.name
+        if not self.list_widget.currentItem():
+            self._select_by_name(pat.name)
+        self._mark_dirty_parent()
+
+    def _select_by_name(self, name: str):
+        for i in range(self.list_widget.count()):
+            if self.list_widget.item(i).text() == name:
+                self.list_widget.setCurrentRow(i)
+                break
+
+    def _on_select_pattern(self, current: QtWidgets.QListWidgetItem, _prev):
+        if self._loading_patterns:
+            return
+        if current is None:
+            return
+        try:
+            prev_name = _prev.text() if _prev else self._current_name
+            self._save_current_pattern(name_hint=prev_name)
+        except Exception:
+            pass
+        self._anchor_pos = None
+        self._anchor_image_pos = None
+        name = current.text()
+        if name not in self.patterns:
+            self.patterns[name] = PixelPattern(name=name, points=[], tolerance=10)
+        self._current_name = name
+        pat = self.patterns[name]
+        self.name_edit.setText(pat.name)
+        self.desc_edit.setText(pat.description or "")
+        self.tol_spin.setValue(int(getattr(pat, "tolerance", 10) or 10))
+        self.table.setRowCount(0)
+        # 패턴이 존재하면 첫 포인트를 앵커로 사용 (표시용)
+        if pat.points:
+            self._anchor_image_pos = (int(pat.points[0].dx), int(pat.points[0].dy))
+        for pt in pat.points:
+            self._append_point_row(pt.dx, pt.dy, pt.color, pt.tolerance)
+        self._update_preview()
+
+    def _append_point_row(self, dx: int, dy: int, color: RGB, tol: Optional[int] = None):
+        self._loading_points = True
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        anchor_x, anchor_y = self._anchor_image_pos or (0, 0)
+        display_x = anchor_x + dx
+        display_y = anchor_y + dy
+        for col, val in enumerate([display_x, display_y, f"{color[0]:02x}{color[1]:02x}{color[2]:02x}", tol if tol is not None else ""]):
+            item = QtWidgets.QTableWidgetItem(str(val))
+            self.table.setItem(row, col, item)
+        self._loading_points = False
+        self.table.resizeRowsToContents()
+
+    def _add_pattern(self):
+        base_name = "pattern"
+        idx = 1
+        while f"{base_name}{idx}" in self.patterns:
+            idx += 1
+        name = f"{base_name}{idx}"
+        self.patterns[name] = PixelPattern(name=name, points=[], tolerance=10)
+        # 목록이 비어 있을 때만 리로드; 그렇지 않으면 직접 추가해 신호를 최소화
+        if self.list_widget.count() == 0:
+            self._load_patterns()
+            self._select_by_name(name)
+        else:
+            self.list_widget.addItem(name)
+            self._select_by_name(name)
+        # 새 패턴을 만들면 앵커 리셋
+        self._anchor_image_pos = None
+
+    def _dup_pattern(self):
+        pat = self._current_pattern()
+        new_name = pat.name + "_copy"
+        i = 1
+        while new_name in self.patterns:
+            new_name = f"{pat.name}_copy{i}"
+            i += 1
+        self.patterns[new_name] = PixelPattern(
+            name=new_name,
+            points=copy.deepcopy(pat.points),
+            tolerance=pat.tolerance,
+            description=pat.description,
+        )
+        self._load_patterns()
+        self._select_by_name(new_name)
+
+    def _del_pattern(self):
+        if self._current_name and self._current_name in self.patterns:
+            self.patterns.pop(self._current_name, None)
+        self._load_patterns()
+
+    def _add_point_from_cursor(self):
+        if self.list_widget.count() == 0:
+            self._load_patterns()
+        if not self.list_widget.currentItem() and self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(0)
+
+        sample = None
+        if callable(self._sample_provider):
+            try:
+                sample = self._sample_provider()
+            except Exception:
+                sample = None
+
+        if sample and isinstance(sample, dict) and sample.get("pos") is not None:
+            x, y = sample.get("pos")
+            qcolor = sample.get("color")
+            if isinstance(qcolor, QtGui.QColor):
+                color = (qcolor.red(), qcolor.green(), qcolor.blue())
+            else:
+                color = tuple(int(c) for c in sample.get("color", (0, 0, 0)))[:3]
+        else:
+            pos = QtGui.QCursor.pos()
+            x, y = pos.x(), pos.y()
+            try:
+                img = capture_region((x, y, 1, 1)).convert("RGB")
+                color = img.getpixel((0, 0))
+            except Exception:
+                QtWidgets.QMessageBox.warning(self, "캡처 실패", "현재 커서 위치 픽셀을 읽지 못했습니다.")
+                return
+
+        pat = self._current_pattern()
+        if self._anchor_image_pos is None or not pat.points:
+            self._anchor_image_pos = (int(x), int(y))
+        anchor_x, anchor_y = self._anchor_image_pos
+        dx = int(x) - anchor_x
+        dy = int(y) - anchor_y
+
+        self._append_point_row(int(dx), int(dy), color)
+        # 새로 추가된 행을 선택해 즉시 눈에 보이도록
+        row = self.table.rowCount() - 1
+        if row >= 0:
+            self.table.selectRow(row)
+            self.table.scrollToItem(self.table.item(row, 0), QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
+        self._update_preview()
+        QtWidgets.QToolTip.showText(
+            QtGui.QCursor.pos(),
+            f"추가: x={x}, y={y}, #{color[0]:02x}{color[1]:02x}{color[2]:02x}",
+            self,
+        )
+
+    def _del_points(self):
+        rows = sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True)
+        for r in rows:
+            self.table.removeRow(r)
+        self._update_preview()
+
+    def _clear_points(self):
+        self.table.setRowCount(0)
+        self._anchor_pos = None
+        self._anchor_image_pos = None
+        self._update_preview()
+
+    def _update_preview(self):
+        if self._loading_points:
+            return
+        try:
+            self._save_current_pattern()
+        except Exception:
+            pass
+        pat = self._current_pattern()
+        norm = pat.normalized()
+        if not norm.points:
+            self.preview_label.setText("포인트 없음")
+            self.size_label.setText("")
+            # 오버레이도 제거
+            viewer = getattr(self._owner, "_image_viewer_dialog", None)
+            if viewer and hasattr(viewer, "canvas"):
+                try:
+                    viewer.canvas.set_overlays([])
+                except Exception:
+                    pass
+            self.overlay_status.setText("")
+            self._overlay_visible = False
+            return
+        max_dx = max(p.dx for p in norm.points)
+        max_dy = max(p.dy for p in norm.points)
+        w = max_dx + 1
+        h = max_dy + 1
+        scale = max(4, min(16, 160 // max(1, max(w, h))))
+        img = QtGui.QImage(w * scale, h * scale, QtGui.QImage.Format.Format_ARGB32)
+        img.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(img)
+        bg_mode = self.preview_bg_combo.currentText()
+        if bg_mode == "체커보드":
+            checker = QtGui.QColor(220, 220, 220, 80)
+            for y in range(0, h * scale, scale):
+                for x in range(0, w * scale, scale):
+                    if ((x // scale) + (y // scale)) % 2 == 0:
+                        painter.fillRect(x, y, scale, scale, checker)
+        else:
+            color_map = {
+                "검정": QtGui.QColor(0, 0, 0),
+                "흰색": QtGui.QColor(255, 255, 255),
+                "주황": QtGui.QColor(255, 180, 80),
+            }
+            painter.fillRect(0, 0, w * scale, h * scale, color_map.get(bg_mode, QtGui.QColor(220, 220, 220, 80)))
+        for pt in norm.points:
+            color = QtGui.QColor(int(pt.color[0]), int(pt.color[1]), int(pt.color[2]))
+            painter.fillRect(pt.dx * scale, pt.dy * scale, scale, scale, color)
+        painter.end()
+        self.preview_label.setPixmap(QtGui.QPixmap.fromImage(img))
+        self.size_label.setText(f"크기: {w} x {h}, 포인트 {len(norm.points)}개")
+        # 미리보기 갱신 후 오버레이도 최신으로
+        if self.overlay_btn.isChecked():
+            self._show_pattern_on_viewer()
+
+    def accept(self):
+        try:
+            cur = self.list_widget.currentItem()
+            if cur:
+                self._current_name = cur.text()
+            self._save_current_pattern(name_hint=self._current_name)
+            self._mark_dirty_parent()
+        except Exception:
+            pass
+        return super().accept()
+
+    def _save_and_mark_dirty(self):
+        try:
+            cur = self.list_widget.currentItem()
+            if cur:
+                self._current_name = cur.text()
+            self._save_current_pattern(name_hint=self._current_name)
+            self._mark_dirty_parent()
+            self.overlay_status.setText("저장됨 (프로필 저장 필요)")
+        except Exception:
+            pass
+
+    def _toggle_stay_on_top(self, checked: bool):
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, checked)
+        self.show()
+
+    def _open_viewer(self):
+        if callable(self._open_image_viewer):
+            try:
+                self._open_image_viewer()
+            except Exception:
+                pass
+        elif self._owner and hasattr(self._owner, "_open_image_viewer_dialog"):
+            try:
+                self._owner._open_image_viewer_dialog()
+            except Exception:
+                pass
+        # 새로 열린 뷰어에도 리스너를 연결한다.
+        QtCore.QTimer.singleShot(0, self._ensure_viewer_listener)
+
+    def _show_pattern_on_viewer(self):
+        self._ensure_viewer_listener()
+        self._overlay_visible = self.overlay_btn.isChecked()
+        pat = self._current_pattern()
+        viewer = getattr(self._owner, "_image_viewer_dialog", None)
+        if viewer is None or not hasattr(viewer, "canvas"):
+            self.overlay_status.setText("이미지 뷰어 없음")
+            return
+
+        if not self.overlay_btn.isChecked():
+            viewer.canvas.set_overlays([])
+            self.overlay_status.setText("패턴 표시 꺼짐")
+            return
+
+        if not pat.points:
+            self.overlay_status.setText("패턴 없음")
+            viewer.canvas.set_overlays([])
+            return
+
+        # 매칭: 현재 뷰어 이미지에서 패턴 존재 위치를 찾는다.
+        qimg = getattr(viewer.canvas, "_image", None)
+        if qimg is None or qimg.isNull():
+            self.overlay_status.setText("이미지가 없습니다")
+            viewer.canvas.set_overlays([])
+            return
+
+        matches = self._find_pattern_in_qimage(qimg, pat)
+        if not matches:
+            self.overlay_status.setText("패턴을 찾지 못했습니다")
+            viewer.canvas.set_overlays([])
+            return
+
+        rects: list[tuple[int, int, int, int]] = []
+        for mx, my in matches:
+            for pt in pat.points:
+                rects.append((mx + int(pt.dx), my + int(pt.dy), 1, 1))
+        viewer.canvas.set_overlays(rects)
+        viewer.canvas.update()
+        self.overlay_status.setText(f"패턴 {len(matches)}곳 표시")
+
+    @staticmethod
+    def _find_pattern_in_qimage(qimg: QtGui.QImage, pattern: PixelPattern) -> list[tuple[int, int]]:
+        """Return list of (x,y) top-left matches within the image."""
+        if qimg.isNull() or not pattern.points:
+            return []
+        norm = pattern.normalized()
+        w = qimg.width()
+        h = qimg.height()
+        max_dx = max(p.dx for p in norm.points)
+        max_dy = max(p.dy for p in norm.points)
+        if w - max_dx <= 0 or h - max_dy <= 0:
+            return []
+
+        # Convert qimage to numpy uint8 HxWx4 then to RGB
+        fmt = qimg.format()
+        if fmt != QtGui.QImage.Format.Format_RGBA8888:
+            qimg = qimg.convertToFormat(QtGui.QImage.Format.Format_RGBA8888)
+        ptr = qimg.bits()
+        ptr.setsize(qimg.sizeInBytes())
+        import numpy as np
+
+        arr = np.frombuffer(ptr, np.uint8).reshape((h, qimg.bytesPerLine() // 4, 4))
+        arr = arr[:, : w, :3]
+
+        matches: list[tuple[int, int]] = []
+        tol_default = int(getattr(pattern, "tolerance", 0) or 0)
+        pts = norm.points
+        # vectorized search for speed: precompute per-point tolerance mask
+        arr_i16 = arr.astype(np.int16)
+        for y in range(0, h - max_dy):
+            window = arr_i16[y : y + max_dy + 1, 0 : w - max_dx, :]
+            # Start with all columns valid
+            valid = np.ones(window.shape[:2], dtype=bool)
+            for pt in pts:
+                tol = int(pt.tolerance) if pt.tolerance is not None else tol_default
+                sub = window[pt.dy, pt.dx : pt.dx + window.shape[1], :]
+                diff = np.abs(sub - np.array(pt.color, dtype=np.int16))
+                cond = (diff <= tol).all(axis=1)
+                valid[: cond.shape[0], : cond.shape[0]] &= cond  # align lengths
+            ys, xs = np.where(valid)
+            for xv in xs:
+                matches.append((int(xv), int(y)))
+        return matches
+
+    def _on_viewer_changed(self, *_):
+        # 이미지가 바뀌거나 샘플이 변하면 자동으로 오버레이를 끈다.
+        self.overlay_btn.setChecked(False)
+        viewer = getattr(self._owner, "_image_viewer_dialog", None)
+        if viewer and hasattr(viewer, "canvas"):
+            try:
+                viewer.canvas.set_overlays([])
+            except Exception:
+                pass
+        self.overlay_status.setText("이미지 변경: 패턴 표시 꺼짐")
+
+    def _mark_dirty_parent(self):
+        if self._owner and hasattr(self._owner, "_mark_dirty"):
+            try:
+                self._owner._mark_dirty(True)
+            except Exception:
+                pass
+
 class PixelTestDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -9302,6 +9999,8 @@ class PixelTestDialog(QtWidgets.QDialog):
         stop_test=None,
         state: dict | None = None,
         save_state_cb=None,
+        pattern_provider=None,
+        open_pattern_manager=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("픽셀 테스트")
@@ -9311,6 +10010,8 @@ class PixelTestDialog(QtWidgets.QDialog):
         self._start_test = start_test
         self._stop_test = stop_test
         self._save_state_cb = save_state_cb
+        self._pattern_provider = pattern_provider
+        self._open_pattern_manager = open_pattern_manager
         self._testing = False
         self._build_ui()
         self._load_state(state or {})
@@ -9326,6 +10027,12 @@ class PixelTestDialog(QtWidgets.QDialog):
         self.color_edit.textChanged.connect(lambda txt: _update_hex_preview_label(self.color_preview, txt))
         _update_hex_preview_label(self.color_preview, self.color_edit.text())
         _attach_variable_completer(self.color_edit, [])
+        self.pattern_check = QtWidgets.QCheckBox("패턴 사용")
+        self.pattern_combo = QtWidgets.QComboBox()
+        self.pattern_manage_btn = QtWidgets.QPushButton("패턴 관리")
+        self.pattern_manage_btn.clicked.connect(self._open_pattern_manager_cb)
+        self.pattern_check.stateChanged.connect(self._sync_pattern_visibility)
+        self._reload_patterns()
         self.tol_spin = QtWidgets.QSpinBox()
         self.tol_spin.setRange(0, 255)
         self.tol_spin.setValue(10)
@@ -9345,7 +10052,17 @@ class PixelTestDialog(QtWidgets.QDialog):
         color_row.addWidget(self.color_preview)
         color_wrap = QtWidgets.QWidget()
         color_wrap.setLayout(color_row)
+        self.color_wrap = color_wrap
         form.addRow("색상", color_wrap)
+        pattern_row = QtWidgets.QHBoxLayout()
+        pattern_row.setContentsMargins(0, 0, 0, 0)
+        pattern_row.setSpacing(6)
+        pattern_row.addWidget(self.pattern_check)
+        pattern_row.addWidget(self.pattern_combo, 1)
+        pattern_row.addWidget(self.pattern_manage_btn)
+        pattern_wrap = QtWidgets.QWidget()
+        pattern_wrap.setLayout(pattern_row)
+        form.addRow("패턴", pattern_wrap)
         form.addRow("Tolerance", self.tol_spin)
         form.addRow("기대 상태", self.expect_combo)
         form.addRow("테스트 주기", self.interval_spin)
@@ -9364,6 +10081,41 @@ class PixelTestDialog(QtWidgets.QDialog):
 
         self.resize(420, 260)
 
+    def _reload_patterns(self):
+        self.pattern_combo.clear()
+        self.pattern_combo.addItem("선택 안 함", None)
+        names = []
+        if callable(self._pattern_provider):
+            try:
+                names = self._pattern_provider() or []
+            except Exception:
+                names = []
+        for name in names:
+            self.pattern_combo.addItem(str(name), str(name))
+        self._sync_pattern_visibility()
+
+    def _open_pattern_manager_cb(self):
+        if callable(self._open_pattern_manager):
+            try:
+                self._open_pattern_manager(parent=self)
+            except Exception:
+                pass
+        self._reload_patterns()
+
+    def _sync_pattern_visibility(self):
+        use_pat = self.pattern_check.isChecked()
+        self.color_wrap.setVisible(not use_pat)
+        if self.layout():
+            label = self.layout().itemAt(0)
+        label_for = None
+        # Form layout label handling
+        if hasattr(self, "color_wrap"):
+            # find label in form layout
+            pass
+        # color edit/preview widgets
+        self.color_edit.setEnabled(not use_pat)
+        self.color_preview.setEnabled(not use_pat)
+
     def _current_resolver(self):
         if callable(self._resolver_provider):
             try:
@@ -9375,17 +10127,19 @@ class PixelTestDialog(QtWidgets.QDialog):
     def _parse_inputs(self):
         resolver = self._current_resolver()
         region = _parse_region(self.region_edit.text(), resolver=resolver)
-        color = _parse_hex_color(self.color_edit.text(), resolver=resolver)
+        use_pattern = self.pattern_check.isChecked()
+        pattern_name = self.pattern_combo.currentData() if use_pattern else None
+        color = None if use_pattern else _parse_hex_color(self.color_edit.text(), resolver=resolver)
         tolerance = int(self.tol_spin.value())
         expect_exists = bool(self.expect_combo.currentData()) if self.expect_combo.currentIndex() >= 0 else True
-        return region, color, tolerance, expect_exists
+        return region, color, pattern_name, tolerance, expect_exists
 
     def _toggle_test(self):
         if self._testing:
             self._stop_testing()
             return
         try:
-            region, color, tol, expect = self._parse_inputs()
+            region, color, pattern_name, tol, expect = self._parse_inputs()
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "입력 오류", str(exc))
             return
@@ -9397,6 +10151,7 @@ class PixelTestDialog(QtWidgets.QDialog):
             "region_raw": self.region_edit.text().strip(),
             "color": color,
             "color_raw": self.color_edit.text().strip(),
+            "pattern": pattern_name,
             "tolerance": tol,
             "expect_exists": expect,
             "interval": int(self.interval_spin.value()),
@@ -9434,6 +10189,13 @@ class PixelTestDialog(QtWidgets.QDialog):
             idx = self.expect_combo.findData(bool(expect))
             if idx >= 0:
                 self.expect_combo.setCurrentIndex(idx)
+        pat = state.get("pattern")
+        if pat is not None:
+            idxp = self.pattern_combo.findData(pat)
+            if idxp >= 0:
+                self.pattern_combo.setCurrentIndex(idxp)
+                self.pattern_check.setChecked(True)
+        self._sync_pattern_visibility()
         try:
             interval = int(state.get("interval", 200))
             self.interval_spin.setValue(interval)
@@ -9449,6 +10211,7 @@ class PixelTestDialog(QtWidgets.QDialog):
             "tolerance": int(self.tol_spin.value()),
             "expect_exists": bool(self.expect_combo.currentData()) if self.expect_combo.currentIndex() >= 0 else True,
             "interval": int(self.interval_spin.value()),
+            "pattern": self.pattern_combo.currentData() if self.pattern_check.isChecked() else None,
         }
         self._save_state_cb(data)
 
@@ -11739,6 +12502,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         pixel_test_action = QtGui.QAction("픽셀 테스트", self)
         pixel_test_action.triggered.connect(self._open_pixel_test_dialog)
         feature_menu.addAction(pixel_test_action)
+        pattern_action = QtGui.QAction("픽셀 패턴 관리", self)
+        pattern_action.triggered.connect(lambda: self._open_pattern_manager())
+        feature_menu.addAction(pattern_action)
         preset_transfer_action = QtGui.QAction("프리셋 옮기기...", self)
         preset_transfer_action.triggered.connect(self._open_preset_transfer_dialog)
         feature_menu.addAction(preset_transfer_action)
@@ -11927,6 +12693,8 @@ class MacroWindow(QtWidgets.QMainWindow):
                 stop_test=self._stop_pixel_test_loop,
                 state=dialog_state,
                 save_state_cb=self._persist_pixel_test_state,
+                pattern_provider=self._pattern_names,
+                open_pattern_manager=self._open_pattern_manager,
             )
         else:
             self._pixel_test_dialog._load_state(dialog_state)
@@ -12886,6 +13654,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             base_resolution=base_resolution,
             base_scale_percent=base_scale,
             transform_matrix=getattr(self.profile, "transform_matrix", None),
+            pixel_patterns=copy.deepcopy(getattr(self.profile, "pixel_patterns", {}) or {}),
         )
 
     # App state ----------------------------------------------------------
@@ -13986,10 +14755,12 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._stop_pixel_test_loop()
         try:
             region = tuple(int(v) for v in config.get("region", (0, 0, 1, 1)))
-            color = tuple(int(c) for c in config.get("color", (0, 0, 0)))
+            color_raw = config.get("color", (0, 0, 0))
+            color = tuple(int(c) for c in color_raw) if color_raw is not None else None
             tolerance = int(config.get("tolerance", 0))
             expect_exists = bool(config.get("expect_exists", True))
             interval = max(50, int(config.get("interval", 200) or 200))
+            pattern_name = config.get("pattern")
         except Exception as exc:
             self._append_log(f"픽셀 테스트 시작 실패: {exc}")
             return
@@ -13999,6 +14770,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._pixel_test_config = {
             "region": region,
             "color": color,
+            "pattern": pattern_name,
             "tolerance": tolerance,
             "expect_exists": expect_exists,
             "source": source,
@@ -14019,6 +14791,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 {
                     "region": config.get("region_raw") or ",".join(str(v) for v in region),
                     "color": config.get("color_raw") or _rgb_to_hex(color),
+                    "pattern": pattern_name,
                     "tolerance": tolerance,
                     "expect_exists": expect_exists,
                     "interval": interval,
@@ -14033,6 +14806,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             expect_exists=expect_exists,
             source=source,
             label=label,
+            pattern=pattern_name,
         )
         self._open_debugger()
 
@@ -14664,7 +15438,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             event.ignore()
             return
         # 최신 스크린샷 설정을 저장
-        self._persist_screenshot_state(self._current_screenshot_state())
+        self._persist_screenshot_state(_current_screenshot_state(self))
         self._stop_condition_debug_session(notify=False)
         self._stop_pixel_test_loop()
         if self.debugger:
@@ -14687,19 +15461,71 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.engine.stop()
         return super().closeEvent(event)
 
-    def _current_screenshot_state(self) -> dict:
-        return {
-            "interval": self.screenshot_manager.interval,
-            "format": self.screenshot_manager.image_format,
-            "jpeg_quality": self.screenshot_manager.jpeg_quality,
-            "png_compress_level": self.screenshot_manager.png_compress_level,
-            "queue_size": self.screenshot_manager.max_queue_size,
-            "hotkey_start": self.screenshot_manager.hotkeys.start,
-            "hotkey_stop": self.screenshot_manager.hotkeys.stop,
-            "hotkey_capture": self.screenshot_manager.hotkeys.capture,
-            "hotkey_enabled": self.screenshot_manager.hotkeys.enabled,
-        }
+def _current_screenshot_state(self) -> dict:
+    return {
+        "interval": self.screenshot_manager.interval,
+        "format": self.screenshot_manager.image_format,
+        "jpeg_quality": self.screenshot_manager.jpeg_quality,
+        "png_compress_level": self.screenshot_manager.png_compress_level,
+        "queue_size": self.screenshot_manager.max_queue_size,
+        "hotkey_start": self.screenshot_manager.hotkeys.start,
+        "hotkey_stop": self.screenshot_manager.hotkeys.stop,
+        "hotkey_capture": self.screenshot_manager.hotkeys.capture,
+        "hotkey_enabled": self.screenshot_manager.hotkeys.enabled,
+    }
 
+
+def _mw_pattern_names(self) -> list[str]:
+    patterns = getattr(self.profile, "pixel_patterns", {}) or {}
+    return list(patterns.keys())
+
+
+def _mw_open_pattern_manager(self, parent=None):
+    dlg = PixelPatternManagerDialog(
+        parent or self,
+        patterns=getattr(self.profile, "pixel_patterns", {}),
+        open_image_viewer=getattr(self, "_open_image_viewer_dialog", None),
+        sample_provider=getattr(self, "_current_viewer_sample", None),
+    )
+    if _run_dialog_non_modal(dlg):
+        try:
+            dlg._save_current_pattern(name_hint=dlg._current_name)
+        except Exception:
+            pass
+        self.profile.pixel_patterns = copy.deepcopy(dlg.patterns)
+        if hasattr(self, "engine"):
+            self.engine._pixel_patterns = copy.deepcopy(dlg.patterns)
+        if hasattr(self, "_mark_dirty"):
+            try:
+                self._mark_dirty(True)
+            except Exception:
+                pass
+
+
+# Monkey patch helper methods onto MacroWindow without touching the large class body above.
+try:
+    MacroWindow._pattern_names = _mw_pattern_names  # type: ignore[attr-defined]
+    MacroWindow._open_pattern_manager = _mw_open_pattern_manager  # type: ignore[attr-defined]
+    def _mw_current_viewer_sample(self):
+        dlg = getattr(self, "_image_viewer_dialog", None)
+        sample = getattr(dlg, "_last_sample", None) if dlg else None
+        if not sample or not isinstance(sample, dict):
+            return None
+        pos = sample.get("pos")
+        if not pos or not isinstance(pos, (list, tuple)) or len(pos) != 2:
+            return None
+        color = sample.get("color")
+        if isinstance(color, QtGui.QColor):
+            color_val = color
+        elif isinstance(color, (list, tuple)) and len(color) >= 3:
+            color_val = QtGui.QColor(int(color[0]), int(color[1]), int(color[2]))
+        else:
+            return None
+        return {"pos": (int(pos[0]), int(pos[1])), "color": color_val}
+
+    MacroWindow._current_viewer_sample = _mw_current_viewer_sample  # type: ignore[attr-defined]
+except Exception:
+    pass
 
 def main():
     if not _is_admin():

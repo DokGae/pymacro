@@ -1,84 +1,54 @@
 {
-  "macros": [
-    {
-      "trigger_key": "mouse1",
-      "mode": "hold",
-      "name": null,
-      "description": null,
-      "suppress_trigger": false,
-      "enabled": true,
-      "cycle_count": null,
-      "actions": [
-        {
-          "type": "press",
-          "name": null,
-          "description": null,
-          "enabled": true,
-          "once_per_macro": false,
-          "key": "t",
-          "repeat": 1,
-          "repeat_raw": null,
-          "var_name": null,
-          "var_value_raw": null,
-          "confirm_fails": 1,
-          "sleep_ms": 0,
-          "condition": null,
-          "label": null,
-          "goto_label": null,
-          "mouse_button": null,
-          "mouse_pos": null,
-          "mouse_pos_raw": null,
-          "pixel_region": null,
-          "pixel_region_raw": null,
-          "pixel_target": null,
-          "group_mode": null,
-          "group_repeat": null,
-          "timer_index": null,
-          "timer_value": null,
-          "key_delay_override_enabled": false,
-          "key_delay_override": null
-        },
-        {
-          "type": "sleep",
-          "name": null,
-          "description": null,
-          "enabled": true,
-          "once_per_macro": false,
-          "key": null,
-          "repeat": 1,
-          "repeat_raw": null,
-          "var_name": null,
-          "var_value_raw": null,
-          "confirm_fails": 1,
-          "sleep_ms": "100",
-          "condition": null,
-          "label": null,
-          "goto_label": null,
-          "mouse_button": null,
-          "mouse_pos": null,
-          "mouse_pos_raw": null,
-          "pixel_region": null,
-          "pixel_region_raw": null,
-          "pixel_target": null,
-          "group_mode": null,
-          "group_repeat": null,
-          "timer_index": null,
-          "timer_value": null,
-          "key_delay_override_enabled": false,
-          "key_delay_override": null
-        }
-      ],
-      "stop_actions": [],
-      "stop_others_on_trigger": false,
-      "suspend_others_while_running": false,
-      "scope": "global",
-      "app_targets": []
-    }
-  ],
+  "macros": [],
   "pixel_region": "0,0,100,100",
   "pixel_color": "ff0000",
   "pixel_tolerance": 10,
   "pixel_expect_exists": true,
+  "pixel_patterns": {
+    "pattern1": {
+      "name": "pattern1",
+      "tolerance": 10,
+      "description": null,
+      "points": []
+    },
+    "pattern2": {
+      "name": "pattern2",
+      "tolerance": 10,
+      "description": null,
+      "points": [
+        {
+          "dx": 0,
+          "dy": 0,
+          "color": [
+            209,
+            179,
+            111
+          ],
+          "tolerance": null
+        },
+        {
+          "dx": 0,
+          "dy": 2,
+          "color": [
+            202,
+            178,
+            113
+          ],
+          "tolerance": null
+        },
+        {
+          "dx": 3,
+          "dy": 4,
+          "color": [
+            215,
+            190,
+            135
+          ],
+          "tolerance": null
+        }
+      ]
+    }
+  },
   "keyboard_device_id": 1,
   "keyboard_hardware_id": "HID\\VID_3434&PID_D030&REV_=300&MI_02&Col01",
   "mouse_device_id": 11,

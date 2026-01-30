@@ -20,7 +20,15 @@ from PIL import Image
 from lib.interception import Interception, KeyFilter, KeyState
 from lib.input_backend import InterceptionBackend, KeyboardBackendStatus, KeyDelayConfig, SoftwareBackend
 from lib.keyboard import get_interception, get_keystate, to_scan_code
-from lib.pixel import RGB, Region, capture_region, capture_region_np, find_color_in_region
+from lib.pixel import (
+    RGB,
+    Region,
+    PixelPattern,
+    capture_region,
+    capture_region_np,
+    find_color_in_region,
+    find_pattern_in_region,
+)
 from lib.processes import get_foreground_process
 
 ConditionType = Literal["key", "pixel", "all", "any", "var", "timer"]
@@ -255,6 +263,7 @@ class Condition:
     region_raw: Optional[str] = None
     color: Optional[RGB] = None
     color_raw: Optional[str] = None
+    pixel_pattern: Optional[str] = None  # 이름 기반으로 패턴 참조
     tolerance: int = 0
     pixel_exists: bool = True
     conditions: List["Condition"] = field(default_factory=list)
@@ -330,6 +339,7 @@ class Condition:
             pixel_exists = bool(pixel_exists_raw)
         region, region_raw = cls._parse_region(data.get("region"), resolver)
         color, color_raw = cls._parse_color(data.get("color"), resolver)
+        pattern_name = data.get("pixel_pattern") or data.get("pattern_name")
         var_name = data.get("var_name")
         var_value_raw = data.get("var_value_raw", data.get("var_value"))
         var_value = None
@@ -380,6 +390,7 @@ class Condition:
             region_raw=region_raw,
             color=color,
             color_raw=color_raw,
+            pixel_pattern=str(pattern_name).strip() if pattern_name else None,
             tolerance=int(data.get("tolerance", 0) or 0),
             pixel_exists=pixel_exists,
             conditions=conds,
@@ -403,6 +414,7 @@ class Condition:
             "var_operator": self.var_operator,
             "region": self.region_raw if self.region_raw is not None else (list(self.region) if self.region else None),
             "color": self.color_raw if self.color_raw is not None else (list(self.color) if self.color else None),
+            "pixel_pattern": self.pixel_pattern,
             "tolerance": self.tolerance,
             "pixel_exists": self.pixel_exists,
             "timer_index": self.timer_index,
@@ -1207,6 +1219,7 @@ class MacroProfile:
     pixel_color_raw: Optional[str] = None
     pixel_tolerance: int = 10
     pixel_expect_exists: bool = True
+    pixel_patterns: Dict[str, PixelPattern] = field(default_factory=dict)
     keyboard_device_id: Optional[int] = None
     keyboard_hardware_id: Optional[str] = None
     mouse_device_id: Optional[int] = None
@@ -1271,6 +1284,21 @@ class MacroProfile:
         resolver = VariableResolver(variables)
         base_resolution = cls._parse_resolution(data.get("base_resolution"), DEFAULT_BASE_RESOLUTION)
         base_scale = cls._parse_scale_percent(data.get("base_scale_percent"), DEFAULT_BASE_SCALE)
+        patterns_raw = data.get("pixel_patterns") or {}
+        patterns: Dict[str, PixelPattern] = {}
+        if isinstance(patterns_raw, list):
+            for item in patterns_raw:
+                if isinstance(item, dict):
+                    pat = PixelPattern.from_dict(item)
+                    patterns[pat.name] = pat
+        elif isinstance(patterns_raw, dict):
+            for name, item in patterns_raw.items():
+                if not isinstance(item, dict):
+                    continue
+                merged = dict(item)
+                merged.setdefault("name", name)
+                pat = PixelPattern.from_dict(merged)
+                patterns[pat.name] = pat
 
         region_raw = data.get("pixel_region")
         region_val = region_raw if region_raw is not None else (0, 0, 100, 100)
@@ -1330,6 +1358,7 @@ class MacroProfile:
             pixel_color_raw=color_raw if isinstance(color_raw, str) else None,
             pixel_tolerance=tol,
             pixel_expect_exists=expect_exists,
+            pixel_patterns=patterns,
             keyboard_device_id=device_id,
             keyboard_hardware_id=hwid,
             mouse_device_id=mouse_device_id,
@@ -1359,6 +1388,7 @@ class MacroProfile:
             "pixel_color": self.pixel_color_raw if self.pixel_color_raw is not None else list(self.pixel_color),
             "pixel_tolerance": self.pixel_tolerance,
             "pixel_expect_exists": self.pixel_expect_exists,
+            "pixel_patterns": {name: pat.to_dict() for name, pat in (getattr(self, "pixel_patterns", {}) or {}).items()},
             "keyboard_device_id": self.keyboard_device_id,
             "keyboard_hardware_id": self.keyboard_hardware_id,
             "mouse_device_id": self.mouse_device_id,
@@ -2326,6 +2356,8 @@ class MacroEngine:
         self._pixel_test_color: RGB = (0, 0, 0)
         self._pixel_test_tolerance: int = 0
         self._pixel_test_expect_exists: bool = True
+        self._pixel_test_pattern: Optional[str] = None
+        self._pixel_patterns: Dict[str, PixelPattern] = getattr(self._profile, "pixel_patterns", {}) or {}
         self._debug_image_override: Optional[np.ndarray] = None
         self._debug_image_label: Optional[str] = None
         self._keyboard_device_id: Optional[int] = self._profile.keyboard_device_id
@@ -2602,6 +2634,7 @@ class MacroEngine:
         self._apply_mouse_device(mouse_device_id, mouse_hardware_id, log=False)
         self._select_backend(self._input_mode, allow_fallback=True, log=True)
         self._refresh_swallow(app_ctx)
+        self._pixel_patterns = getattr(self._profile, "pixel_patterns", {}) or {}
         # 픽셀 테스트 설정도 프로필에서 동기화
         try:
             expect_exists = True
@@ -2612,11 +2645,20 @@ class MacroEngine:
             pass
         self._emit_state()
 
-    def update_pixel_test(self, region: Region, color: RGB, tolerance: int, expect_exists: bool = True):
+    def update_pixel_test(
+        self,
+        region: Region,
+        color: Optional[RGB],
+        tolerance: int,
+        expect_exists: bool = True,
+        pattern: Optional[str] = None,
+    ):
         self._pixel_test_region = tuple(int(v) for v in region)
-        self._pixel_test_color = tuple(int(c) for c in color)  # type: ignore[assignment]
+        if color is not None:
+            self._pixel_test_color = tuple(int(c) for c in color)  # type: ignore[assignment]
         self._pixel_test_tolerance = int(tolerance)
         self._pixel_test_expect_exists = bool(expect_exists)
+        self._pixel_test_pattern = pattern
 
     def run_pixel_test(self, *, source: Optional[str] = None):
         self._run_pixel_test(source=source)
@@ -2625,11 +2667,12 @@ class MacroEngine:
         self,
         *,
         region: Region,
-        color: RGB,
+        color: Optional[RGB],
         tolerance: int,
         expect_exists: bool = True,
         source: Optional[str] = None,
         label: Optional[str] = None,
+        pattern: Optional[str] = None,
     ):
         self._run_pixel_test(
             region=region,
@@ -2638,6 +2681,7 @@ class MacroEngine:
             expect_exists=expect_exists,
             source=source,
             label=label,
+            pattern=pattern,
         )
 
     def activate(self):
@@ -3668,16 +3712,26 @@ class MacroEngine:
                         color = Condition._parse_color(cond.color_raw, resolver)[0]
                 else:
                     color = cond.color
-            if region is None or color is None:
+            pattern_name = getattr(cond, "pixel_pattern", None)
+            pattern_obj = self._pixel_patterns.get(pattern_name) if pattern_name else None
+            if region is None or (color is None and pattern_obj is None):
                 return False
             region_tuple: Region = tuple(int(v) for v in region)
-            color_tuple: RGB = tuple(int(c) for c in color)
+            color_tuple: Optional[RGB] = tuple(int(c) for c in color) if color is not None else None
             expect_exists = getattr(cond, "pixel_exists", True)
-            check = self._pixel_check(region_tuple, color_tuple, cond.tolerance, expect_exists=expect_exists, pixel_cache=pixel_cache)
+            check = self._pixel_check(
+                region_tuple,
+                color_tuple,
+                cond.tolerance,
+                expect_exists=expect_exists,
+                pixel_cache=pixel_cache,
+                pattern=pattern_obj,
+            )
             base_result = bool(check.get("result"))
             detail["pixel"] = {
                 "region": region_tuple,
                 "color": color_tuple,
+                "pattern": pattern_name,
                 "tolerance": cond.tolerance,
                 "expect_exists": expect_exists,
                 "found": check.get("found"),
@@ -3903,18 +3957,21 @@ class MacroEngine:
                             color = Condition._parse_color(cond.color_raw, resolver)[0]
                     else:
                         color = cond.color
-                if region is None or color is None:
+                pattern_name = getattr(cond, "pixel_pattern", None)
+                pattern_obj = self._pixel_patterns.get(pattern_name) if pattern_name else None
+                if region is None or (color is None and pattern_obj is None):
                     raise ValueError("영역/색상을 확인하세요.")
                 region_tuple: Region = tuple(int(v) for v in region)
-                color_tuple: RGB = tuple(int(c) for c in color)
+                color_tuple: Optional[RGB] = tuple(int(c) for c in color) if color is not None else None
                 expect_exists = getattr(cond, "pixel_exists", True)
                 check = self._pixel_check(
-                    region_tuple, color_tuple, cond.tolerance, expect_exists=expect_exists, include_image=True
+                    region_tuple, color_tuple, cond.tolerance, expect_exists=expect_exists, include_image=True, pattern=pattern_obj
                 )
                 base_result = bool(check.get("result"))
                 detail["pixel"] = {
                     "region": region_tuple,
                     "color": color_tuple,
+                    "pattern": pattern_name,
                     "tolerance": cond.tolerance,
                     "expect_exists": expect_exists,
                     "found": check.get("found"),
@@ -4034,12 +4091,13 @@ class MacroEngine:
     def _pixel_check(
         self,
         region: Region,
-        color: RGB,
+        color: Optional[RGB],
         tolerance: int,
         *,
         expect_exists: bool = True,
         include_image: bool = False,
         pixel_cache: Optional[Dict[Tuple[int, int, int, int], Any]] = None,
+        pattern: Optional[PixelPattern] = None,
     ) -> Dict[str, Any]:
         x, y, w, h = region
         cache_key = (x, y, w, h)
@@ -4063,24 +4121,53 @@ class MacroEngine:
         if arr is None:
             arr = np.zeros((max(1, h), max(1, w), 3), dtype=np.uint8)
 
-        target = np.array(color, dtype=np.int16)
-        diff = np.abs(arr.astype(np.int16) - target).max(axis=2)
-        mask = diff <= int(tolerance)
-        found = bool(mask.any())
+        found = False
         coord = None
+        sample_color: Optional[Tuple[int, int, int]] = None
 
-        if found:
-            py, px = np.argwhere(mask)[0]
-            coord = (x + int(px), y + int(py))
-
-        sample_coord = coord or (x + max(0, w // 2), y + max(0, h // 2))
-        try:
-            sy = int(sample_coord[1] - y)
-            sx = int(sample_coord[0] - x)
-            sample_color_raw = arr[sy, sx]
-            sample_color: Optional[Tuple[int, int, int]] = tuple(int(c) for c in sample_color_raw)  # type: ignore[arg-type]
-        except Exception:
-            sample_color = None
+        if pattern is not None and pattern.points:
+            norm_pat = pattern.normalized()
+            max_dx = max(p.dx for p in norm_pat.points)
+            max_dy = max(p.dy for p in norm_pat.points)
+            work_w = w - max_dx
+            work_h = h - max_dy
+            if work_w > 0 and work_h > 0:
+                mask_all = np.ones((work_h, work_w), dtype=bool)
+                for pt in norm_pat.points:
+                    pt_tol = int(pt.tolerance if pt.tolerance is not None else tolerance if tolerance is not None else pattern.tolerance)
+                    sub = arr[pt.dy : pt.dy + work_h, pt.dx : pt.dx + work_w]
+                    diff = np.abs(sub.astype(np.int16) - np.array(pt.color, dtype=np.int16)).max(axis=2)
+                    mask_all &= diff <= pt_tol
+                    if not mask_all.any():
+                        break
+                found = bool(mask_all.any())
+                if found:
+                    py, px = np.argwhere(mask_all)[0]
+                    coord = (x + int(px), y + int(py))
+            sample_coord = coord or (x + max(0, w // 2), y + max(0, h // 2))
+            try:
+                sy = int(sample_coord[1] - y)
+                sx = int(sample_coord[0] - x)
+                sample_color_raw = arr[sy, sx]
+                sample_color = tuple(int(c) for c in sample_color_raw)  # type: ignore[arg-type]
+            except Exception:
+                sample_color = None
+        else:
+            target = np.array(color if color is not None else (0, 0, 0), dtype=np.int16)
+            diff = np.abs(arr.astype(np.int16) - target).max(axis=2)
+            mask = diff <= int(tolerance)
+            found = bool(mask.any())
+            if found:
+                py, px = np.argwhere(mask)[0]
+                coord = (x + int(px), y + int(py))
+            sample_coord = coord or (x + max(0, w // 2), y + max(0, h // 2))
+            try:
+                sy = int(sample_coord[1] - y)
+                sx = int(sample_coord[0] - x)
+                sample_color_raw = arr[sy, sx]
+                sample_color = tuple(int(c) for c in sample_color_raw)  # type: ignore[arg-type]
+            except Exception:
+                sample_color = None
 
         result = found if expect_exists else (not found)
         payload = {
@@ -4090,6 +4177,7 @@ class MacroEngine:
             "sample_coord": sample_coord,
             "sample_color": sample_color,
             "expect_exists": expect_exists,
+            "pattern": getattr(pattern, "name", None),
         }
         if include_image:
             try:
@@ -4106,18 +4194,25 @@ class MacroEngine:
         *,
         region: Optional[Region] = None,
         color: Optional[RGB] = None,
+        pattern: Optional[str] = None,
         tolerance: Optional[int] = None,
         expect_exists: Optional[bool] = None,
         source: Optional[str] = None,
         label: Optional[str] = None,
     ):
         region_val: Region = tuple(int(v) for v in (region or self._pixel_test_region))
-        color_val: RGB = tuple(int(c) for c in (color or self._pixel_test_color))  # type: ignore[assignment]
+        pattern_name = pattern if pattern is not None else self._pixel_test_pattern
+        pat_obj = self._pixel_patterns.get(pattern_name) if pattern_name else None
+        color_val: Optional[RGB] = None
+        if color is not None:
+            color_val = tuple(int(c) for c in color)  # type: ignore[assignment]
+        elif pat_obj is None:
+            color_val = tuple(int(c) for c in self._pixel_test_color)  # type: ignore[assignment]
         tol_val = int(tolerance if tolerance is not None else self._pixel_test_tolerance)
         expect = self._pixel_test_expect_exists if expect_exists is None else bool(expect_exists)
         ts = time.time()
         try:
-            check = self._pixel_check(region_val, color_val, tol_val, expect_exists=expect)
+            check = self._pixel_check(region_val, color_val, tol_val, expect_exists=expect, pattern=pat_obj)
             payload = {
                 "type": "pixel_test",
                 "found": check.get("found"),
@@ -4125,6 +4220,7 @@ class MacroEngine:
                 "coord": check.get("coord"),
                 "sample_coord": check.get("sample_coord"),
                 "sample_color": check.get("sample_color"),
+                "pattern": pattern_name,
                 "expect_exists": expect,
                 "region": region_val,
                 "color": color_val,
@@ -4144,6 +4240,7 @@ class MacroEngine:
                     "error": str(exc),
                     "region": region_val,
                     "color": color_val,
+                    "pattern": pattern_name,
                     "tolerance": tol_val,
                     "source": source or "manual",
                     "label": label,
