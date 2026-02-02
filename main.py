@@ -1780,6 +1780,7 @@ class ConditionDialog(QtWidgets.QDialog):
         screenshot_manager=None,
         pattern_provider=None,
         open_pattern_manager=None,
+        trigger_keys_provider=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("조건 편집")
@@ -1806,6 +1807,7 @@ class ConditionDialog(QtWidgets.QDialog):
         self._viewer_image_provider = None
         self._pattern_provider = pattern_provider
         self._open_pattern_manager = open_pattern_manager
+        self._trigger_keys_provider = trigger_keys_provider
 
         self.root_condition: Condition | None = None
 
@@ -4844,6 +4846,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         screenshot_manager=None,
         pattern_provider=None,
         open_pattern_manager=None,
+        trigger_keys_provider=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("액션 설정")
@@ -4870,6 +4873,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._screenshot_manager = screenshot_manager
         self._pattern_provider = pattern_provider
         self._open_pattern_manager = open_pattern_manager
+        self._trigger_keys_provider = trigger_keys_provider
         self._condition: Condition | None = None
         self._existing_children: List[Action] = []
         self._existing_else: List[Action] = []
@@ -4994,6 +4998,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._install_var_completer(self.var_value_edit, "var")
         self._install_var_completer(self.key_edit, "key")
         self._install_var_completer(self.mouse_pos_edit, "var")
+        self.key_warn_label = QtWidgets.QLabel("")
+        self.key_warn_label.setStyleSheet("color:#c00;font-weight:bold;")
+        self.key_warn_label.setVisible(False)
         if callable(self._variable_provider):
             names = self._variable_provider("var")
             comp = QtWidgets.QCompleter(names, self.var_name_edit)
@@ -5010,6 +5017,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow(self.once_check)
         form.addRow(self.force_first_check)
         form.addRow("키", self.key_edit)
+        form.addRow("", self.key_warn_label)
         form.addRow("마우스 버튼", self.mouse_button_combo)
         form.addRow("마우스 좌표 x,y (선택)", self.mouse_pos_edit)
         form.addRow("반복 횟수", self.repeat_edit)
@@ -5055,12 +5063,16 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.edit_cond_btn.clicked.connect(self._edit_condition)
         self.type_combo.currentIndexChanged.connect(self._sync_fields)
         self.group_mode_combo.currentIndexChanged.connect(self._sync_fields)
+        self.key_edit.textEdited.connect(self._update_trigger_warning)
+        self.mouse_button_combo.currentIndexChanged.connect(self._update_trigger_warning)
+        self.type_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self._toggle_override_enabled()
 
         if action:
             self._load(action)
         else:
             self._sync_fields()
+            self._update_trigger_warning()
 
     def showEvent(self, event: QtGui.QShowEvent):
         super().showEvent(event)
@@ -5263,6 +5275,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             screenshot_manager=self._screenshot_manager,
             pattern_provider=self._pattern_provider if hasattr(self, "_pattern_provider") else None,
             open_pattern_manager=self._open_pattern_manager if hasattr(self, "_open_pattern_manager") else None,
+            trigger_keys_provider=self._trigger_keys_provider,
         )
         if not _run_dialog_non_modal(dlg):
             return
@@ -5357,6 +5370,33 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._existing_children = copy.deepcopy(getattr(act, "actions", []))
         self._existing_else = copy.deepcopy(getattr(act, "else_actions", []))
         self._sync_fields()
+        self._update_trigger_warning()
+
+    def _update_trigger_warning(self):
+        if not hasattr(self, "key_warn_label"):
+            return
+        typ = self._current_type()
+        act_key: str | None = None
+        if typ in ("press", "down", "up"):
+            act_key = (self.key_edit.text() or "").strip().lower()
+        elif typ in ("mouse_click", "mouse_down", "mouse_up", "mouse_move"):
+            act_key = (self.mouse_button_combo.currentData() or "").strip().lower()
+        warn = ""
+        if act_key and callable(self._trigger_keys_provider):
+            try:
+                trig_keys = self._trigger_keys_provider() or []
+            except Exception:
+                trig_keys = []
+            for trig in trig_keys:
+                try:
+                    toks = set(parse_trigger_keys(trig))
+                except Exception:
+                    toks = {trig.lower()}
+                if act_key in toks:
+                    warn = "트리거 키에 포함된 키입니다. 실행 시 트리거가 풀릴 수 있습니다."
+                    break
+        self.key_warn_label.setText(warn)
+        self.key_warn_label.setVisible(bool(warn))
 
     def get_action(self) -> Action:
         typ = self._current_type()
@@ -6160,6 +6200,12 @@ class MacroDialog(QtWidgets.QDialog):
                 triggers.append(MacroTrigger(key=key, mode=mode, hold_press_seconds=hold))
         return triggers
 
+    def _current_trigger_keys(self) -> list[str]:
+        try:
+            return [t.key for t in self._collect_triggers()]
+        except Exception:
+            return []
+
     def _load_triggers(self, triggers: list[MacroTrigger]):
         self.trigger_table.setRowCount(0)
         for idx, trig in enumerate(triggers or []):
@@ -6420,6 +6466,7 @@ class MacroDialog(QtWidgets.QDialog):
             screenshot_manager=self._screenshot_manager,
             pattern_provider=self._pattern_names,
             open_pattern_manager=self._open_pattern_manager,
+            trigger_keys_provider=self._current_trigger_keys,
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -6691,10 +6738,11 @@ class MacroDialog(QtWidgets.QDialog):
                 save_image_viewer_state=self._save_image_viewer_state,
                 open_screenshot_dialog=self._open_screenshot_dialog_fn,
                 screenshot_hotkeys_provider=self._screenshot_hotkeys_provider,
-                screenshot_manager=self._screenshot_manager,
-                pattern_provider=self._pattern_names,
-                open_pattern_manager=self._open_pattern_manager,
-            )
+            screenshot_manager=self._screenshot_manager,
+            pattern_provider=self._pattern_names,
+            open_pattern_manager=self._open_pattern_manager,
+            trigger_keys_provider=self._current_trigger_keys,
+        )
             if _run_dialog_non_modal(dlg):
                 try:
                     new_act = dlg.get_action()
@@ -6781,6 +6829,7 @@ class MacroDialog(QtWidgets.QDialog):
             screenshot_manager=self._screenshot_manager,
             pattern_provider=self._pattern_names,
             open_pattern_manager=self._open_pattern_manager,
+            trigger_keys_provider=self._current_trigger_keys,
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -13262,6 +13311,11 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.log_enable_checkbox.setChecked(self._log_enabled)
         self.log_enable_checkbox.toggled.connect(self._toggle_log_enabled)
         toggle_row.addWidget(self.log_enable_checkbox)
+        self.log_clear_btn = QtWidgets.QToolButton()
+        self.log_clear_btn.setText("초기화")
+        self.log_clear_btn.setAutoRaise(True)
+        self.log_clear_btn.clicked.connect(self._clear_log_view)
+        toggle_row.addWidget(self.log_clear_btn)
         toggle_row.addStretch()
         layout.addLayout(toggle_row)
         self.log_view = QtWidgets.QTextEdit()
@@ -15268,6 +15322,10 @@ class MacroWindow(QtWidgets.QMainWindow):
                 self.log_view.clear()
         if hasattr(self, "log_group") and self.log_group:
             self.log_group.setVisible(self._log_enabled)
+
+    def _clear_log_view(self):
+        if hasattr(self, "log_view") and self.log_view:
+            self.log_view.clear()
 
     def _append_log(self, message: str, *, rich: bool = False):
         if not getattr(self, "_log_enabled", True):
