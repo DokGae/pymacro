@@ -2575,7 +2575,8 @@ class MacroEngine:
                 continue
             if not self._interaction_target_allowed(actor_macro, actor_idx, target_macro, idx):
                 continue
-            is_toggle_runner = runner.is_alive() and any(getattr(t, "mode", "") == "toggle" for t in self._macro_triggers(target_macro))
+            toggle_on = bool(self._toggle_states.get(idx, False))
+            is_toggle_runner = runner.is_alive() and toggle_on
             if mode == "stop":
                 runner.stop()
                 self._macro_runners.pop(idx, None)
@@ -2583,12 +2584,16 @@ class MacroEngine:
             elif mode == "suspend":
                 if is_toggle_runner:
                     self._suspended_toggle_indices.add(idx)
-                    self._suspended_toggle_states[idx] = bool(self._toggle_states.get(idx, False))
+                    self._suspended_toggle_states[idx] = toggle_on
                     self._suspended_toggle_cycles[idx] = self._resume_cycle_for_runner(runner)
                     runner.stop(release_inputs=False, run_stop_actions=False)
                     self._record_suspended_holds(idx, runner)
                 else:
-                    runner.stop()
+                    try:
+                        self._record_suspended_holds(idx, runner)
+                    except Exception:
+                        pass
+                    runner.stop(release_inputs=False, run_stop_actions=False)
                 self._macro_runners.pop(idx, None)
                 self._clear_macro_state(idx)
                 suspended = True
@@ -3641,10 +3646,11 @@ class MacroEngine:
                 macro = self._profile.macros[idx]
             except Exception:
                 macro = None
-            is_toggle_runner = macro and runner.is_alive() and any(getattr(t, "mode", "") == "toggle" for t in self._macro_triggers(macro))
+            toggle_on = bool(self._toggle_states.get(idx, False))
+            is_toggle_runner = macro and runner.is_alive() and toggle_on
             if is_toggle_runner:
                 self._suspended_toggle_indices.add(idx)
-                self._suspended_toggle_states[idx] = bool(self._toggle_states.get(idx, False))
+                self._suspended_toggle_states[idx] = toggle_on
                 self._suspended_toggle_cycles[idx] = self._resume_cycle_for_runner(runner)
                 self._record_suspended_holds(idx, runner)
                 runner.stop(release_inputs=False, run_stop_actions=False)
@@ -3660,6 +3666,32 @@ class MacroEngine:
             self._guard_macro_idx = except_idx
 
     def _resume_suspended_toggles(self):
+        # Restore held inputs for suspended non-toggle macros so their one-time holds survive temporary guard macros.
+        non_toggle_indices = [i for i in list(self._suspended_hold_inputs) if i not in self._suspended_toggle_indices]
+        for idx in non_toggle_indices:
+            held = self._suspended_hold_inputs.pop(idx, {}) or {}
+            try:
+                macro = self._profile.macros[idx]
+            except Exception:
+                macro = None
+            enabled = macro and getattr(macro, "enabled", True)
+            if enabled:
+                release_keys = set(held.get("release_keys", set()))
+                release_mouse = set(held.get("release_mouse", set()))
+                for key in release_keys:
+                    try:
+                        self._send_key("down", key, hold_ms=0)
+                    except Exception:
+                        pass
+                for btn in release_mouse:
+                    try:
+                        self._send_mouse("mouse_down", btn, hold_ms=0)
+                    except Exception:
+                        pass
+            else:
+                all_keys = set(held.get("release_keys", set())) | set(held.get("keep_keys", set()))
+                all_mouse = set(held.get("release_mouse", set())) | set(held.get("keep_mouse", set()))
+                self._release_hold_inputs({"keys": all_keys, "mouse": all_mouse})
         for idx in list(self._suspended_toggle_indices):
             start_cycle = self._suspended_toggle_cycles.pop(idx, 0)
             was_on = self._suspended_toggle_states.pop(idx, False)
@@ -3728,7 +3760,6 @@ class MacroEngine:
         if macro_idx not in self._suspended_toggle_indices:
             self._suspended_toggle_cycles.pop(macro_idx, None)
             self._suspended_toggle_states.pop(macro_idx, None)
-            self._suspended_hold_inputs.pop(macro_idx, None)
         self._hold_exhausted_indices.discard(macro_idx)
 
     def _update_hold_trigger(self, macro_idx: int, trig_idx: int, macro: Macro, trigger: MacroTrigger) -> bool:

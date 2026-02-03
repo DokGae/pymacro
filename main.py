@@ -54,6 +54,44 @@ from lib.keyboard import get_keystate
 from lib.processes import get_foreground_process, list_processes
 from lib.pixel import RGB, Region, PixelPattern, PixelPatternPoint, capture_region
 
+PATTERN_DIR = Path(__file__).parent / "pattern"
+PATTERN_FILE = PATTERN_DIR / "patterns.json"
+
+
+def _load_shared_patterns() -> dict[str, PixelPattern]:
+    """pattern/patterns.json 에서 공용 패턴을 읽는다."""
+    try:
+        if not PATTERN_FILE.exists():
+            return {}
+        data = json.loads(PATTERN_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        result: dict[str, PixelPattern] = {}
+        for name, item in data.items():
+            if not isinstance(item, dict):
+                continue
+            merged = dict(item)
+            merged.setdefault("name", name)
+            pat = PixelPattern.from_dict(merged)
+            pat.tolerance = 0
+            for pt in pat.points:
+                pt.tolerance = None
+            result[pat.name] = pat
+        return result
+    except Exception:
+        return {}
+
+
+def _save_shared_patterns(patterns: dict[str, PixelPattern]):
+    """공용 패턴을 pattern/patterns.json 에 즉시 저장한다."""
+    try:
+        PATTERN_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {name: pat.to_dict() for name, pat in (patterns or {}).items()}
+        PATTERN_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        # 저장 실패는 치명적이지 않으므로 조용히 무시
+        pass
+
 MAX_RECENT_PROFILES = 15
 
 
@@ -168,6 +206,7 @@ DEFAULT_PROFILE = MacroProfile(
     pixel_region=(0, 0, 100, 100),
     pixel_color=(255, 0, 0),
     pixel_tolerance=0,
+    pixel_patterns=_load_shared_patterns(),
 )
 
 HEX_CHARS = set("0123456789abcdefABCDEF")
@@ -9724,7 +9763,13 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.setWindowTitle("픽셀 패턴 관리자")
         self.setModal(False)
         self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
-        self.patterns: dict[str, PixelPattern] = copy.deepcopy(patterns or {})
+        # 원본을 바로 다루어 저장 누락을 줄인다.
+        shared = _load_shared_patterns()
+        incoming = patterns or {}
+        merged: dict[str, PixelPattern] = {}
+        merged.update(copy.deepcopy(shared))
+        merged.update(copy.deepcopy(incoming))
+        self.patterns = merged
         self._sanitize_all_patterns()
         self._current_name: Optional[str] = None
         self._anchor_pos: Optional[tuple[int, int]] = None
@@ -9797,11 +9842,11 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.tol_spin = QtWidgets.QSpinBox()
         self.tol_spin.setRange(0, 255)
         self.tol_spin.setValue(0)
+        # 패턴 관리 화면에서는 tol을 사용하지 않으므로 UI에서 숨긴다.
         self.tol_spin.setEnabled(False)
-        self.tol_spin.setToolTip("패턴 오차는 조건 tol에서만 적용되며 여기서는 0으로 고정됩니다.")
+        self.tol_spin.hide()
         form.addRow("이름", self.name_edit)
         form.addRow("설명", self.desc_edit)
-        form.addRow("기본 허용오차(미사용)", self.tol_spin)
 
         point_btn_row = QtWidgets.QHBoxLayout()
         self.add_point_btn = QtWidgets.QPushButton("커서 픽셀 추가 (F3)")
@@ -9811,8 +9856,8 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         point_btn_row.addWidget(self.del_point_btn)
         point_btn_row.addWidget(self.clear_point_btn)
 
-        self.table = QtWidgets.QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["x", "y", "color", "tol(미사용)"])
+        self.table = QtWidgets.QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["x", "y", "color"])
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.PreventContextMenu)
         self.table.itemChanged.connect(lambda *_: self._update_preview())
@@ -9905,9 +9950,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         old_name = name_hint or self._current_name
         if not old_name:
             return
-        pat = self.patterns.get(old_name)
-        if pat is None:
-            pat = self._current_pattern()
+        pat = self.patterns.get(old_name) or self._current_pattern()
         new_name = self.name_edit.text().strip() or pat.name
         if new_name != old_name and new_name in self.patterns:
             # 이름 충돌 시 접미사 부여
@@ -9919,17 +9962,29 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         pat.name = new_name
         pat.description = self.desc_edit.text().strip() or None
         pat.tolerance = 0
-        pat.points = []
         anchor_x, anchor_y = self._anchor_image_pos or (0, 0)
+        new_points: list[PixelPatternPoint] = []
         for row in range(self.table.rowCount()):
-            x_val = int(self.table.item(row, 0).text())
-            y_val = int(self.table.item(row, 1).text())
+            item_x = self.table.item(row, 0)
+            item_y = self.table.item(row, 1)
+            item_c = self.table.item(row, 2)
+            if not item_x or not item_y or not item_c:
+                continue
+            try:
+                x_val = int(item_x.text())
+                y_val = int(item_y.text())
+                color_txt = item_c.text().strip().lstrip("#")
+                if len(color_txt) != 6:
+                    continue
+                color = tuple(int(color_txt[i : i + 2], 16) for i in (0, 2, 4))
+            except Exception:
+                continue
             dx = x_val - anchor_x
             dy = y_val - anchor_y
-            color_txt = self.table.item(row, 2).text().strip().lstrip("#")
-            color = tuple(int(color_txt[i : i + 2], 16) for i in (0, 2, 4))
-            pt_tol = None
-            pat.points.append(PixelPatternPoint(dx=dx, dy=dy, color=color, tolerance=pt_tol))
+            new_points.append(PixelPatternPoint(dx=dx, dy=dy, color=color, tolerance=None))
+
+        if new_points:
+            pat.points = new_points
         pat = pat.normalized()
         self.patterns.pop(old_name, None)
         self.patterns[pat.name] = pat
@@ -9943,6 +9998,8 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         if not self.list_widget.currentItem():
             self._select_by_name(pat.name)
         self._mark_dirty_parent()
+        # 즉시 소유자(프로필/엔진)와 동기화하여 다른 창에서 곧바로 반영되도록 한다.
+        self._push_patterns_to_owner()
 
     def _select_by_name(self, name: str):
         for i in range(self.list_widget.count()):
@@ -9961,7 +10018,8 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._anchor_pos = None
-        self._anchor_image_pos = None
+        # 저장된 패턴은 기준점 정보를 별도 보존하지 않으므로 로드 시 기준을 (0,0)으로 고정한다.
+        self._anchor_image_pos = (0, 0)
         name = current.text()
         if name not in self.patterns:
             self.patterns[name] = PixelPattern(name=name, points=[], tolerance=0)
@@ -9971,9 +10029,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.desc_edit.setText(pat.description or "")
         self.tol_spin.setValue(0)
         self.table.setRowCount(0)
-        # 패턴이 존재하면 첫 포인트를 앵커로 사용 (표시용)
-        if pat.points:
-            self._anchor_image_pos = (int(pat.points[0].dx), int(pat.points[0].dy))
         for pt in pat.points:
             self._append_point_row(pt.dx, pt.dy, pt.color, pt.tolerance)
         self._update_preview()
@@ -9985,7 +10040,9 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         anchor_x, anchor_y = self._anchor_image_pos or (0, 0)
         display_x = anchor_x + dx
         display_y = anchor_y + dy
-        for col, val in enumerate([display_x, display_y, f"{color[0]:02x}{color[1]:02x}{color[2]:02x}", tol if tol is not None else ""]):
+        for col, val in enumerate(
+            [display_x, display_y, f"{color[0]:02x}{color[1]:02x}{color[2]:02x}"]
+        ):
             item = QtWidgets.QTableWidgetItem(str(val))
             self.table.setItem(row, col, item)
         self._loading_points = False
@@ -10028,6 +10085,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         if self._current_name and self._current_name in self.patterns:
             self.patterns.pop(self._current_name, None)
         self._load_patterns()
+        self._push_patterns_to_owner()
 
     def _add_point_from_cursor(self):
         if self.list_widget.count() == 0:
@@ -10294,6 +10352,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
                 self._owner.profile.pixel_patterns = copy.deepcopy(self.patterns)
             if self._owner and hasattr(self._owner, "engine"):
                 self._owner.engine._pixel_patterns = copy.deepcopy(self.patterns)
+            _save_shared_patterns(self.patterns)
         except Exception:
             pass
         self._mark_dirty_parent()
@@ -11782,6 +11841,9 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
     ):
         super().__init__(parent)
         self.engine = engine
+        shared_patterns = _load_shared_patterns()
+        if shared_patterns:
+            profile.pixel_patterns = copy.deepcopy(shared_patterns)
         self.profile = profile
         self._status_provider = status_provider
         self._apply_callback = apply_callback
@@ -12608,6 +12670,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.engine = engine
         self.is_admin = _is_admin()
         self.profile = copy.deepcopy(profile or DEFAULT_PROFILE)
+        shared_patterns = _load_shared_patterns()
+        if shared_patterns:
+            self.profile.pixel_patterns = copy.deepcopy(shared_patterns)
+            try:
+                self.engine._pixel_patterns = copy.deepcopy(shared_patterns)
+            except Exception:
+                pass
         self.current_profile_path: str | None = None
         self.base_title = "Interception Macro GUI"
         self.dirty: bool = False
@@ -14611,6 +14680,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         if not self._confirm_save_if_dirty():
             return
         self.profile = copy.deepcopy(DEFAULT_PROFILE)
+        shared_patterns = _load_shared_patterns()
+        if shared_patterns:
+            self.profile.pixel_patterns = copy.deepcopy(shared_patterns)
         self.current_profile_path = None
         self._persist_last_profile_path(None)
         self._loading_profile = True
@@ -15802,23 +15874,32 @@ def _mw_pattern_names(self) -> list[str]:
 def _mw_open_pattern_manager(self, parent=None):
     dlg = PixelPatternManagerDialog(
         parent or self,
-        patterns=getattr(self.profile, "pixel_patterns", {}),
+        patterns={**_load_shared_patterns(), **(getattr(self.profile, "pixel_patterns", {}) or {})},
         open_image_viewer=getattr(self, "_open_image_viewer_dialog", None),
         sample_provider=getattr(self, "_current_viewer_sample", None),
     )
-    if _run_dialog_non_modal(dlg):
+    # Qt parent는 호출자(widget)로 두되, 실제 패턴 저장/동기화는 항상 메인 창을 기준으로 한다.
+    dlg._owner = self
+
+    def _sync_patterns_from_dlg(_code: int):
+        """Close 시점에도 패턴을 한 번 더 저장/동기화해 포인트 유실을 막는다.
+        프로필 저장 여부와 무관하게 pattern/patterns.json 에만 기록한다.
+        """
         try:
+            cur = dlg.list_widget.currentItem()
+            if cur:
+                dlg._current_name = cur.text()
             dlg._save_current_pattern(name_hint=dlg._current_name)
         except Exception:
             pass
-        self.profile.pixel_patterns = copy.deepcopy(dlg.patterns)
-        if hasattr(self, "engine"):
-            self.engine._pixel_patterns = copy.deepcopy(dlg.patterns)
-        if hasattr(self, "_mark_dirty"):
-            try:
-                self._mark_dirty(True)
-            except Exception:
-                pass
+        try:
+            if hasattr(self, "engine"):
+                self.engine._pixel_patterns = copy.deepcopy(dlg.patterns)
+        except Exception:
+            pass
+
+    dlg.finished.connect(_sync_patterns_from_dlg)
+    _run_dialog_non_modal(dlg)
 
 
 # Monkey patch helper methods onto MacroWindow without touching the large class body above.
