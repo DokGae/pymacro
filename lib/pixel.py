@@ -60,7 +60,7 @@ class PixelPatternPoint:
 class PixelPattern:
     name: str
     points: List[PixelPatternPoint] = field(default_factory=list)
-    tolerance: int = 10
+    tolerance: int = 0
     description: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -81,7 +81,7 @@ class PixelPattern:
         return PixelPattern(
             name=str(data.get("name") or "pattern"),
             points=points,
-            tolerance=int(data.get("tolerance", 10)),
+            tolerance=int(data.get("tolerance", 0)),
             description=data.get("description"),
         )
 
@@ -199,7 +199,7 @@ def find_pattern_in_region(
     """
     영역 내에 픽셀 패턴이 존재하는지 검색합니다.
     패턴은 기준점(0,0) 기준 상대좌표 목록으로 저장되어 있다고 가정합니다.
-    tolerance: 패턴 전체 공통 허용오차. 개별 포인트에 tolerance가 지정되면 우선 사용.
+    tolerance: 조건에서 넘어온 공통 허용오차. 패턴/포인트에 저장된 tolerance 값은 무시합니다.
     반환: (found: bool, 좌표: (x, y) | None) - 좌표는 영역 내 패턴의 좌측 상단(정규화 기준).
     """
     _require_backend()
@@ -222,7 +222,7 @@ def find_pattern_in_region(
     mask_all = np.ones((work_h, work_w), dtype=bool)
 
     for pt in norm_pat.points:
-        pt_tol = int(pt.tolerance if pt.tolerance is not None else tolerance if tolerance is not None else pattern.tolerance)
+        pt_tol = int(tolerance if tolerance is not None else 0)
         sub = arr[pt.dy : pt.dy + work_h, pt.dx : pt.dx + work_w]
         diff = np.abs(sub.astype(np.int16) - np.array(pt.color, dtype=np.int16)).max(axis=2)
         mask_all &= diff <= pt_tol

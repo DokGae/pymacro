@@ -1302,6 +1302,11 @@ class MacroProfile:
                 merged.setdefault("name", name)
                 pat = PixelPattern.from_dict(merged)
                 patterns[pat.name] = pat
+        for name, pat in list(patterns.items()):
+            pat.tolerance = 0
+            for pt in pat.points:
+                pt.tolerance = None
+            patterns[name] = pat
 
         region_raw = data.get("pixel_region")
         region_val = region_raw if region_raw is not None else (0, 0, 100, 100)
@@ -1325,7 +1330,7 @@ class MacroProfile:
         else:
             color = tuple(color_val)
 
-        tol = int(data.get("pixel_tolerance", 10) or 0)
+        tol = int(data.get("pixel_tolerance", 0) or 0)
         expect_raw = data.get("pixel_expect_exists", True)
         if isinstance(expect_raw, str):
             expect_exists = expect_raw.strip().lower() not in ("false", "0", "no")
@@ -4268,7 +4273,7 @@ class MacroEngine:
             if work_w > 0 and work_h > 0:
                 mask_all = np.ones((work_h, work_w), dtype=bool)
                 for pt in norm_pat.points:
-                    pt_tol = int(pt.tolerance if pt.tolerance is not None else tolerance if tolerance is not None else pattern.tolerance)
+                    pt_tol = int(tolerance if tolerance is not None else 0)
                     sub = arr[pt.dy : pt.dy + work_h, pt.dx : pt.dx + work_w]
                     diff = np.abs(sub.astype(np.int16) - np.array(pt.color, dtype=np.int16)).max(axis=2)
                     mask_all &= diff <= pt_tol

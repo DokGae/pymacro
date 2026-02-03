@@ -142,7 +142,7 @@ def _elide_middle(text: str, max_len: int = 60) -> str:
 
 def _default_macro() -> Macro:
     # z 누르고 있는 동안 r → sleep 50 → t 반복, 픽셀 맞으면 f1, 아니면 f2
-    pixel_cond = Condition(type="pixel", region=(0, 0, 100, 100), color=(255, 0, 0), tolerance=10)
+    pixel_cond = Condition(type="pixel", region=(0, 0, 100, 100), color=(255, 0, 0), tolerance=0)
     actions = [
         Action(type="press", key="r"),
         Action(type="sleep", sleep_ms=50),
@@ -163,7 +163,12 @@ def _default_macro() -> Macro:
     )
 
 
-DEFAULT_PROFILE = MacroProfile(macros=[_default_macro()], pixel_region=(0, 0, 100, 100), pixel_color=(255, 0, 0), pixel_tolerance=10)
+DEFAULT_PROFILE = MacroProfile(
+    macros=[_default_macro()],
+    pixel_region=(0, 0, 100, 100),
+    pixel_color=(255, 0, 0),
+    pixel_tolerance=0,
+)
 
 HEX_CHARS = set("0123456789abcdefABCDEF")
 ACTION_TYPE_OPTIONS = [
@@ -1715,6 +1720,14 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self._open_debugger_fn(config)
 
     def closeEvent(self, event: QtGui.QCloseEvent):
+        try:
+            cur = self.list_widget.currentItem()
+            if cur:
+                self._current_name = cur.text()
+            self._save_current_pattern(name_hint=self._current_name)
+            self._push_patterns_to_owner()
+        except Exception:
+            pass
         return super().closeEvent(event)
 
     def _install_var_completer(self, edit: QtWidgets.QLineEdit, category: str):
@@ -1822,7 +1835,7 @@ class ConditionDialog(QtWidgets.QDialog):
         viewer_row = QtWidgets.QHBoxLayout()
         self.viewer_btn = QtWidgets.QPushButton("이미지 뷰어/피커")
         self.debug_test_btn = QtWidgets.QPushButton("디버그 테스트")
-        self._viewer_status_hint = "F1=좌표, F2=색상, F3=패턴포인트, F5=새로고침, Delete=삭제"
+        self._viewer_status_hint = "F1=좌표, Ctrl+F1=범위, F2=색상, F3=패턴포인트, F5=새로고침, Delete=삭제"
         self.viewer_status = QtWidgets.QLabel(self._viewer_status_hint)
         self.viewer_status.setStyleSheet("color: gray;")
         last_dir = self._image_viewer_state.get("last_dir") if isinstance(self._image_viewer_state, dict) else None
@@ -2606,11 +2619,19 @@ class _ImageCanvas(QtWidgets.QWidget):
         self._center_start = QtCore.QPointF()
         self._space_pan = False
         self._overlays: list[tuple[int, int, int, int]] = []
+        self._region_select_active = False
+        self._region_select_start: QtCore.QPoint | None = None
+        self._region_select_rect: tuple[int, int, int, int] | None = None
+        self._region_select_cb = None
 
     def clear_image(self):
         self._image = None
         self._pixmap = None
         self._sample = None
+        self._region_select_active = False
+        self._region_select_start = None
+        self._region_select_rect = None
+        self._region_select_cb = None
         self._draw_rect = QtCore.QRectF()
         self._last_mouse_pos = None
         self._user_zoom = 1.0
@@ -2643,6 +2664,28 @@ class _ImageCanvas(QtWidgets.QWidget):
     def set_overlays(self, rects: list[tuple[int, int, int, int]] | None):
         self._overlays = rects or []
         self.update()
+
+    def begin_region_selection(self, callback=None) -> bool:
+        if not self._image:
+            return False
+        self._region_select_active = True
+        self._region_select_start = None
+        self._region_select_rect = None
+        self._region_select_cb = callback
+        self.update()
+        return True
+
+    def cancel_region_selection(self):
+        if not self._region_select_active:
+            return
+        self._region_select_active = False
+        self._region_select_start = None
+        self._region_select_rect = None
+        self._region_select_cb = None
+        self.update()
+
+    def is_region_selecting(self) -> bool:
+        return bool(self._region_select_active)
 
     def _clamp_center(self):
         if not self._image:
@@ -2702,6 +2745,20 @@ class _ImageCanvas(QtWidgets.QWidget):
         x = (pos.x() - self._draw_rect.left()) / self._scale
         y = (pos.y() - self._draw_rect.top()) / self._scale
         return QtCore.QPointF(x, y)
+
+    def _event_image_pos(self, event: QtGui.QMouseEvent) -> tuple[int, int] | None:
+        if not self._image:
+            return None
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        self._last_mouse_pos = pos
+        img_pt = self._widget_to_image(QtCore.QPointF(pos))
+        if img_pt is None:
+            return None
+        x = int(img_pt.x())
+        y = int(img_pt.y())
+        x = max(0, min(self._image.width() - 1, x))
+        y = max(0, min(self._image.height() - 1, y))
+        return x, y
 
     def reset_zoom(self):
         if not self._image:
@@ -2826,6 +2883,16 @@ class _ImageCanvas(QtWidgets.QWidget):
                 wy = self._draw_rect.top() + oy * self._scale
                 painter.drawRect(QtCore.QRectF(wx, wy, ow * self._scale, oh * self._scale))
 
+        if self._region_select_rect and self._image and not self._draw_rect.isNull() and self._scale > 0:
+            x, y, w, h = self._region_select_rect
+            pen = QtGui.QPen(QtGui.QColor(90, 200, 255), 2, QtCore.Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(QtGui.QColor(90, 200, 255, 40))
+            wx = self._draw_rect.left() + x * self._scale
+            wy = self._draw_rect.top() + y * self._scale
+            painter.drawRect(QtCore.QRectF(wx, wy, w * self._scale, h * self._scale))
+
         if not self._sample:
             return
         pos = self._sample["widget_pos"]
@@ -2874,6 +2941,16 @@ class _ImageCanvas(QtWidgets.QWidget):
             delta = QtCore.QPointF(self._last_mouse_pos) - self._drag_start
             self._view_center = self._center_start - QtCore.QPointF(delta.x() / self._scale, delta.y() / self._scale)
             self._update_draw_rect()
+        if self._region_select_active and self._region_select_start is not None:
+            img_pos = self._event_image_pos(event)
+            if img_pos:
+                sx, sy = self._region_select_start.x(), self._region_select_start.y()
+                ex, ey = img_pos
+                x0, y0 = min(sx, ex), min(sy, ey)
+                w = abs(ex - sx) + 1
+                h = abs(ey - sy) + 1
+                self._region_select_rect = (x0, y0, w, h)
+                self.update()
         self._update_sample_from_pos()
         super().mouseMoveEvent(event)
 
@@ -2882,23 +2959,62 @@ class _ImageCanvas(QtWidgets.QWidget):
         super().leaveEvent(event)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent):
+        if self._region_select_active:
+            if event.button() == QtCore.Qt.MouseButton.LeftButton:
+                img_pos = self._event_image_pos(event)
+                if img_pos:
+                    self._region_select_start = QtCore.QPoint(*img_pos)
+                    self._region_select_rect = (img_pos[0], img_pos[1], 1, 1)
+                    self._update_sample_from_pos()
+                    self.update()
+                event.accept()
+                return
+            if event.button() == QtCore.Qt.MouseButton.RightButton:
+                cb = self._region_select_cb
+                self.cancel_region_selection()
+                if cb:
+                    try:
+                        cb(None)
+                    except Exception:
+                        pass
+                event.accept()
+                return
+
         pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         self._last_mouse_pos = pos
         self._update_sample_from_pos()
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            # 좌클릭 드래그로 이동만 수행
+            # ÁÂÅ¬¸¯ µå·¡±×·Î ÀÌµ¿¸¸ ¼öÇà
             self._dragging = True
             self._drag_start = QtCore.QPointF(pos)
             self._center_start = QtCore.QPointF(self._view_center)
             event.accept()
             return
         if event.button() == QtCore.Qt.MouseButton.RightButton:
-            # 우클릭 동작 차단 (색상 복사/컨텍스트 없음)
+            # 우클릭 무시 구간 (색상 복사/텍스트 없음)
             event.accept()
             return
         super().mousePressEvent(event)
-
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent):
+        if self._region_select_active and event.button() == QtCore.Qt.MouseButton.LeftButton:
+            img_pos = self._event_image_pos(event)
+            if img_pos and self._region_select_start is not None:
+                sx, sy = self._region_select_start.x(), self._region_select_start.y()
+                ex, ey = img_pos
+                x0, y0 = min(sx, ex), min(sy, ey)
+                w = abs(ex - sx) + 1
+                h = abs(ey - sy) + 1
+                self._region_select_rect = (x0, y0, w, h)
+            region = self._region_select_rect
+            cb = self._region_select_cb
+            self.cancel_region_selection()
+            if cb and region:
+                try:
+                    cb(region)
+                except Exception:
+                    pass
+            event.accept()
+            return
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self._dragging = False
             if self._space_pan:
@@ -2906,7 +3022,6 @@ class _ImageCanvas(QtWidgets.QWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
-
     def wheelEvent(self, event: QtGui.QWheelEvent):
         delta = event.angleDelta().y()
         if delta == 0:
@@ -3017,6 +3132,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.delete_current_btn = QtWidgets.QPushButton("현재 삭제")
         self.refresh_btn = QtWidgets.QPushButton("새로고침")
         self.auto_refresh_chk = QtWidgets.QCheckBox("단일 캡처 후 새로고침")
+        self.region_select_btn = QtWidgets.QPushButton("범위 선택")
         self.screenshot_btn = QtWidgets.QPushButton("스크린샷")
         self.close_btn = QtWidgets.QPushButton("종료")
         top.addWidget(self.folder_btn)
@@ -3026,6 +3142,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         top.addWidget(self.delete_current_btn)
         top.addWidget(self.refresh_btn)
         top.addWidget(self.auto_refresh_chk)
+        top.addWidget(self.region_select_btn)
         top.addWidget(self.screenshot_btn)
         top.addWidget(self.close_btn)
         layout.addLayout(top)
@@ -3050,6 +3167,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.canvas.sampleChanged.connect(self._on_sample_changed)
         self.canvas.zoomChanged.connect(self._on_zoom_changed)
         self.screenshot_btn.clicked.connect(self._open_screenshot)
+        self.region_select_btn.clicked.connect(self._start_region_selection)
         self.open_folder_btn.clicked.connect(self._open_current_folder)
         self.delete_btn.clicked.connect(self._delete_all_in_folder)
         self.delete_current_btn.clicked.connect(self._delete_current_file)
@@ -3059,6 +3177,12 @@ class ImageViewerDialog(QtWidgets.QDialog):
         if not callable(self._open_screenshot_dialog):
             self.screenshot_btn.setEnabled(False)
         self._update_hud_text()
+        QtGui.QShortcut(
+            QtGui.QKeySequence("Ctrl+F1"),
+            self,
+            self._start_region_selection,
+            context=QtCore.Qt.ShortcutContext.ApplicationShortcut,
+        )
 
     def set_start_dir(self, path: Path, *, refresh: bool = False):
         new_dir = Path(path)
@@ -3274,11 +3398,21 @@ class ImageViewerDialog(QtWidgets.QDialog):
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         key = event.key()
         ctrl = event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
+        if key == QtCore.Qt.Key.Key_F1 and ctrl:
+            self._start_region_selection()
+            return
         if key == QtCore.Qt.Key.Key_Space:
             self.canvas._space_pan = True
             self.canvas.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
             return
         if key == QtCore.Qt.Key.Key_Escape:
+            if getattr(self.canvas, "is_region_selecting", lambda: False)():
+                try:
+                    self.canvas.cancel_region_selection()
+                except Exception:
+                    pass
+                self._on_region_selected(None)
+                return
             self.close()
             return
         if key == QtCore.Qt.Key.Key_F5:
@@ -3317,7 +3451,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self.canvas.reset_zoom()
             return
         super().keyPressEvent(event)
-
     def keyReleaseEvent(self, event: QtGui.QKeyEvent):
         if event.key() == QtCore.Qt.Key.Key_Space:
             self.canvas._space_pan = False
@@ -3383,6 +3516,53 @@ class ImageViewerDialog(QtWidgets.QDialog):
                         pass
         except Exception:
             pass
+
+    def _start_region_selection(self):
+        if not getattr(self.canvas, "_image", None):
+            self.status_label.setText("범위 선택: 이미지가 없습니다.")
+            return
+        begin = getattr(self.canvas, "begin_region_selection", None)
+        if not callable(begin):
+            self.status_label.setText("범위 선택 기능을 사용할 수 없습니다.")
+            return
+        ok = begin(self._on_region_selected)
+        if not ok:
+            self.status_label.setText("범위 선택을 시작할 수 없습니다.")
+            return
+        if hasattr(self, "region_select_btn"):
+            try:
+                self.region_select_btn.setEnabled(False)
+            except Exception:
+                pass
+        tip = "범위 선택: 시작점과 끝점을 순서대로 클릭하세요. 드래그도 가능합니다."
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), tip, self, QtCore.QRect(), 2500)
+        self.status_label.setText("범위 선택: 시작점과 끝점을 클릭하세요. (Ctrl+F1)")
+
+    def _on_region_selected(self, region: tuple[int, int, int, int] | None):
+        if hasattr(self, "region_select_btn"):
+            try:
+                self.region_select_btn.setEnabled(True)
+            except Exception:
+                pass
+        if not region:
+            self.status_label.setText("범위 선택이 취소되었습니다.")
+            return
+        try:
+            x, y, w, h = (int(v) for v in region)
+        except Exception:
+            self.status_label.setText("범위 가져오기 오류.")
+            return
+        txt = f"{x},{y},{w},{h}"
+        QtGui.QGuiApplication.clipboard().setText(txt)
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"범위 복사: {txt}", self, QtCore.QRect(), 2000)
+        self.status_label.setText(f"범위 복사: {txt}")
+        try:
+            dbg = getattr(self._condition_window, "debugger", None) if self._condition_window else None
+            if dbg and dbg.isVisible():
+                dbg._set_test_inputs({"region_raw": txt})
+        except Exception:
+            pass
+        self._fill_condition_dialog_region(txt)
 
     def _copy_color(self):
         if not self._last_sample:
@@ -3514,7 +3694,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         hk_stop = hk.get("stop") or "-"
         hk_cap = hk.get("capture") or "-"
         self.hud_label.setText(
-            f"핫키: 좌클릭 드래그 이동, Alt+휠/± 확대, 0 리셋, F1 좌표 복사, F2 색상 복사(우클릭 가능), "
+            f"핫키: 좌클릭 드래그 이동, Alt+휠/± 확대, 0 리셋, F1 좌표 복사, Ctrl+F1 범위 복사, F2 색상 복사(우클릭 가능), "
             f"F5 새로고침, Delete 현재 삭제, ←/→ 이미지 이동, ESC 닫기 | 스크린샷: 시작={hk_start}, 정지={hk_stop}, 단일={hk_cap}"
         )
 
@@ -9501,6 +9681,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.setModal(False)
         self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
         self.patterns: dict[str, PixelPattern] = copy.deepcopy(patterns or {})
+        self._sanitize_all_patterns()
         self._current_name: Optional[str] = None
         self._anchor_pos: Optional[tuple[int, int]] = None
         self._anchor_image_pos: Optional[tuple[int, int]] = None
@@ -9513,6 +9694,16 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self._build_ui()
         self._load_patterns()
         self._attach_viewer_change_listener()
+
+    def _sanitize_pattern(self, pat: PixelPattern) -> PixelPattern:
+        pat.tolerance = 0
+        for pt in pat.points:
+            pt.tolerance = None
+        return pat
+
+    def _sanitize_all_patterns(self):
+        for name, pat in list(self.patterns.items()):
+            self.patterns[name] = self._sanitize_pattern(pat)
 
     def _attach_viewer_change_listener(self):
         self._ensure_viewer_listener()
@@ -9561,10 +9752,12 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.desc_edit = QtWidgets.QLineEdit()
         self.tol_spin = QtWidgets.QSpinBox()
         self.tol_spin.setRange(0, 255)
-        self.tol_spin.setValue(10)
+        self.tol_spin.setValue(0)
+        self.tol_spin.setEnabled(False)
+        self.tol_spin.setToolTip("패턴 오차는 조건 tol에서만 적용되며 여기서는 0으로 고정됩니다.")
         form.addRow("이름", self.name_edit)
         form.addRow("설명", self.desc_edit)
-        form.addRow("기본 허용오차", self.tol_spin)
+        form.addRow("기본 허용오차(미사용)", self.tol_spin)
 
         point_btn_row = QtWidgets.QHBoxLayout()
         self.add_point_btn = QtWidgets.QPushButton("커서 픽셀 추가 (F3)")
@@ -9575,7 +9768,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         point_btn_row.addWidget(self.clear_point_btn)
 
         self.table = QtWidgets.QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["x", "y", "color", "tol(옵션)"])
+        self.table.setHorizontalHeaderLabels(["x", "y", "color", "tol(미사용)"])
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.PreventContextMenu)
         self.table.itemChanged.connect(lambda *_: self._update_preview())
@@ -9656,8 +9849,9 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         if not self._current_name or self._current_name not in self.patterns:
             self._current_name = self.list_widget.currentItem().text() if self.list_widget.currentItem() else None
         if self._current_name and self._current_name in self.patterns:
-            return self.patterns[self._current_name]
-        pat = PixelPattern(name="pattern1", points=[], tolerance=10)
+            return self._sanitize_pattern(self.patterns[self._current_name])
+        pat = PixelPattern(name="pattern1", points=[], tolerance=0)
+        pat = self._sanitize_pattern(pat)
         self.patterns[pat.name] = pat
         self._current_name = pat.name
         return pat
@@ -9680,7 +9874,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             new_name = f"{base}_{i}"
         pat.name = new_name
         pat.description = self.desc_edit.text().strip() or None
-        pat.tolerance = int(self.tol_spin.value())
+        pat.tolerance = 0
         pat.points = []
         anchor_x, anchor_y = self._anchor_image_pos or (0, 0)
         for row in range(self.table.rowCount()):
@@ -9690,8 +9884,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             dy = y_val - anchor_y
             color_txt = self.table.item(row, 2).text().strip().lstrip("#")
             color = tuple(int(color_txt[i : i + 2], 16) for i in (0, 2, 4))
-            tol_item = self.table.item(row, 3)
-            pt_tol = int(tol_item.text()) if tol_item and tol_item.text().strip() else None
+            pt_tol = None
             pat.points.append(PixelPatternPoint(dx=dx, dy=dy, color=color, tolerance=pt_tol))
         pat = pat.normalized()
         self.patterns.pop(old_name, None)
@@ -9727,12 +9920,12 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self._anchor_image_pos = None
         name = current.text()
         if name not in self.patterns:
-            self.patterns[name] = PixelPattern(name=name, points=[], tolerance=10)
+            self.patterns[name] = PixelPattern(name=name, points=[], tolerance=0)
         self._current_name = name
-        pat = self.patterns[name]
+        pat = self._sanitize_pattern(self.patterns[name])
         self.name_edit.setText(pat.name)
         self.desc_edit.setText(pat.description or "")
-        self.tol_spin.setValue(int(getattr(pat, "tolerance", 10) or 10))
+        self.tol_spin.setValue(0)
         self.table.setRowCount(0)
         # 패턴이 존재하면 첫 포인트를 앵커로 사용 (표시용)
         if pat.points:
@@ -9760,7 +9953,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         while f"{base_name}{idx}" in self.patterns:
             idx += 1
         name = f"{base_name}{idx}"
-        self.patterns[name] = PixelPattern(name=name, points=[], tolerance=10)
+        self.patterns[name] = PixelPattern(name=name, points=[], tolerance=0)
         # 목록이 비어 있을 때만 리로드; 그렇지 않으면 직접 추가해 신호를 최소화
         if self.list_widget.count() == 0:
             self._load_patterns()
@@ -9781,7 +9974,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.patterns[new_name] = PixelPattern(
             name=new_name,
             points=copy.deepcopy(pat.points),
-            tolerance=pat.tolerance,
+            tolerance=0,
             description=pat.description,
         )
         self._load_patterns()
@@ -9914,7 +10107,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             if cur:
                 self._current_name = cur.text()
             self._save_current_pattern(name_hint=self._current_name)
-            self._mark_dirty_parent()
+            self._push_patterns_to_owner()
         except Exception:
             pass
         return super().accept()
@@ -9925,7 +10118,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             if cur:
                 self._current_name = cur.text()
             self._save_current_pattern(name_hint=self._current_name)
-            self._mark_dirty_parent()
+            self._push_patterns_to_owner()
             self.overlay_status.setText("저장됨 (프로필 저장 필요)")
         except Exception:
             pass
@@ -10013,7 +10206,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         arr = arr[:, : w, :3]
 
         matches: list[tuple[int, int]] = []
-        tol_default = int(getattr(pattern, "tolerance", 0) or 0)
+        tol_default = 0
         pts = norm.points
         # vectorized search for speed: precompute per-point tolerance mask
         arr_i16 = arr.astype(np.int16)
@@ -10022,7 +10215,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             # Start with all columns valid
             valid = np.ones(window.shape[:2], dtype=bool)
             for pt in pts:
-                tol = int(pt.tolerance) if pt.tolerance is not None else tol_default
+                tol = tol_default
                 sub = window[pt.dy, pt.dx : pt.dx + window.shape[1], :]
                 diff = np.abs(sub - np.array(pt.color, dtype=np.int16))
                 cond = (diff <= tol).all(axis=1)
@@ -10049,6 +10242,17 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
                 self._owner._mark_dirty(True)
             except Exception:
                 pass
+
+    def _push_patterns_to_owner(self):
+        """프로필/엔진에 현재 패턴을 즉시 반영해 재열 때 사라지지 않도록 한다."""
+        try:
+            if self._owner and hasattr(self._owner, "profile"):
+                self._owner.profile.pixel_patterns = copy.deepcopy(self.patterns)
+            if self._owner and hasattr(self._owner, "engine"):
+                self._owner.engine._pixel_patterns = copy.deepcopy(self.patterns)
+        except Exception:
+            pass
+        self._mark_dirty_parent()
 
 class PixelTestDialog(QtWidgets.QDialog):
     def __init__(
@@ -14800,6 +15004,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 expect_exists=cfg.get("expect_exists", True),
                 source=cfg.get("source"),
                 label=cfg.get("label"),
+                pattern=cfg.get("pattern"),
             )
         except Exception as exc:
             self._append_log(f"픽셀 테스트 오류: {exc}")
