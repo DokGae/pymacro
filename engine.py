@@ -265,6 +265,7 @@ class Condition:
     color_raw: Optional[str] = None
     pixel_pattern: Optional[str] = None  # 이름 기반으로 패턴 참조
     tolerance: int = 0
+    pixel_min_count: int = 1
     pixel_exists: bool = True
     conditions: List["Condition"] = field(default_factory=list)
     on_true: List["Condition"] = field(default_factory=list)
@@ -359,6 +360,11 @@ class Condition:
             timer_index = None
         if timer_index is not None and (timer_index < 1 or timer_index > 20):
             timer_index = None
+        min_count_raw = data.get("pixel_min_count", 1)
+        try:
+            pixel_min_count = max(1, int(min_count_raw))
+        except Exception:
+            pixel_min_count = 1
         timer_value_raw = data.get("timer_value")
         timer_value: Optional[float] = None
         if timer_value_raw not in (None, ""):
@@ -392,6 +398,7 @@ class Condition:
             color_raw=color_raw,
             pixel_pattern=str(pattern_name).strip() if pattern_name else None,
             tolerance=int(data.get("tolerance", 0) or 0),
+            pixel_min_count=pixel_min_count,
             pixel_exists=pixel_exists,
             conditions=conds,
             on_true=true_branch,
@@ -416,6 +423,7 @@ class Condition:
             "color": self.color_raw if self.color_raw is not None else (list(self.color) if self.color else None),
             "pixel_pattern": self.pixel_pattern,
             "tolerance": self.tolerance,
+            "pixel_min_count": self.pixel_min_count,
             "pixel_exists": self.pixel_exists,
             "timer_index": self.timer_index,
             "timer_value": self.timer_value,
@@ -1221,6 +1229,7 @@ class MacroProfile:
     pixel_color: RGB = (255, 0, 0)
     pixel_color_raw: Optional[str] = None
     pixel_tolerance: int = 10
+    pixel_min_count: int = 1
     pixel_expect_exists: bool = True
     pixel_patterns: Dict[str, PixelPattern] = field(default_factory=dict)
     keyboard_device_id: Optional[int] = None
@@ -1331,6 +1340,11 @@ class MacroProfile:
             color = tuple(color_val)
 
         tol = int(data.get("pixel_tolerance", 0) or 0)
+        min_count_raw = data.get("pixel_min_count", 1)
+        try:
+            min_count = max(1, int(min_count_raw))
+        except Exception:
+            min_count = 1
         expect_raw = data.get("pixel_expect_exists", True)
         if isinstance(expect_raw, str):
             expect_exists = expect_raw.strip().lower() not in ("false", "0", "no")
@@ -1365,6 +1379,7 @@ class MacroProfile:
             pixel_color=color,  # type: ignore[arg-type]
             pixel_color_raw=color_raw if isinstance(color_raw, str) else None,
             pixel_tolerance=tol,
+            pixel_min_count=min_count,
             pixel_expect_exists=expect_exists,
             pixel_patterns=patterns,
             keyboard_device_id=device_id,
@@ -1395,6 +1410,7 @@ class MacroProfile:
             "pixel_region": self.pixel_region_raw if self.pixel_region_raw is not None else list(self.pixel_region),
             "pixel_color": self.pixel_color_raw if self.pixel_color_raw is not None else list(self.pixel_color),
             "pixel_tolerance": self.pixel_tolerance,
+            "pixel_min_count": self.pixel_min_count,
             "pixel_expect_exists": self.pixel_expect_exists,
             "pixel_patterns": {name: pat.to_dict() for name, pat in (getattr(self, "pixel_patterns", {}) or {}).items()},
             "keyboard_device_id": self.keyboard_device_id,
@@ -2385,6 +2401,7 @@ class MacroEngine:
         self._pixel_test_color: RGB = (0, 0, 0)
         self._pixel_test_tolerance: int = 0
         self._pixel_test_expect_exists: bool = True
+        self._pixel_test_min_count: int = 1
         self._pixel_test_pattern: Optional[str] = None
         self._pixel_patterns: Dict[str, PixelPattern] = getattr(self._profile, "pixel_patterns", {}) or {}
         self._debug_image_override: Optional[np.ndarray] = None
@@ -2686,7 +2703,8 @@ class MacroEngine:
             expect_exists = True
             if hasattr(profile, "pixel_expect_exists"):
                 expect_exists = bool(getattr(profile, "pixel_expect_exists"))
-            self.update_pixel_test(profile.pixel_region, profile.pixel_color, profile.pixel_tolerance, expect_exists)
+            min_count = max(1, int(getattr(profile, "pixel_min_count", 1) or 1))
+            self.update_pixel_test(profile.pixel_region, profile.pixel_color, profile.pixel_tolerance, expect_exists, min_count)
         except Exception:
             pass
         self._emit_state()
@@ -2697,6 +2715,7 @@ class MacroEngine:
         color: Optional[RGB],
         tolerance: int,
         expect_exists: bool = True,
+        min_count: int = 1,
         pattern: Optional[str] = None,
     ):
         self._pixel_test_region = tuple(int(v) for v in region)
@@ -2704,6 +2723,7 @@ class MacroEngine:
             self._pixel_test_color = tuple(int(c) for c in color)  # type: ignore[assignment]
         self._pixel_test_tolerance = int(tolerance)
         self._pixel_test_expect_exists = bool(expect_exists)
+        self._pixel_test_min_count = max(1, int(min_count))
         self._pixel_test_pattern = pattern
 
     def run_pixel_test(self, *, source: Optional[str] = None):
@@ -2716,6 +2736,7 @@ class MacroEngine:
         color: Optional[RGB],
         tolerance: int,
         expect_exists: bool = True,
+        min_count: int = 1,
         source: Optional[str] = None,
         label: Optional[str] = None,
         pattern: Optional[str] = None,
@@ -2725,6 +2746,7 @@ class MacroEngine:
             color=color,
             tolerance=tolerance,
             expect_exists=expect_exists,
+            min_count=min_count,
             source=source,
             label=label,
             pattern=pattern,
@@ -3889,11 +3911,13 @@ class MacroEngine:
             region_tuple: Region = tuple(int(v) for v in region)
             color_tuple: Optional[RGB] = tuple(int(c) for c in color) if color is not None else None
             expect_exists = getattr(cond, "pixel_exists", True)
+            min_count = max(1, int(getattr(cond, "pixel_min_count", 1) or 1))
             check = self._pixel_check(
                 region_tuple,
                 color_tuple,
                 cond.tolerance,
                 expect_exists=expect_exists,
+                min_count=min_count,
                 pixel_cache=pixel_cache,
                 pattern=pattern_obj,
             )
@@ -3904,6 +3928,8 @@ class MacroEngine:
                 "pattern": pattern_name,
                 "tolerance": cond.tolerance,
                 "expect_exists": expect_exists,
+                "min_count": min_count,
+                "match_count": check.get("match_count"),
                 "found": check.get("found"),
                 "coord": check.get("coord"),
                 "sample_coord": check.get("sample_coord"),
@@ -4265,6 +4291,7 @@ class MacroEngine:
         tolerance: int,
         *,
         expect_exists: bool = True,
+        min_count: int = 1,
         include_image: bool = False,
         pixel_cache: Optional[Dict[Tuple[int, int, int, int], Any]] = None,
         pattern: Optional[PixelPattern] = None,
@@ -4294,6 +4321,8 @@ class MacroEngine:
         found = False
         coord = None
         sample_color: Optional[Tuple[int, int, int]] = None
+        match_count = 0
+        min_count = max(1, int(min_count))
 
         if pattern is not None and pattern.points:
             norm_pat = pattern.normalized()
@@ -4310,7 +4339,8 @@ class MacroEngine:
                     mask_all &= diff <= pt_tol
                     if not mask_all.any():
                         break
-                found = bool(mask_all.any())
+                match_count = int(mask_all.sum()) if mask_all is not None else 0
+                found = match_count > 0
                 if found:
                     py, px = np.argwhere(mask_all)[0]
                     coord = (x + int(px), y + int(py))
@@ -4326,7 +4356,8 @@ class MacroEngine:
             target = np.array(color if color is not None else (0, 0, 0), dtype=np.int16)
             diff = np.abs(arr.astype(np.int16) - target).max(axis=2)
             mask = diff <= int(tolerance)
-            found = bool(mask.any())
+            match_count = int(mask.sum())
+            found = match_count > 0
             if found:
                 py, px = np.argwhere(mask)[0]
                 coord = (x + int(px), y + int(py))
@@ -4339,10 +4370,15 @@ class MacroEngine:
             except Exception:
                 sample_color = None
 
-        result = found if expect_exists else (not found)
+        if expect_exists:
+            result = match_count >= min_count
+        else:
+            result = match_count == 0
         payload = {
             "found": found,
             "result": result,
+            "min_count": min_count,
+            "match_count": match_count,
             "coord": coord,
             "sample_coord": sample_coord,
             "sample_color": sample_color,
@@ -4367,6 +4403,7 @@ class MacroEngine:
         pattern: Optional[str] = None,
         tolerance: Optional[int] = None,
         expect_exists: Optional[bool] = None,
+        min_count: Optional[int] = None,
         source: Optional[str] = None,
         label: Optional[str] = None,
     ):
@@ -4380,9 +4417,17 @@ class MacroEngine:
             color_val = tuple(int(c) for c in self._pixel_test_color)  # type: ignore[assignment]
         tol_val = int(tolerance if tolerance is not None else self._pixel_test_tolerance)
         expect = self._pixel_test_expect_exists if expect_exists is None else bool(expect_exists)
+        min_cnt_val = max(1, int(min_count if min_count is not None else self._pixel_test_min_count))
         ts = time.time()
         try:
-            check = self._pixel_check(region_val, color_val, tol_val, expect_exists=expect, pattern=pat_obj)
+            check = self._pixel_check(
+                region_val,
+                color_val,
+                tol_val,
+                expect_exists=expect,
+                min_count=min_cnt_val,
+                pattern=pat_obj,
+            )
             payload = {
                 "type": "pixel_test",
                 "found": check.get("found"),
@@ -4392,6 +4437,8 @@ class MacroEngine:
                 "sample_color": check.get("sample_color"),
                 "pattern": pattern_name,
                 "expect_exists": expect,
+                "min_count": min_cnt_val,
+                "match_count": check.get("match_count"),
                 "region": region_val,
                 "color": color_val,
                 "tolerance": tol_val,

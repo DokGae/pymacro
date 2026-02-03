@@ -1387,12 +1387,14 @@ def _condition_brief(cond: Condition) -> str:
         return f"키/마우스 {cond.key} ({mode}){suffix}"
     if cond.type == "pixel":
         region = cond.region_raw or ",".join(str(v) for v in cond.region or [])
-        state = "있음" if getattr(cond, "pixel_exists", True) else "없음"
+        min_cnt = max(1, int(getattr(cond, "pixel_min_count", 1) or 1))
+        exists = getattr(cond, "pixel_exists", True)
+        state = f">={min_cnt}픽셀 있을 때 참" if exists else "일치 픽셀이 없을 때 참"
         if getattr(cond, "pixel_pattern", None):
             pat = getattr(cond, "pixel_pattern", "")
             return f"픽셀패턴 {pat} @ {region} tol={cond.tolerance} ({state}일 때 참){suffix}"
         color_hex = cond.color_raw or (_rgb_to_hex(cond.color) or "------")
-        return f"픽셀 {region} #{color_hex} tol={cond.tolerance} ({state}일 때 참){suffix}"
+        return f"픽셀 {region} #{color_hex} tol={cond.tolerance} ({state}){suffix}"
     if cond.type == "var":
         op_text = "!=" if getattr(cond, "var_operator", "eq") == "ne" else "=="
         return f"변수 {cond.var_name} {op_text} {cond.var_value_raw or cond.var_value or ''}{suffix}"
@@ -1549,9 +1551,14 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.tol_spin = QtWidgets.QSpinBox()
         self.tol_spin.setRange(0, 255)
         self.tol_spin.setValue(10)
+        self.pixel_min_spin = QtWidgets.QSpinBox()
+        self.pixel_min_spin.setRange(1, 100000)
+        self.pixel_min_spin.setValue(1)
+        self.pixel_min_spin.setToolTip("범위 안에서 허용오차를 만족해야 하는 픽셀의 최소 개수입니다.")
         self.pixel_expect_combo = QtWidgets.QComboBox()
         self.pixel_expect_combo.addItem("색상이 있을 때 참", True)
         self.pixel_expect_combo.addItem("색상이 없을 때 참", False)
+        self.pixel_expect_combo.currentIndexChanged.connect(self._sync_type_visibility)
         self.group_hint = QtWidgets.QLabel("하위 조건은 트리에서 추가/삭제하세요.")
         self.group_hint.setStyleSheet("color: gray;")
 
@@ -1581,6 +1588,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         pattern_wrap.setLayout(pattern_row)
         self.form.addRow("패턴", pattern_wrap)
         self.form.addRow("Tolerance", self.tol_spin)
+        self.form.addRow("최소 일치 픽셀 수", self.pixel_min_spin)
         self.form.addRow("픽셀 상태", self.pixel_expect_combo)
         self.form.addRow("변수 이름", self.var_name_edit)
         self.form.addRow("변수 값", self.var_value_edit)
@@ -1641,6 +1649,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 self.region_offset_edit,
                 self.color_edit,
                 self.tol_spin,
+                self.pixel_min_spin,
                 self.pixel_expect_combo,
                 self.test_btn,
                 self.pattern_check,
@@ -1656,6 +1665,13 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             self.color_wrap.setVisible(not use_pat)
             if self.form.labelForField(self.color_wrap):
                 self.form.labelForField(self.color_wrap).setVisible(not use_pat)
+            min_visible = not use_pat and bool(self.pixel_expect_combo.currentData())
+            for w in (self.pixel_min_spin,):
+                w.setVisible(min_visible)
+                w.setEnabled(min_visible)
+                label = self.form.labelForField(w)
+                if label is not None:
+                    label.setVisible(min_visible)
         else:
             self.color_wrap.setVisible(False)
         _toggle((self.var_name_edit, self.var_value_edit, self.var_op_combo), visible=is_var, enabled=is_var)
@@ -1686,6 +1702,10 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             else:
                 self.color_edit.setText(_rgb_to_hex(cond.color))
             self.tol_spin.setValue(cond.tolerance)
+            try:
+                self.pixel_min_spin.setValue(max(1, int(getattr(cond, "pixel_min_count", 1) or 1)))
+            except Exception:
+                self.pixel_min_spin.setValue(1)
             idx = self.pixel_expect_combo.findData(getattr(cond, "pixel_exists", True))
             if idx >= 0:
                 self.pixel_expect_combo.setCurrentIndex(idx)
@@ -1740,6 +1760,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 else:
                     color = _parse_hex_color(color_text, resolver=self._resolver)
             pixel_exists = bool(self.pixel_expect_combo.currentData()) if self.pixel_expect_combo.currentIndex() >= 0 else True
+            min_count = max(1, int(self.pixel_min_spin.value()))
             return Condition(
                 type="pixel",
                 name=name,
@@ -1749,6 +1770,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 color_raw=color_text if not use_pattern else None,
                 pixel_pattern=str(pattern_name) if use_pattern else None,
                 tolerance=int(self.tol_spin.value()),
+                pixel_min_count=min_count if not use_pattern else 1,
                 pixel_exists=pixel_exists,
             )
         if typ == "var":
@@ -1789,6 +1811,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             "pattern": self.pattern_combo.currentData() if use_pattern else None,
             "tolerance": tolerance,
             "expect_exists": expect_exists,
+            "min_count": 1 if use_pattern else max(1, int(self.pixel_min_spin.value())),
             "label": self.name_edit.text().strip() or "조건 테스트",
         }
         self._open_debugger_fn(config)
@@ -9160,10 +9183,16 @@ class DebuggerDialog(QtWidgets.QDialog):
             color = pix.get("color")
             region_txt = ",".join(str(v) for v in region) if region else "-"
             color_txt = _rgb_to_hex(color) or "-"
-            expect = "있음" if pix.get("expect_exists", True) else "없음"
+            expect_exists = bool(pix.get("expect_exists", True))
+            expect = "있음" if expect_exists else "없음"
             found = "있음" if pix.get("found") else "없음"
             tol = pix.get("tolerance")
-            return f"영역={region_txt} 색상={color_txt} tol={tol} 기대={expect}/발견={found}"
+            match_cnt = pix.get("match_count")
+            min_cnt = pix.get("min_count")
+            count_txt = ""
+            if expect_exists and match_cnt is not None and min_cnt is not None:
+                count_txt = f" (일치 {match_cnt}/{min_cnt})"
+            return f"영역={region_txt} 색상={color_txt} tol={tol} 기대={expect}/발견={found}{count_txt}"
         if cond_type == "var":
             var_info = detail.get("var") or {}
             op_txt = "!=" if var_info.get("operator") == "ne" else "=="
@@ -9269,12 +9298,17 @@ class DebuggerDialog(QtWidgets.QDialog):
         tol = event.get("tolerance")
         region = event.get("region")
         color = event.get("color")
+        match_cnt = event.get("match_count")
+        min_cnt = event.get("min_count", 1)
         region_txt = ",".join(str(v) for v in region) if region else "-"
         color_txt = "#" + "".join(f"{c:02x}" for c in color) if isinstance(color, (list, tuple)) else "-"
         tol_txt = f"tol={tol}" if tol is not None else f"tol={self._tolerance}"
+        count_txt = ""
+        if expect and match_cnt is not None and min_cnt is not None:
+            count_txt = f", 일치 {match_cnt}/{min_cnt}"
         msg = (
             f"{source} / {label}: {'성공' if res else '실패'} "
-            f"(기대={'있음' if expect else '없음'}, 발견={'있음' if found else '없음'}, {tol_txt}, 영역={region_txt}, 색상={color_txt})"
+            f"(기대={'있음' if expect else '없음'}, 발견={'있음' if found else '없음'}{count_txt}, {tol_txt}, 영역={region_txt}, 색상={color_txt})"
         )
         self.pixel_status.setText(f"픽셀 테스트: {msg}")
 
@@ -10387,6 +10421,7 @@ class PixelTestDialog(QtWidgets.QDialog):
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
+        self._form = form
         self.region_edit = QtWidgets.QLineEdit("0,0,100,100")
         _attach_variable_completer(self.region_edit, [])
         self.color_edit = QtWidgets.QLineEdit("ff0000")
@@ -10404,9 +10439,14 @@ class PixelTestDialog(QtWidgets.QDialog):
         self.tol_spin = QtWidgets.QSpinBox()
         self.tol_spin.setRange(0, 255)
         self.tol_spin.setValue(10)
+        self.min_count_spin = QtWidgets.QSpinBox()
+        self.min_count_spin.setRange(1, 100000)
+        self.min_count_spin.setValue(1)
+        self.min_count_spin.setToolTip("허용오차를 만족해야 하는 최소 픽셀 개수입니다.")
         self.expect_combo = QtWidgets.QComboBox()
         self.expect_combo.addItem("색상이 있을 때 참", True)
         self.expect_combo.addItem("색상이 없을 때 참", False)
+        self.expect_combo.currentIndexChanged.connect(self._sync_expect_visibility)
         self.interval_spin = QtWidgets.QSpinBox()
         self.interval_spin.setRange(50, 5000)
         self.interval_spin.setSuffix(" ms")
@@ -10432,6 +10472,7 @@ class PixelTestDialog(QtWidgets.QDialog):
         pattern_wrap.setLayout(pattern_row)
         form.addRow("패턴", pattern_wrap)
         form.addRow("Tolerance", self.tol_spin)
+        form.addRow("최소 일치 픽셀 수", self.min_count_spin)
         form.addRow("기대 상태", self.expect_combo)
         form.addRow("테스트 주기", self.interval_spin)
         layout.addLayout(form)
@@ -10448,6 +10489,7 @@ class PixelTestDialog(QtWidgets.QDialog):
         self.close_btn.clicked.connect(self.reject)
 
         self.resize(420, 260)
+        self._sync_expect_visibility()
 
     def _reload_patterns(self):
         self.pattern_combo.clear()
@@ -10473,16 +10515,29 @@ class PixelTestDialog(QtWidgets.QDialog):
     def _sync_pattern_visibility(self):
         use_pat = self.pattern_check.isChecked()
         self.color_wrap.setVisible(not use_pat)
-        if self.layout():
-            label = self.layout().itemAt(0)
-        label_for = None
-        # Form layout label handling
-        if hasattr(self, "color_wrap"):
-            # find label in form layout
-            pass
-        # color edit/preview widgets
+        form = getattr(self, "_form", None)
+        if form is not None:
+            lbl_color = form.labelForField(self.color_wrap)
+            if lbl_color is not None:
+                lbl_color.setVisible(not use_pat)
+            lbl_min = form.labelForField(getattr(self, "min_count_spin", None))
+            if lbl_min is not None:
+                lbl_min.setVisible(not use_pat)
         self.color_edit.setEnabled(not use_pat)
         self.color_preview.setEnabled(not use_pat)
+        if hasattr(self, "min_count_spin"):
+            self.min_count_spin.setVisible(not use_pat)
+            self.min_count_spin.setEnabled(not use_pat)
+            lbl = self._form.labelForField(self.min_count_spin) if hasattr(self, "_form") else None
+            if lbl is not None:
+                lbl.setVisible(not use_pat)
+
+    def _sync_expect_visibility(self):
+        allow_min = bool(self.expect_combo.currentData()) if self.expect_combo.currentIndex() >= 0 else True
+        self.min_count_spin.setEnabled(allow_min)
+        lbl = self._form.labelForField(self.min_count_spin) if hasattr(self, "_form") else None
+        if lbl is not None:
+            lbl.setEnabled(allow_min)
 
     def _current_resolver(self):
         if callable(self._resolver_provider):
@@ -10500,14 +10555,15 @@ class PixelTestDialog(QtWidgets.QDialog):
         color = None if use_pattern else _parse_hex_color(self.color_edit.text(), resolver=resolver)
         tolerance = int(self.tol_spin.value())
         expect_exists = bool(self.expect_combo.currentData()) if self.expect_combo.currentIndex() >= 0 else True
-        return region, color, pattern_name, tolerance, expect_exists
+        min_count = max(1, int(self.min_count_spin.value())) if expect_exists else 1
+        return region, color, pattern_name, tolerance, expect_exists, min_count
 
     def _toggle_test(self):
         if self._testing:
             self._stop_testing()
             return
         try:
-            region, color, pattern_name, tol, expect = self._parse_inputs()
+            region, color, pattern_name, tol, expect, min_count = self._parse_inputs()
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "입력 오류", str(exc))
             return
@@ -10522,6 +10578,7 @@ class PixelTestDialog(QtWidgets.QDialog):
             "pattern": pattern_name,
             "tolerance": tol,
             "expect_exists": expect,
+            "min_count": min_count,
             "interval": int(self.interval_spin.value()),
             "label": "픽셀 테스트",
             "persist": True,
@@ -10552,6 +10609,11 @@ class PixelTestDialog(QtWidgets.QDialog):
             self.tol_spin.setValue(tol)
         except Exception:
             pass
+        try:
+            min_cnt = int(state.get("min_count", 1))
+            self.min_count_spin.setValue(max(1, min_cnt))
+        except Exception:
+            pass
         expect = state.get("expect_exists")
         if expect is not None:
             idx = self.expect_combo.findData(bool(expect))
@@ -10578,6 +10640,7 @@ class PixelTestDialog(QtWidgets.QDialog):
             "color": self.color_edit.text().strip(),
             "tolerance": int(self.tol_spin.value()),
             "expect_exists": bool(self.expect_combo.currentData()) if self.expect_combo.currentIndex() >= 0 else True,
+            "min_count": int(self.min_count_spin.value()),
             "interval": int(self.interval_spin.value()),
             "pattern": self.pattern_combo.currentData() if self.pattern_check.isChecked() else None,
         }
@@ -12710,6 +12773,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             "color_raw": pixel_state.get("color"),
             "tolerance": pixel_state.get("tolerance"),
             "expect_exists": pixel_state.get("expect_exists"),
+            "min_count": pixel_state.get("min_count", 1),
             "interval": pixel_state.get("interval", 200),
         }
         self._updating_resolution_fields = False
@@ -13041,6 +13105,11 @@ class MacroWindow(QtWidgets.QMainWindow):
                 self._pixel_test_defaults["tolerance"] = int(config.get("tolerance"))
             if config.get("interval") is not None:
                 self._pixel_test_defaults["interval"] = int(config.get("interval"))
+            if config.get("min_count") is not None:
+                try:
+                    self._pixel_test_defaults["min_count"] = max(1, int(config.get("min_count")))
+                except Exception:
+                    pass
         dbg.show_and_raise()
 
     def _open_color_calc_dialog(self):
@@ -13061,6 +13130,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             "color": state.get("color", defaults["color"]),
             "tolerance": state.get("tolerance", defaults["tolerance"]),
             "expect_exists": state.get("expect_exists", defaults["expect_exists"]),
+            "min_count": state.get("min_count", defaults["min_count"]),
             "interval": state.get("interval", defaults["interval"]),
         }
         if self._pixel_test_dialog is None:
@@ -14313,9 +14383,10 @@ class MacroWindow(QtWidgets.QMainWindow):
             region = cfg.get("region") or self.profile.pixel_region or (0, 0, 100, 100)
             color = cfg.get("color") or self.profile.pixel_color or (255, 0, 0)
             expect = bool(cfg.get("expect_exists")) if cfg else getattr(self.profile, "pixel_expect_exists", True)
+            min_cnt = max(1, int(cfg.get("min_count", getattr(self.profile, "pixel_min_count", 1) or 1)))
             region = tuple(int(v) for v in region)
             color = tuple(int(c) for c in color)
-            self.engine.update_pixel_test(region, color, tol, expect)
+            self.engine.update_pixel_test(region, color, tol, expect, min_cnt)
         except Exception:
             pass
 
@@ -14825,6 +14896,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         color = prof.pixel_color or (255, 0, 0)
         tol = prof.pixel_tolerance if prof.pixel_tolerance is not None else 10
         expect = getattr(prof, "pixel_expect_exists", True)
+        min_count = max(1, int(getattr(prof, "pixel_min_count", 1) or 1))
         region_text = prof.pixel_region_raw or ",".join(str(v) for v in region)
         color_text = prof.pixel_color_raw or _rgb_to_hex(color)
         self._pixel_test_defaults.update(
@@ -14833,6 +14905,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 "color_raw": color_text,
                 "tolerance": tol,
                 "expect_exists": expect,
+                "min_count": min_count,
             }
         )
 
@@ -15061,7 +15134,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._append_log(f"스케일된 프로필 저장: {save_path}")
         QtWidgets.QMessageBox.information(self, "저장 완료", f"스케일된 프로필을 저장했습니다.\n{save_path}")
         try:
-            self.engine.update_pixel_test(region, color, tol, expect)
+            min_cnt = max(1, int(getattr(self.profile, "pixel_min_count", 1) or 1))
+            self.engine.update_pixel_test(region, color, tol, expect, min_cnt)
         except Exception:
             pass
 
@@ -15071,6 +15145,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         color: RGB,
         tolerance: int,
         expect_exists: bool,
+        min_count: int = 1,
         *,
         region_raw: str | None = None,
         color_raw: str | None = None,
@@ -15083,10 +15158,12 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.profile.pixel_color = tuple(int(c) for c in color)
         self.profile.pixel_color_raw = color_raw
         self.profile.pixel_tolerance = int(tolerance)
+        if hasattr(self.profile, "pixel_min_count"):
+            self.profile.pixel_min_count = max(1, int(min_count))
         if hasattr(self.profile, "pixel_expect_exists"):
             self.profile.pixel_expect_exists = bool(expect_exists)
         self._refresh_pixel_defaults(self.profile)
-        self.engine.update_pixel_test(region, color, tolerance, expect_exists)
+        self.engine.update_pixel_test(region, color, tolerance, expect_exists, max(1, int(min_count)))
         if mark_dirty and not self._loading_profile:
             self._mark_dirty()
 
@@ -15099,12 +15176,15 @@ class MacroWindow(QtWidgets.QMainWindow):
         tol_val = int(tol if tol is not None else (self.profile.pixel_tolerance or 10))
         expect = self._pixel_test_defaults.get("expect_exists")
         expect_val = bool(self.profile.pixel_expect_exists) if expect is None else bool(expect)
+        min_count = self._pixel_test_defaults.get("min_count")
+        min_count_val = max(1, int(min_count)) if min_count is not None else 1
         interval = int(self._pixel_test_defaults.get("interval", 200) or 200)
         return {
             "region": region_txt,
             "color": color_txt,
             "tolerance": tol_val,
             "expect_exists": expect_val,
+            "min_count": min_count_val,
             "interval": interval,
         }
 
@@ -15118,6 +15198,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 color=cfg["color"],
                 tolerance=cfg["tolerance"],
                 expect_exists=cfg.get("expect_exists", True),
+                min_count=cfg.get("min_count", 1),
                 source=cfg.get("source"),
                 label=cfg.get("label"),
                 pattern=cfg.get("pattern"),
@@ -15146,6 +15227,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             color = tuple(int(c) for c in color_raw) if color_raw is not None else None
             tolerance = int(config.get("tolerance", 0))
             expect_exists = bool(config.get("expect_exists", True))
+            min_count = max(1, int(config.get("min_count", 1) or 1))
             interval = max(50, int(config.get("interval", 200) or 200))
             pattern_name = config.get("pattern")
         except Exception as exc:
@@ -15153,6 +15235,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             return
         self._pixel_test_defaults["interval"] = interval
         self._pixel_test_defaults["tolerance"] = tolerance
+        self._pixel_test_defaults["min_count"] = min_count
         label = config.get("label")
         self._pixel_test_config = {
             "region": region,
@@ -15160,6 +15243,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             "pattern": pattern_name,
             "tolerance": tolerance,
             "expect_exists": expect_exists,
+            "min_count": min_count,
             "source": source,
             "label": label,
             "on_stop": on_stop,
@@ -15170,6 +15254,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 color,
                 tolerance,
                 expect_exists,
+                min_count=min_count,
                 region_raw=config.get("region_raw"),
                 color_raw=config.get("color_raw"),
                 mark_dirty=not self._loading_profile,
@@ -15181,6 +15266,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                     "pattern": pattern_name,
                     "tolerance": tolerance,
                     "expect_exists": expect_exists,
+                    "min_count": min_count,
                     "interval": interval,
                 }
             )
@@ -15191,6 +15277,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             color=color,
             tolerance=tolerance,
             expect_exists=expect_exists,
+            min_count=min_count,
             source=source,
             label=label,
             pattern=pattern_name,
