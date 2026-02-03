@@ -323,6 +323,27 @@ def _update_hex_preview_label(label: QtWidgets.QLabel | None, text: str | None, 
     label.setVisible(False)
 
 
+def _make_hex_chip_icon(text: str | None, *, size: int = 12) -> QtGui.QIcon:
+    raw = (text or "").strip().lstrip("#")
+    if len(raw) != 6 or any(ch not in HEX_CHARS for ch in raw):
+        return QtGui.QIcon()
+    color = QtGui.QColor(f"#{raw}")
+    if not color.isValid():
+        return QtGui.QIcon()
+    pix = QtGui.QPixmap(size, size)
+    pix.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pix)
+    painter.fillRect(0, 0, size, size, color)
+    luminance = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+    border = QtGui.QColor("#000" if luminance > 186 else "#fff")
+    pen = QtGui.QPen(border)
+    pen.setWidth(1)
+    painter.setPen(pen)
+    painter.drawRect(0, 0, size - 1, size - 1)
+    painter.end()
+    return QtGui.QIcon(pix)
+
+
 def _parse_hex_lines(text: str, *, allow_empty: bool = False) -> list[str]:
     colors: list[str] = []
     for idx, line in enumerate(text.splitlines(), 1):
@@ -1299,6 +1320,20 @@ def _key_bundle_info(cond: Condition) -> tuple[bool, list[str], str | None]:
     return True, keys, mode
 
 
+def _condition_hex_color(cond: Condition) -> str | None:
+    if not isinstance(cond, Condition):
+        return None
+    if cond.type != "pixel" or getattr(cond, "pixel_pattern", None):
+        return None
+    raw = getattr(cond, "color_raw", "") or ""
+    if raw:
+        try:
+            return f"#{_normalize_hex_line(raw)}"
+        except Exception:
+            pass
+    return _rgb_to_hex(cond.color)
+
+
 def _condition_brief(cond: Condition) -> str:
     if not isinstance(cond, Condition):
         return "(조건 없음)"
@@ -1853,7 +1888,13 @@ class ConditionDialog(QtWidgets.QDialog):
         self.condition_tree.set_drop_callback(self._sync_condition_from_tree)
         self.condition_tree.itemChanged.connect(self._on_item_changed)
         self.condition_tree.setColumnWidth(1, 140)
-        self.condition_tree.setColumnWidth(3, 60)
+        header = self.condition_tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        checkbox_w = self.style().pixelMetric(QtWidgets.QStyle.PixelMetric.PM_IndicatorWidth)
+        self.condition_tree.setColumnWidth(3, max(checkbox_w + 10, 28))
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Interactive)
         cond_group_layout.addWidget(self.condition_tree)
 
         tree_btn_row = QtWidgets.QHBoxLayout()
@@ -1922,6 +1963,9 @@ class ConditionDialog(QtWidgets.QDialog):
             pass
         item = QtWidgets.QTreeWidgetItem([_condition_type_label(cond.type), cond.name or "", _condition_brief(cond), ""])
         item.setData(0, QtCore.Qt.ItemDataRole.UserRole, cond)
+        color_hex = _condition_hex_color(cond)
+        if color_hex:
+            item.setIcon(2, _make_hex_chip_icon(color_hex))
         flags = item.flags()
         flags |= (
             QtCore.Qt.ItemFlag.ItemIsDragEnabled

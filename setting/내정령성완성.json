@@ -2728,24 +2728,6 @@
                 "var_name": null,
                 "var_value_raw": null,
                 "var_operator": "eq",
-                "region": "2142,668,1,1",
-                "color": "70F19D",
-                "pixel_pattern": null,
-                "tolerance": 30,
-                "pixel_exists": true,
-                "timer_index": null,
-                "timer_value": null,
-                "timer_operator": "ge",
-                "enabled": true
-              },
-              {
-                "type": "pixel",
-                "name": null,
-                "key": null,
-                "key_mode": null,
-                "var_name": null,
-                "var_value_raw": null,
-                "var_operator": "eq",
                 "region": "2127,633,1,1",
                 "color": "f7f8f8",
                 "pixel_pattern": null,
@@ -2786,6 +2768,24 @@
                 "color": "fc3636",
                 "pixel_pattern": null,
                 "tolerance": 30,
+                "pixel_exists": true,
+                "timer_index": null,
+                "timer_value": null,
+                "timer_operator": "ge",
+                "enabled": true
+              },
+              {
+                "type": "pixel",
+                "name": null,
+                "key": null,
+                "key_mode": null,
+                "var_name": null,
+                "var_value_raw": null,
+                "var_operator": "eq",
+                "region": "2129,634,1,1",
+                "color": "ffffff",
+                "pixel_pattern": null,
+                "tolerance": 10,
                 "pixel_exists": true,
                 "timer_index": null,
                 "timer_value": null,
@@ -5273,7 +5273,7 @@
           "type": "if",
           "name": null,
           "description": "사람탭안되어잇을때타겟",
-          "enabled": false,
+          "enabled": true,
           "once_per_macro": false,
           "force_first_run": false,
           "key": null,
@@ -5299,7 +5299,7 @@
             "timer_index": null,
             "timer_value": null,
             "timer_operator": "ge",
-            "enabled": false,
+            "enabled": true,
             "conditions": [
               {
                 "type": "pixel",
@@ -5309,46 +5309,10 @@
                 "var_name": null,
                 "var_value_raw": null,
                 "var_operator": "eq",
-                "region": "1719,179,1,1",
-                "color": "ffb7b7",
+                "region": "1698,48,45,18",
+                "color": "E82020",
                 "pixel_pattern": null,
-                "tolerance": 80,
-                "pixel_exists": false,
-                "timer_index": null,
-                "timer_value": null,
-                "timer_operator": "ge",
-                "enabled": true
-              },
-              {
-                "type": "pixel",
-                "name": null,
-                "key": null,
-                "key_mode": null,
-                "var_name": null,
-                "var_value_raw": null,
-                "var_operator": "eq",
-                "region": "1719,179,1,1",
-                "color": "d6d7d5",
-                "pixel_pattern": null,
-                "tolerance": 60,
-                "pixel_exists": false,
-                "timer_index": null,
-                "timer_value": null,
-                "timer_operator": "ge",
-                "enabled": true
-              },
-              {
-                "type": "pixel",
-                "name": null,
-                "key": null,
-                "key_mode": null,
-                "var_name": null,
-                "var_value_raw": null,
-                "var_operator": "eq",
-                "region": "1719,179,1,1",
-                "color": "e8b5b6",
-                "pixel_pattern": null,
-                "tolerance": 80,
+                "tolerance": 30,
                 "pixel_exists": false,
                 "timer_index": null,
                 "timer_value": null,
@@ -5480,7 +5444,7 @@
                 "region": "2127,633,1,1",
                 "color": "f7f8f8",
                 "pixel_pattern": null,
-                "tolerance": 30,
+                "tolerance": 10,
                 "pixel_exists": true,
                 "timer_index": null,
                 "timer_value": null,
@@ -5498,7 +5462,25 @@
                 "region": "2127,634,1,1",
                 "color": "9ca49f",
                 "pixel_pattern": null,
-                "tolerance": 30,
+                "tolerance": 10,
+                "pixel_exists": true,
+                "timer_index": null,
+                "timer_value": null,
+                "timer_operator": "ge",
+                "enabled": true
+              },
+              {
+                "type": "pixel",
+                "name": null,
+                "key": null,
+                "key_mode": null,
+                "var_name": null,
+                "var_value_raw": null,
+                "var_operator": "eq",
+                "region": "2129,634,1,1",
+                "color": "ffffff",
+                "pixel_pattern": null,
+                "tolerance": 10,
                 "pixel_exists": true,
                 "timer_index": null,
                 "timer_value": null,
@@ -5621,21 +5603,21 @@
             "conditions": [
               {
                 "type": "pixel",
-                "name": "피게이지초록색",
+                "name": "피게이지 빨간아닐때",
                 "key": null,
                 "key_mode": null,
                 "var_name": null,
                 "var_value_raw": null,
                 "var_operator": "eq",
-                "region": "1672,1279,1,1",
-                "color": "249228",
+                "region": "1670,1279,1,1",
+                "color": "da151a",
                 "pixel_pattern": null,
                 "tolerance": 80,
-                "pixel_exists": true,
+                "pixel_exists": false,
                 "timer_index": null,
                 "timer_value": null,
                 "timer_operator": "ge",
-                "enabled": false
+                "enabled": true
               },
               {
                 "type": "pixel",
@@ -7781,7 +7763,7 @@
           "type": "if",
           "name": null,
           "description": "사람탭안되어잇을때타겟",
-          "enabled": false,
+          "enabled": true,
           "once_per_macro": false,
           "force_first_run": false,
           "key": null,
@@ -7807,7 +7789,7 @@
             "timer_index": null,
             "timer_value": null,
             "timer_operator": "ge",
-            "enabled": false,
+            "enabled": true,
             "conditions": [
               {
                 "type": "pixel",
@@ -7817,46 +7799,10 @@
                 "var_name": null,
                 "var_value_raw": null,
                 "var_operator": "eq",
-                "region": "1719,179,1,1",
-                "color": "ffb7b7",
+                "region": "1698,48,45,18",
+                "color": "E82020",
                 "pixel_pattern": null,
-                "tolerance": 50,
-                "pixel_exists": false,
-                "timer_index": null,
-                "timer_value": null,
-                "timer_operator": "ge",
-                "enabled": true
-              },
-              {
-                "type": "pixel",
-                "name": null,
-                "key": null,
-                "key_mode": null,
-                "var_name": null,
-                "var_value_raw": null,
-                "var_operator": "eq",
-                "region": "1719,179,1,1",
-                "color": "d6d7d5",
-                "pixel_pattern": null,
-                "tolerance": 20,
-                "pixel_exists": false,
-                "timer_index": null,
-                "timer_value": null,
-                "timer_operator": "ge",
-                "enabled": true
-              },
-              {
-                "type": "pixel",
-                "name": null,
-                "key": null,
-                "key_mode": null,
-                "var_name": null,
-                "var_value_raw": null,
-                "var_operator": "eq",
-                "region": "1719,179,1,1",
-                "color": "e8b5b6",
-                "pixel_pattern": null,
-                "tolerance": 50,
+                "tolerance": 30,
                 "pixel_exists": false,
                 "timer_index": null,
                 "timer_value": null,
@@ -8176,7 +8122,7 @@
                 "region": "2127,633,1,1",
                 "color": "f7f8f8",
                 "pixel_pattern": null,
-                "tolerance": 30,
+                "tolerance": 10,
                 "pixel_exists": true,
                 "timer_index": null,
                 "timer_value": null,
@@ -8194,7 +8140,25 @@
                 "region": "2127,634,1,1",
                 "color": "9ca49f",
                 "pixel_pattern": null,
-                "tolerance": 30,
+                "tolerance": 10,
+                "pixel_exists": true,
+                "timer_index": null,
+                "timer_value": null,
+                "timer_operator": "ge",
+                "enabled": true
+              },
+              {
+                "type": "pixel",
+                "name": null,
+                "key": null,
+                "key_mode": null,
+                "var_name": null,
+                "var_value_raw": null,
+                "var_operator": "eq",
+                "region": "2129,634,1,1",
+                "color": "ffffff",
+                "pixel_pattern": null,
+                "tolerance": 10,
                 "pixel_exists": true,
                 "timer_index": null,
                 "timer_value": null,
@@ -8317,21 +8281,21 @@
             "conditions": [
               {
                 "type": "pixel",
-                "name": "피게이지초록색",
+                "name": "피게이지 빨간아닐때",
                 "key": null,
                 "key_mode": null,
                 "var_name": null,
                 "var_value_raw": null,
                 "var_operator": "eq",
-                "region": "1672,1279,1,1",
-                "color": "249228",
+                "region": "1670,1279,1,1",
+                "color": "da151a",
                 "pixel_pattern": null,
                 "tolerance": 80,
-                "pixel_exists": true,
+                "pixel_exists": false,
                 "timer_index": null,
                 "timer_value": null,
                 "timer_operator": "ge",
-                "enabled": false
+                "enabled": true
               },
               {
                 "type": "pixel",
@@ -10471,12 +10435,12 @@
       ]
     },
     {
-      "trigger_key": "mouse3",
+      "trigger_key": "\\",
       "mode": "toggle",
       "hold_press_seconds": null,
       "triggers": [
         {
-          "key": "mouse3",
+          "key": "\\",
           "mode": "toggle",
           "hold_press_seconds": null
         }
@@ -10484,13 +10448,13 @@
       "name": "test",
       "description": null,
       "suppress_trigger": false,
-      "enabled": false,
+      "enabled": true,
       "cycle_count": null,
       "actions": [
         {
           "type": "if",
           "name": null,
-          "description": "충격해제",
+          "description": "사람탭안되어잇을때타겟",
           "enabled": true,
           "once_per_macro": false,
           "force_first_run": false,
@@ -10527,26 +10491,8 @@
                 "var_name": null,
                 "var_value_raw": null,
                 "var_operator": "eq",
-                "region": "2127,633,1,1",
-                "color": "f7f8f8",
-                "pixel_pattern": null,
-                "tolerance": 30,
-                "pixel_exists": true,
-                "timer_index": null,
-                "timer_value": null,
-                "timer_operator": "ge",
-                "enabled": true
-              },
-              {
-                "type": "pixel",
-                "name": null,
-                "key": null,
-                "key_mode": null,
-                "var_name": null,
-                "var_value_raw": null,
-                "var_operator": "eq",
-                "region": "2127,634,1,1",
-                "color": "9ca49f",
+                "region": "1698,48,45,18",
+                "color": "E82020",
                 "pixel_pattern": null,
                 "tolerance": 30,
                 "pixel_exists": true,
@@ -10580,7 +10526,7 @@
               "enabled": true,
               "once_per_macro": false,
               "force_first_run": false,
-              "key": "`",
+              "key": "tab",
               "repeat": 1,
               "repeat_raw": null,
               "var_name": null,
@@ -10655,72 +10601,17 @@
   "pixel_tolerance": 10,
   "pixel_expect_exists": true,
   "pixel_patterns": {
-    "치유구원": {
-      "name": "치유구원",
+    "pattern1": {
+      "name": "pattern1",
       "tolerance": 0,
       "description": null,
-      "points": [
-        {
-          "dx": 1,
-          "dy": 0,
-          "color": [
-            69,
-            163,
-            156
-          ],
-          "tolerance": null
-        },
-        {
-          "dx": 18,
-          "dy": 0,
-          "color": [
-            45,
-            157,
-            146
-          ],
-          "tolerance": null
-        },
-        {
-          "dx": 9,
-          "dy": 7,
-          "color": [
-            83,
-            89,
-            89
-          ],
-          "tolerance": null
-        },
-        {
-          "dx": 9,
-          "dy": 11,
-          "color": [
-            24,
-            22,
-            23
-          ],
-          "tolerance": null
-        },
-        {
-          "dx": 0,
-          "dy": 8,
-          "color": [
-            30,
-            106,
-            96
-          ],
-          "tolerance": null
-        },
-        {
-          "dx": 15,
-          "dy": 8,
-          "color": [
-            82,
-            171,
-            166
-          ],
-          "tolerance": null
-        }
-      ]
+      "points": []
+    },
+    "dd": {
+      "name": "dd",
+      "tolerance": 0,
+      "description": null,
+      "points": []
     }
   },
   "keyboard_device_id": 2,
