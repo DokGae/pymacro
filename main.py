@@ -7620,6 +7620,13 @@ class DebuggerDialog(QtWidgets.QDialog):
             self._set_log_visible(bool(state.get("log_visible", True)))
         except Exception:
             pass
+        try:
+            if hasattr(self, "log_visible_chk"):
+                blocker = QtCore.QSignalBlocker(self.log_visible_chk)
+                self.log_visible_chk.setChecked(self._log_visible)
+                del blocker
+        except Exception:
+            pass
         if isinstance(state.get("test_region"), str):
             self.region_input.setText(state.get("test_region"))
         if isinstance(state.get("test_color"), str):
