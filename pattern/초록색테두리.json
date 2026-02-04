@@ -1,0 +1,27 @@
+{
+  "name": "초록색테두리",
+  "tolerance": 0,
+  "description": null,
+  "points": [
+    {
+      "dx": 1,
+      "dy": 9,
+      "color": [
+        255,
+        255,
+        255
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 0,
+      "dy": 0,
+      "color": [
+        255,
+        255,
+        255
+      ],
+      "tolerance": null
+    }
+  ]
+}

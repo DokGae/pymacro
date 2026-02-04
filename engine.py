@@ -10,6 +10,7 @@ import re
 import sys
 import threading
 import time
+import json
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Literal, Optional, Set, Tuple
@@ -68,6 +69,53 @@ _TRIGGER_MOD_ALIASES = {
     "win": {"win", "lwin", "rwin", "super", "meta", "cmd", "command", "windows"},
 }
 _TRIGGER_MOD_KEYS = set(_TRIGGER_MOD_ALIASES.keys())
+
+PATTERN_DIR = Path(__file__).parent / "pattern"
+PATTERN_FILE = PATTERN_DIR / "patterns.json"
+
+
+def _load_shared_patterns() -> Dict[str, PixelPattern]:
+    """pattern 폴더의 각 패턴 파일(*.json)을 개별로 읽어 공용 패턴을 만든다."""
+    result: Dict[str, PixelPattern] = {}
+    try:
+        if not PATTERN_DIR.exists():
+            return {}
+        for path in PATTERN_DIR.glob("*.json"):
+            if path.name == "patterns.json":
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            merged = dict(data)
+            merged.setdefault("name", merged.get("name") or path.stem)
+            pat = PixelPattern.from_dict(merged)
+            pat.tolerance = 0
+            for pt in pat.points:
+                pt.tolerance = None
+            result[pat.name] = pat
+        # 레거시 patterns.json 병합(존재하면 이름이 겹치지 않을 때만)
+        if PATTERN_FILE.exists():
+            try:
+                legacy = json.loads(PATTERN_FILE.read_text(encoding="utf-8"))
+                if isinstance(legacy, dict):
+                    for name, item in legacy.items():
+                        if name in result or not isinstance(item, dict):
+                            continue
+                        merged = dict(item)
+                        merged.setdefault("name", name)
+                        pat = PixelPattern.from_dict(merged)
+                        pat.tolerance = 0
+                        for pt in pat.points:
+                            pt.tolerance = None
+                        result[pat.name] = pat
+            except Exception:
+                pass
+    except Exception:
+        return result
+    return result
 
 
 def _normalize_trigger_part(key: str) -> str:
@@ -2403,7 +2451,12 @@ class MacroEngine:
         self._pixel_test_expect_exists: bool = True
         self._pixel_test_min_count: int = 1
         self._pixel_test_pattern: Optional[str] = None
-        self._pixel_patterns: Dict[str, PixelPattern] = getattr(self._profile, "pixel_patterns", {}) or {}
+        base_patterns = _load_shared_patterns()
+        profile_patterns = getattr(self._profile, "pixel_patterns", {}) or {}
+        for name, pat in profile_patterns.items():
+            if name not in base_patterns:
+                base_patterns[name] = copy.deepcopy(pat)
+        self._pixel_patterns: Dict[str, PixelPattern] = base_patterns
         self._debug_image_override: Optional[np.ndarray] = None
         self._debug_image_label: Optional[str] = None
         self._keyboard_device_id: Optional[int] = self._profile.keyboard_device_id
@@ -2697,7 +2750,12 @@ class MacroEngine:
         self._apply_mouse_device(mouse_device_id, mouse_hardware_id, log=False)
         self._select_backend(self._input_mode, allow_fallback=True, log=True)
         self._refresh_swallow(app_ctx)
-        self._pixel_patterns = getattr(self._profile, "pixel_patterns", {}) or {}
+        patterns = _load_shared_patterns()
+        profile_patterns = getattr(self._profile, "pixel_patterns", {}) or {}
+        for name, pat in profile_patterns.items():
+            if name not in patterns:
+                patterns[name] = copy.deepcopy(pat)
+        self._pixel_patterns = patterns
         # 픽셀 테스트 설정도 프로필에서 동기화
         try:
             expect_exists = True
