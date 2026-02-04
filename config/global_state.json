@@ -1,0 +1,49 @@
+{
+  "last_profile_path": "D:/Ion/macro/setting/내정령성완성.json",
+  "profile_history": {
+    "recent": [
+      "D:\\Ion\\macro\\setting\\내정령성완성.json"
+    ],
+    "favorites": [
+      "D:\\Ion\\macro\\setting\\내정령성완성.json"
+    ]
+  },
+  "debugger": {
+    "geometry": [
+      916,
+      189,
+      900,
+      706
+    ],
+    "visible": false,
+    "interval": 200,
+    "tolerance": 10,
+    "test_region": "0,0,100,100",
+    "test_color": "ff0000",
+    "test_expect": true,
+    "fail_capture_enabled": false,
+    "fail_capture_cooldown": 1.0,
+    "fail_capture_confirmations": 1,
+    "fail_capture_limit": null,
+    "use_viewer_image": false,
+    "sections": {
+      "section_condition": true,
+      "section_pixel": false,
+      "section_vars": false
+    },
+    "highlight_selection": false,
+    "log_visible": false
+  },
+  "screenshot": {
+    "interval": 0.01,
+    "format": "jpeg",
+    "jpeg_quality": 80,
+    "png_compress_level": 6,
+    "queue_size": 120,
+    "hotkey_start": null,
+    "hotkey_stop": null,
+    "hotkey_capture": null,
+    "hotkey_enabled": false
+  },
+  "log_enabled": false
+}

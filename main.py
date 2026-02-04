@@ -13903,7 +13903,8 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _persist_screenshot_state(self, data: dict):
         self._update_state("screenshot", data)
     def _persist_debugger_state(self, data: dict):
-        self._update_state("debugger", data)
+        self._debugger_state = data or {}
+        self._update_state("debugger", self._debugger_state)
     def _persist_color_calc_state(self, data: dict):
         self._color_calc_state = data or {}
         self._update_state("color_calc", self._color_calc_state)
