@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import copy
 import ctypes
 import html
@@ -15,11 +14,9 @@ import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Callable, List, Optional
-
 from PyQt6 import QtCore, QtGui, QtWidgets
 import numpy as np
 from PIL import Image
-
 from capture import (
     CAPTURE_INTERVAL_SECONDS,
     DEFAULT_FORMAT,
@@ -53,11 +50,8 @@ from lib.interception import Interception, KeyFilter, KeyState, MapVk, MouseFilt
 from lib.keyboard import get_keystate
 from lib.processes import get_foreground_process, list_processes
 from lib.pixel import RGB, Region, PixelPattern, PixelPatternPoint, capture_region
-
 PATTERN_DIR = Path(__file__).parent / "pattern"
 PATTERN_FILE = PATTERN_DIR / "patterns.json"
-
-
 def _load_shared_patterns() -> dict[str, PixelPattern]:
     """pattern 폴더의 각 패턴 파일(*.json)을 개별로 읽어 공용 패턴을 만든다."""
     result: dict[str, PixelPattern] = {}
@@ -101,8 +95,6 @@ def _load_shared_patterns() -> dict[str, PixelPattern]:
     except Exception:
         return result
     return result
-
-
 def _save_shared_patterns(patterns: dict[str, PixelPattern]):
     """공용 패턴을 pattern/<name>.json 파일 단위로 즉시 저장한다."""
     try:
@@ -133,7 +125,6 @@ def _save_shared_patterns(patterns: dict[str, PixelPattern]):
     except Exception:
         # 저장 실패는 치명적이지 않으므로 조용히 무시
         pass
-
 def _merge_profile_patterns_to_shared(profile_patterns: dict[str, PixelPattern] | None) -> dict[str, PixelPattern]:
     """프로필에 남아 있는 패턴을 공용 저장소(pattern/patterns.json)로 옮겨 한 곳에서만 관리한다."""
     shared = _load_shared_patterns()
@@ -152,10 +143,7 @@ def _merge_profile_patterns_to_shared(profile_patterns: dict[str, PixelPattern] 
     if changed:
         _save_shared_patterns(merged)
     return merged
-
 MAX_RECENT_PROFILES = 15
-
-
 def _is_admin() -> bool:
     if not sys.platform.startswith("win"):
         return True
@@ -163,17 +151,11 @@ def _is_admin() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
-
-
 def _relaunch_as_admin():
     params = " ".join(f'"{arg}"' for arg in sys.argv)
     ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
-
-
 def _format_dt() -> str:
     return time.strftime("%H:%M:%S")
-
-
 def _rgb_to_hex(rgb) -> str | None:
     if isinstance(rgb, (list, tuple)) and len(rgb) == 3:
         try:
@@ -181,14 +163,10 @@ def _rgb_to_hex(rgb) -> str | None:
         except Exception:
             return None
     return None
-
-
 def _parse_name_list(text: str) -> list[str]:
     raw = str(text or "")
     parts = re.split(r"[;,]", raw)
     return [p.strip() for p in parts if p and p.strip()]
-
-
 def _color_chip_html(hex_color: str | None, *, size: int = 12) -> str:
     if not hex_color or not isinstance(hex_color, str) or not hex_color.startswith("#"):
         return ""
@@ -206,11 +184,7 @@ def _color_chip_html(hex_color: str | None, *, size: int = 12) -> str:
         f'border:1px solid {border};background:{hex_color};'
         f'vertical-align:middle;margin:0 4px 0 2px;"></span>'
     )
-
-
 _VID_PID_RE = re.compile(r"VID_([0-9A-F]{4}).*PID_([0-9A-F]{4})", re.IGNORECASE)
-
-
 def _short_hwid(hwid: str) -> str:
     """Extract VID/PID summary from a full hardware id."""
     if not hwid:
@@ -219,8 +193,6 @@ def _short_hwid(hwid: str) -> str:
     if match:
         return f"VID_{match.group(1).upper()} PID_{match.group(2).upper()}"
     return hwid
-
-
 def _normalize_profile_path(path: str) -> str:
     try:
         return str(Path(path).expanduser().resolve())
@@ -229,16 +201,12 @@ def _normalize_profile_path(path: str) -> str:
             return str(Path(path))
         except Exception:
             return str(path)
-
-
 def _elide_middle(text: str, max_len: int = 60) -> str:
     if not text or len(text) <= max_len:
         return text
     head = max(3, max_len // 2 - 2)
     tail = max(3, max_len - head - 3)
     return f"{text[:head]}...{text[-tail:]}"
-
-
 def _default_macro() -> Macro:
     # z 누르고 있는 동안 r → sleep 50 → t 반복, 픽셀 맞으면 f1, 아니면 f2
     pixel_cond = Condition(type="pixel", region=(0, 0, 100, 100), color=(255, 0, 0), tolerance=0)
@@ -260,15 +228,12 @@ def _default_macro() -> Macro:
         suppress_trigger=False,
         actions=actions,
     )
-
-
 DEFAULT_PROFILE = MacroProfile(
     macros=[_default_macro()],
     pixel_region=(0, 0, 100, 100),
     pixel_color=(255, 0, 0),
     pixel_tolerance=0,
 )
-
 HEX_CHARS = set("0123456789abcdefABCDEF")
 ACTION_TYPE_OPTIONS = [
     ("탭 (누르고 떼기)", "press"),
@@ -281,8 +246,6 @@ ACTION_TYPE_OPTIONS = [
     ("대기 (sleep)", "sleep"),
     ("타이머 설정", "timer"),
 ]
-
-
 def _parse_delay_text(text: str) -> tuple[int, bool, int, int]:
     """`40` -> (40, False, 40, 40), `40-80` -> (40, True, 40, 80)."""
     raw = str(text or "").lower().replace("ms", "")
@@ -306,8 +269,6 @@ def _parse_delay_text(text: str) -> tuple[int, bool, int, int]:
         val = 0
     val = max(0, val)
     return val, False, val, val
-
-
 def _delay_text_from_config(cfg: KeyDelayConfig, *, press: bool = True) -> str:
     """KeyDelayConfig -> human text (min-max or single)."""
     if press:
@@ -328,8 +289,6 @@ def _delay_text_from_config(cfg: KeyDelayConfig, *, press: bool = True) -> str:
             return f"{lo}-{hi}" if rnd else str(lo)
         return f"{lo}-{hi}"
     return str(base or lo or hi or 0)
-
-
 def _parse_hex_color(text: str, *, resolver=None) -> RGB:
     raw = text.strip()
     if resolver:
@@ -338,34 +297,25 @@ def _parse_hex_color(text: str, *, resolver=None) -> RGB:
     if len(raw) != 6 or any(ch not in HEX_CHARS for ch in raw):
         raise ValueError("색상은 16진수 6자리(RRGGBB)여야 합니다.")
     return tuple(int(raw[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
-
-
 def _rgb_to_hex(color: RGB | None) -> str:
     if not color:
         return ""
     r, g, b = (max(0, min(255, int(c))) for c in color)
     return f"{r:02x}{g:02x}{b:02x}"
-
-
 def _setup_hex_line_edit(edit: QtWidgets.QLineEdit):
     # 변수(/name, ${name}) 입력도 허용해야 하므로 밸리데이터는 두지 않는다.
     edit.setMaxLength(64)
     edit.setPlaceholderText("RRGGBB 또는 /colorVar")
-
-
 def _normalize_hex_line(text: str) -> str:
     raw = text.strip().lstrip("#")
     if len(raw) != 6 or any(ch not in HEX_CHARS for ch in raw):
         raise ValueError("HEX 색상은 RRGGBB 여야 합니다.")
     return raw.lower()
-
-
 def _attach_hex_preview_chip(edit: QtWidgets.QLineEdit) -> QtGui.QAction:
     """텍스트 입력 옆에 HEX 색상 미리보기 칩을 붙인다."""
     action = edit.addAction(QtGui.QIcon(), QtWidgets.QLineEdit.ActionPosition.TrailingPosition)
     action.setVisible(False)
     action.setToolTip("입력 색상 미리보기")
-
     def _update(text: str | None):
         raw = (text or "").strip()
         icon = QtGui.QIcon()
@@ -383,12 +333,9 @@ def _attach_hex_preview_chip(edit: QtWidgets.QLineEdit) -> QtGui.QAction:
                 show = False
         action.setIcon(icon)
         action.setVisible(show)
-
     edit.textChanged.connect(_update)
     _update(edit.text())
     return action
-
-
 def _make_hex_preview_label(*, size: int = 14) -> QtWidgets.QLabel:
     """라벨 옆에 붙이는 작은 색상 칩 레이블을 생성한다."""
     lbl = QtWidgets.QLabel()
@@ -399,8 +346,6 @@ def _make_hex_preview_label(*, size: int = 14) -> QtWidgets.QLabel:
     lbl.setStyleSheet("padding:0;margin:0;")
     lbl.setToolTip("입력 색상 미리보기")
     return lbl
-
-
 def _update_hex_preview_label(label: QtWidgets.QLabel | None, text: str | None, *, size: int | None = None):
     if not label:
         return
@@ -420,8 +365,6 @@ def _update_hex_preview_label(label: QtWidgets.QLabel | None, text: str | None, 
             pass
     label.clear()
     label.setVisible(False)
-
-
 def _make_hex_chip_icon(text: str | None, *, size: int = 12) -> QtGui.QIcon:
     raw = (text or "").strip().lstrip("#")
     if len(raw) != 6 or any(ch not in HEX_CHARS for ch in raw):
@@ -441,8 +384,6 @@ def _make_hex_chip_icon(text: str | None, *, size: int = 12) -> QtGui.QIcon:
     painter.drawRect(0, 0, size - 1, size - 1)
     painter.end()
     return QtGui.QIcon(pix)
-
-
 def _parse_hex_lines(text: str, *, allow_empty: bool = False) -> list[str]:
     colors: list[str] = []
     for idx, line in enumerate(text.splitlines(), 1):
@@ -455,48 +396,34 @@ def _parse_hex_lines(text: str, *, allow_empty: bool = False) -> list[str]:
     if not colors and not allow_empty:
         raise ValueError("색상을 한 개 이상 입력하세요.")
     return colors
-
-
 def _try_parse_hex_lines(text: str) -> tuple[list[str], str]:
     try:
         return _parse_hex_lines(text, allow_empty=True), ""
     except ValueError as exc:
         return [], str(exc)
-
-
 def _hex_to_rgb_tuple(text: str) -> RGB:
     raw = _normalize_hex_line(text)
     return tuple(int(raw[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
-
-
 def _rgb_to_hex_prefixed(color: RGB | None) -> str:
     if not color:
         return ""
     r, g, b = (max(0, min(255, int(c))) for c in color)
     return f"#{r:02x}{g:02x}{b:02x}"
-
-
 def _chebyshev_distance(a: RGB, b: RGB) -> int:
     return max(abs(int(x) - int(y)) for x, y in zip(a, b))
-
-
 def _luminance_from_qcolor(color: QtGui.QColor) -> float:
     r, g, b = color.red(), color.green(), color.blue()
     return 0.299 * r + 0.587 * g + 0.114 * b
-
-
 def _solve_color_tolerance(allowed_hex: list[str], blocked_hex: list[str]) -> dict:
     """허용/불허 색상 리스트에서 최적 tol과 색상값을 찾는다."""
     if not allowed_hex:
         raise ValueError("허용 색상을 한 개 이상 입력하세요.")
     allowed = [_hex_to_rgb_tuple(h) for h in allowed_hex]
     blocked = [_hex_to_rgb_tuple(h) for h in blocked_hex]
-
     min_vals = [min(c[i] for c in allowed) for i in range(3)]
     max_vals = [max(c[i] for c in allowed) for i in range(3)]
     max_range = max(max_vals[i] - min_vals[i] for i in range(3))
     min_tol = (max_range + 1) // 2
-
     ranges = []
     for i in range(3):
         low = max_vals[i] - min_tol
@@ -504,15 +431,12 @@ def _solve_color_tolerance(allowed_hex: list[str], blocked_hex: list[str]) -> di
         low = max(0, int(low))
         high = min(255, int(high))
         ranges.append(range(low, high + 1))
-
     candidates = [tuple(vals) for vals in itertools.product(*ranges)]
     if not candidates:
         center = tuple((min_vals[i] + max_vals[i]) // 2 for i in range(3))
         candidates = [center]  # pragma: no cover - 안전망
-
     best_ok: dict | None = None
     best_fail: dict | None = None
-
     for color in candidates:
         allowed_dist = max(_chebyshev_distance(color, a) for a in allowed)
         blocked_dists = [_chebyshev_distance(color, b) for b in blocked] if blocked else []
@@ -541,7 +465,6 @@ def _solve_color_tolerance(allowed_hex: list[str], blocked_hex: list[str]) -> di
             conflicts == best_fail["conflicts"] and margin > best_fail["margin"]
         ):
             best_fail = data
-
     if best_ok:
         buffer_extra = max(0, min(best_ok["min_block_distance"] - 1, 255) - best_ok["tolerance"])
         best_ok.update(
@@ -552,7 +475,6 @@ def _solve_color_tolerance(allowed_hex: list[str], blocked_hex: list[str]) -> di
             }
         )
         return best_ok
-
     # 불가능 케이스
     result = best_fail or {
         "color": allowed[0],
@@ -565,8 +487,6 @@ def _solve_color_tolerance(allowed_hex: list[str], blocked_hex: list[str]) -> di
     }
     result.update({"ok": False, "buffer_extra": 0, "min_required_tolerance": min_tol})
     return result
-
-
 def _parse_region(text: str, *, resolver=None) -> Region:
     raw = text.strip()
     if resolver:
@@ -584,8 +504,6 @@ def _parse_region(text: str, *, resolver=None) -> Region:
             raise ValueError("Region 덧셈은 +dx,dy,dw,dh 형식이어야 합니다.")
     merged = tuple(base_parts[i] + offset_parts[i] for i in range(4))
     return merged  # type: ignore[return-value]
-
-
 def _parse_point(text: str, *, resolver=None) -> tuple[int, int]:
     raw = text.strip()
     if resolver:
@@ -597,23 +515,17 @@ def _parse_point(text: str, *, resolver=None) -> tuple[int, int]:
         return int(parts[0]), int(parts[1])
     except Exception as exc:
         raise ValueError("좌표는 정수여야 합니다.") from exc
-
-
 def _split_region_offset(raw: str) -> tuple[str, str]:
     if "+" not in raw:
         return raw.strip(), ""
     base, offset = raw.split("+", 1)
     return base.strip(), offset.strip()
-
-
 def _compose_region_raw(base_text: str, offset_text: str) -> str:
     base = (base_text or "").strip()
     offset = (offset_text or "").strip()
     if not base:
         return ""
     return f"{base} + {offset}" if offset else base
-
-
 def _format_resolution(res: tuple[int, int] | None) -> str:
     if not res:
         return ""
@@ -622,8 +534,6 @@ def _format_resolution(res: tuple[int, int] | None) -> str:
         return f"{int(w)}x{int(h)}"
     except Exception:
         return ""
-
-
 def _parse_resolution_text(
     text: str, *, allow_empty: bool = False, default: tuple[int, int] | None = None
 ) -> tuple[int, int]:
@@ -650,8 +560,6 @@ def _parse_resolution_text(
     except Exception:
         pass
     raise ValueError("해상도 형식이 잘못되었습니다. 예: 1920x1080")
-
-
 def _format_scale_percent(scale: float | int | None) -> str:
     try:
         val = float(scale)
@@ -662,8 +570,6 @@ def _format_scale_percent(scale: float | int | None) -> str:
     if abs(val - round(val)) < 1e-6:
         return f"{int(round(val))}%"
     return f"{val:.2f}%"
-
-
 def _parse_scale_text(text: str, *, allow_empty: bool = False, default: float | None = None) -> float:
     raw = (text or "").strip()
     if not raw:
@@ -678,18 +584,12 @@ def _parse_scale_text(text: str, *, allow_empty: bool = False, default: float | 
     if val <= 0:
         raise ValueError("앱 배율은 0보다 커야 합니다.")
     return float(val)
-
-
 def _affine_value(val: int | float | None, scale: float, offset: float = 0.0) -> int | None:
     if val is None:
         return None
     return int(round(float(val) * scale + float(offset)))
-
-
 def _scale_value(val: int | float | None, scale: float) -> int | None:
     return _affine_value(val, scale, 0.0)
-
-
 def _affine_point_tuple(
     pt: tuple[int, int] | None, scale_x: float, offset_x: float, scale_y: float, offset_y: float
 ) -> tuple[int, int] | None:
@@ -699,12 +599,8 @@ def _affine_point_tuple(
         return _affine_value(pt[0], scale_x, offset_x), _affine_value(pt[1], scale_y, offset_y)
     except Exception:
         return None
-
-
 def _scale_point_tuple(pt: tuple[int, int] | None, scale_x: float, scale_y: float) -> tuple[int, int] | None:
     return _affine_point_tuple(pt, scale_x, 0.0, scale_y, 0.0)
-
-
 def _affine_region_tuple(
     region: Region | None, scale_x: float, offset_x: float, scale_y: float, offset_y: float
 ) -> Region | None:
@@ -724,12 +620,8 @@ def _affine_region_tuple(
         _affine_value(vals[2], scale_x),
         _affine_value(vals[3], scale_y),
     )  # type: ignore[return-value]
-
-
 def _scale_region_tuple(region: Region | None, scale_x: float, scale_y: float) -> Region | None:
     return _affine_region_tuple(region, scale_x, 0.0, scale_y, 0.0)
-
-
 def _try_parse_region_tuple(text: str | None) -> Region | None:
     if not text or not str(text).strip():
         return None
@@ -738,8 +630,6 @@ def _try_parse_region_tuple(text: str | None) -> Region | None:
         return tuple(int(v) for v in parsed) if parsed else None  # type: ignore[arg-type,return-value]
     except Exception:
         return None
-
-
 def _try_parse_point_tuple(text: str | None) -> tuple[int, int] | None:
     if not text or not str(text).strip():
         return None
@@ -747,32 +637,22 @@ def _try_parse_point_tuple(text: str | None) -> tuple[int, int] | None:
         return _parse_point(str(text))
     except Exception:
         return None
-
-
 def _scale_region_raw_text(raw: str | None, scale_x: float, scale_y: float) -> str | None:
     return _affine_region_raw_text(raw, scale_x, 0.0, scale_y, 0.0)
-
-
 def _scale_point_raw_text(raw: str | None, scale_x: float, scale_y: float) -> str | None:
     return _affine_point_raw_text(raw, scale_x, 0.0, scale_y, 0.0)
-
-
 def _affine_region_raw_text(raw: str | None, scale_x: float, offset_x: float, scale_y: float, offset_y: float) -> str | None:
     parsed = _try_parse_region_tuple(raw) if isinstance(raw, str) else None
     scaled = _affine_region_tuple(parsed, scale_x, offset_x, scale_y, offset_y) if parsed else None
     if not scaled:
         return None
     return ",".join(str(int(v)) for v in scaled)
-
-
 def _affine_point_raw_text(raw: str | None, scale_x: float, offset_x: float, scale_y: float, offset_y: float) -> str | None:
     parsed = _try_parse_point_tuple(raw) if isinstance(raw, str) else None
     scaled = _affine_point_tuple(parsed, scale_x, offset_x, scale_y, offset_y) if parsed else None
     if not scaled:
         return None
     return ",".join(str(int(v)) for v in scaled)
-
-
 def _fmt_region(reg: Region | None) -> str:
     if reg is None:
         return "-"
@@ -784,8 +664,6 @@ def _fmt_region(reg: Region | None) -> str:
         vals = (vals[0], vals[1], 1, 1)
     vals = vals[:4]
     return ",".join(str(int(v)) for v in vals)
-
-
 def _fmt_point(pt: tuple[int, int] | None) -> str:
     if pt is None:
         return "-"
@@ -793,8 +671,6 @@ def _fmt_point(pt: tuple[int, int] | None) -> str:
         return f"{int(pt[0])},{int(pt[1])}"
     except Exception:
         return str(pt)
-
-
 def _apply_affine_transform(
     profile: MacroProfile,
     record: Callable[[str, Any, Any], None],
@@ -806,16 +682,12 @@ def _apply_affine_transform(
 ):
     def transform_region(region: Region | None) -> Region | None:
         return _affine_region_tuple(region, scale_x, offset_x, scale_y, offset_y)
-
     def transform_point(pt: tuple[int, int] | None) -> tuple[int, int] | None:
         return _affine_point_tuple(pt, scale_x, offset_x, scale_y, offset_y)
-
     def transform_region_raw(raw: str | None) -> str | None:
         return _affine_region_raw_text(raw, scale_x, offset_x, scale_y, offset_y)
-
     def transform_point_raw(raw: str | None) -> str | None:
         return _affine_point_raw_text(raw, scale_x, offset_x, scale_y, offset_y)
-
     # Profile-level pixel region
     prof_region_before = getattr(profile, "pixel_region", None)
     prof_region_after = transform_region(prof_region_before)
@@ -827,7 +699,6 @@ def _apply_affine_transform(
         record("프로필 픽셀 리전", _fmt_region(prof_region_before), _fmt_region(prof_region_after))
         profile.pixel_region = prof_region_after
         profile.pixel_region_raw = prof_region_raw
-
     # Variables
     if getattr(profile, "variables", None):
         region_vars = getattr(profile.variables, "region", {}) or {}
@@ -848,7 +719,6 @@ def _apply_affine_transform(
             if scaled_point and str(val) != str(scaled_point):
                 record(label, val, scaled_point)
                 profile.variables.var[name] = scaled_point
-
     def transform_condition(cond: Condition, ctx: str):
         if cond.region is not None or cond.region_raw:
             parsed_region = _try_parse_region_tuple(cond.region_raw) if cond.region_raw else None
@@ -872,7 +742,6 @@ def _apply_affine_transform(
             transform_condition(child, f"{ctx} > true")
         for child in getattr(cond, "on_false", []) or []:
             transform_condition(child, f"{ctx} > false")
-
     def transform_action(act: Action, macro_ctx: str, path_parts: list[str]):
         path_label = " > ".join(path_parts + ([act.name] if act.name else [act.type]))
         if act.mouse_pos is not None or act.mouse_pos_raw:
@@ -888,7 +757,6 @@ def _apply_affine_transform(
                     after_pt = _try_parse_point_tuple(scaled_raw)
             if before_pt and after_pt and before_pt != after_pt:
                 record(f"{macro_ctx} / {path_label} - 마우스 좌표", _fmt_point(before_pt), _fmt_point(after_pt))
-
         if act.pixel_region is not None or act.pixel_region_raw:
             parsed_region = _try_parse_region_tuple(act.pixel_region_raw) if act.pixel_region_raw else None
             before_region = act.pixel_region or parsed_region
@@ -903,7 +771,6 @@ def _apply_affine_transform(
             if after_region is not None and before_region != after_region:
                 act.pixel_region = after_region
                 record(f"{macro_ctx} / {path_label} - 리전", _fmt_region(before_region), _fmt_region(after_region))
-
         if act.condition:
             transform_condition(act.condition, f"{macro_ctx} / {path_label}")
         for idx, child in enumerate(getattr(act, "actions", []) or []):
@@ -916,7 +783,6 @@ def _apply_affine_transform(
                 transform_condition(cond, f"{macro_ctx} / {path_label} / elif#{blk_idx + 1}")
             for idx, child in enumerate(acts or []):
                 transform_action(child, macro_ctx, path_parts + [f"elif#{blk_idx + 1}[{idx + 1}]"])
-
     for macro_idx, macro in enumerate(getattr(profile, "macros", []) or []):
         try:
             trigger_label = macro.trigger_label(include_mode=False)
@@ -925,8 +791,6 @@ def _apply_affine_transform(
         macro_ctx = f"매크로#{macro_idx + 1}({macro.name or trigger_label})"
         for idx, act in enumerate(getattr(macro, "actions", []) or []):
             transform_action(act, macro_ctx, [f"action#{idx + 1}"])
-
-
 def _scale_profile(
     profile: MacroProfile,
     base_res: tuple[int, int],
@@ -955,14 +819,11 @@ def _scale_profile(
     target_scale_factor = max(0.01, target_scale_pct) / 100.0
     scale_x = (tw / bw) * (target_scale_factor / base_scale_factor)
     scale_y = (th / bh) * (target_scale_factor / base_scale_factor)
-
     changes: list[tuple[str, str, str]] = []
-
     def record(label: str, before, after):
         if before == after:
             return
         changes.append((label, str(before), str(after)))
-
     scaled = copy.deepcopy(profile)
     record("기준 해상도", _format_resolution(base_res), _format_resolution(target_res))
     record("앱 배율", _format_scale_percent(base_scale_pct), _format_scale_percent(target_scale_pct))
@@ -981,20 +842,15 @@ def _scale_profile(
         offset_y=0.0,
     )
     scaled.transform_matrix = None
-
     return scaled, changes, scale_x, scale_y
-
-
 def _transform_profile_affine(
     profile: MacroProfile, ax: float, bx: float, cy: float, dy: float
 ) -> tuple[MacroProfile, list[tuple[str, str, str]]]:
     changes: list[tuple[str, str, str]] = []
-
     def record(label: str, before, after):
         if before == after:
             return
         changes.append((label, str(before), str(after)))
-
     transformed = copy.deepcopy(profile)
     _apply_affine_transform(
         transformed,
@@ -1009,8 +865,6 @@ def _transform_profile_affine(
     except Exception:
         transformed.transform_matrix = {"ax": ax, "bx": bx, "cy": cy, "dy": dy}
     return transformed, changes
-
-
 def _run_dialog_non_modal(dlg: QtWidgets.QDialog) -> int:
     """Show a dialog without blocking other windows but still wait for the result."""
     dlg.setModal(False)
@@ -1024,14 +878,11 @@ def _run_dialog_non_modal(dlg: QtWidgets.QDialog) -> int:
         )
     except Exception:
         pass
-
     result: dict[str, int] = {"code": int(QtWidgets.QDialog.DialogCode.Rejected)}
     loop = QtCore.QEventLoop()
-
     def _on_finished(code: int):
         result["code"] = int(code)
         loop.quit()
-
     dlg.finished.connect(_on_finished)
     dlg.show()
     try:
@@ -1045,8 +896,6 @@ def _run_dialog_non_modal(dlg: QtWidgets.QDialog) -> int:
     except Exception:
         pass
     return result["code"]
-
-
 class InteractionDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -1066,14 +915,12 @@ class InteractionDialog(QtWidgets.QDialog):
         self.resize(520, 260)
         self._macro_list_provider = macro_list_provider
         layout = QtWidgets.QVBoxLayout(self)
-
         form = QtWidgets.QFormLayout()
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.addItem("상호작용 없음", "none")
         self.mode_combo.addItem("다른 매크로 중지", "stop")
         self.mode_combo.addItem("다른 매크로 대기/일시정지", "suspend")
         form.addRow("기본 동작", self.mode_combo)
-
         self.targets_edit, tgt_btn = self._line_with_picker("적용 대상 (비우면 전체)")
         self.exclude_edit, exc_btn = self._line_with_picker("영향 제외")
         self.allow_edit, allow_btn = self._line_with_picker("나를 중단 허용")
@@ -1083,7 +930,6 @@ class InteractionDialog(QtWidgets.QDialog):
         form.addRow("나를 중단 허용", self._hline(self.allow_edit, allow_btn))
         form.addRow("나를 중단 차단", self._hline(self.block_edit, block_btn))
         layout.addLayout(form)
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         ok_btn = QtWidgets.QPushButton("확인")
@@ -1091,16 +937,13 @@ class InteractionDialog(QtWidgets.QDialog):
         btn_row.addWidget(ok_btn)
         btn_row.addWidget(cancel_btn)
         layout.addLayout(btn_row)
-
         ok_btn.clicked.connect(self.accept)
         cancel_btn.clicked.connect(self.reject)
-
         self.mode_combo.setCurrentIndex({"none": 0, "stop": 1, "suspend": 2}.get((mode or "none").lower(), 0))
         self.targets_edit.setText(", ".join(targets or []))
         self.exclude_edit.setText(", ".join(excludes or []))
         self.allow_edit.setText(", ".join(allow or []))
         self.block_edit.setText(", ".join(block or []))
-
     def _hline(self, edit: QtWidgets.QLineEdit, btn: QtWidgets.QToolButton) -> QtWidgets.QWidget:
         w = QtWidgets.QWidget()
         lay = QtWidgets.QHBoxLayout(w)
@@ -1108,7 +951,6 @@ class InteractionDialog(QtWidgets.QDialog):
         lay.addWidget(edit, stretch=1)
         lay.addWidget(btn)
         return w
-
     def _line_with_picker(self, placeholder: str) -> tuple[QtWidgets.QLineEdit, QtWidgets.QToolButton]:
         edit = QtWidgets.QLineEdit()
         edit.setPlaceholderText(placeholder)
@@ -1119,7 +961,6 @@ class InteractionDialog(QtWidgets.QDialog):
         btn.setMenu(menu)
         menu.aboutToShow.connect(lambda m=menu, e=edit: self._populate_macro_menu(m, e))
         return edit, btn
-
     def _populate_macro_menu(self, menu: QtWidgets.QMenu, target_edit: QtWidgets.QLineEdit):
         menu.clear()
         items: list[str] = []
@@ -1139,13 +980,11 @@ class InteractionDialog(QtWidgets.QDialog):
             seen.add(key)
             act = menu.addAction(key)
             act.triggered.connect(lambda _=False, v=key: self._append_value(target_edit, v))
-
     def _append_value(self, edit: QtWidgets.QLineEdit, value: str):
         items = _parse_name_list(edit.text())
         if value not in items:
             items.append(value)
         edit.setText(", ".join(items))
-
     def result_values(self) -> tuple[str, list[str], list[str], list[str], list[str]]:
         return (
             self.mode_combo.currentData() or "none",
@@ -1154,8 +993,6 @@ class InteractionDialog(QtWidgets.QDialog):
             _parse_name_list(self.allow_edit.text()),
             _parse_name_list(self.block_edit.text()),
         )
-
-
 class ActionTableWidget(QtWidgets.QTableWidget):
     def __init__(self, parent=None):
         super().__init__(0, 2, parent)
@@ -1167,7 +1004,6 @@ class ActionTableWidget(QtWidgets.QTableWidget):
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
-
     def _type_combo(self, default_type: str = "press") -> QtWidgets.QComboBox:
         combo = QtWidgets.QComboBox()
         for label, value in ACTION_TYPE_OPTIONS:
@@ -1176,18 +1012,15 @@ class ActionTableWidget(QtWidgets.QTableWidget):
         if idx >= 0:
             combo.setCurrentIndex(idx)
         return combo
-
     def add_action_row(self, typ: str = "press", value: str = "") -> int:
         row = self.rowCount()
         self.insertRow(row)
         self.set_action_row(row, typ, value)
         return row
-
     def set_action_row(self, row: int, typ: str, value: str):
         combo = self._type_combo(typ)
         self.setCellWidget(row, 0, combo)
         self.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
-
     def row_data(self, row: int) -> tuple[str, str]:
         typ = ""
         type_widget = self.cellWidget(row, 0)
@@ -1199,16 +1032,13 @@ class ActionTableWidget(QtWidgets.QTableWidget):
         val_item = self.item(row, 1)
         val = val_item.text().strip() if val_item else ""
         return typ, val
-
     def dropEvent(self, event: QtGui.QDropEvent):
         # Treat drops from this table (or its viewport) as a reordering operation
         if event.source() not in (self, self.viewport()):
             return super().dropEvent(event)
-
         selected_rows = sorted({idx.row() for idx in self.selectionModel().selectedRows()})
         if not selected_rows:
             return
-
         drop_row = self.indexAt(event.position().toPoint()).row()
         indicator = self.dropIndicatorPosition()
         if indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem:
@@ -1217,7 +1047,6 @@ class ActionTableWidget(QtWidgets.QTableWidget):
             drop_row = self.rowCount()
         if drop_row < 0:
             drop_row = self.rowCount()
-
         # Snapshot all rows, remove the moved block, then re-insert to avoid losing cell data
         rows = [self.row_data(r) for r in range(self.rowCount())]
         moving = [rows[r] for r in selected_rows]
@@ -1227,39 +1056,30 @@ class ActionTableWidget(QtWidgets.QTableWidget):
                 drop_row -= 1
         for offset, data in enumerate(moving):
             rows.insert(drop_row + offset, data)
-
         self.setRowCount(0)
         for typ, val in rows:
             self.add_action_row(typ, val)
-
         self.clearSelection()
         for i in range(len(moving)):
             self.selectRow(drop_row + i)
         event.acceptProposedAction()
-
-
 def _create_action_table(default_rows=None):
     table = ActionTableWidget()
     add_btn = QtWidgets.QPushButton("추가")
     del_btn = QtWidgets.QPushButton("삭제")
-
     def add_row(default_type="press", default_val=""):
         table.add_action_row(default_type, default_val)
-
     def del_rows():
         rows = sorted({idx.row() for idx in table.selectionModel().selectedRows()}, reverse=True)
         if not rows and table.rowCount() > 0:
             rows = [table.rowCount() - 1]
         for r in rows:
             table.removeRow(r)
-
     add_btn.clicked.connect(lambda: add_row())
     del_btn.clicked.connect(del_rows)
-
     if default_rows:
         for t, v in default_rows:
             add_row(t, v)
-
     layout = QtWidgets.QVBoxLayout()
     layout.addWidget(table)
     btns = QtWidgets.QHBoxLayout()
@@ -1267,24 +1087,18 @@ def _create_action_table(default_rows=None):
     btns.addWidget(del_btn)
     btns.addStretch()
     layout.addLayout(btns)
-
     return {"table": table, "add": add_row, "del": del_rows, "layout": layout}
-
-
 def _read_action_row(table: QtWidgets.QTableWidget, row: int) -> tuple[str, str]:
     if isinstance(table, ActionTableWidget):
         return table.row_data(row)
     typ = table.item(row, 0).text().strip().lower() if table.item(row, 0) else ""
     val = table.item(row, 1).text().strip() if table.item(row, 1) else ""
     return typ, val
-
-
 class VariableCompleterDelegate(QtWidgets.QStyledItemDelegate):
     def __init__(self, category_provider, variable_provider, parent=None):
         super().__init__(parent)
         self._category_provider = category_provider
         self._variable_provider = variable_provider
-
     def createEditor(self, parent, option, index):
         editor = super().createEditor(parent, option, index)
         if index.column() != 1:
@@ -1295,8 +1109,6 @@ class VariableCompleterDelegate(QtWidgets.QStyledItemDelegate):
                 names = self._variable_provider(cat) if self._variable_provider else []
                 _attach_variable_completer(editor, names)
         return editor
-
-
 def _attach_variable_completer(edit: QtWidgets.QLineEdit, names: List[str]):
     if not isinstance(edit, QtWidgets.QLineEdit):
         return
@@ -1306,20 +1118,17 @@ def _attach_variable_completer(edit: QtWidgets.QLineEdit, names: List[str]):
     comp.setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
     comp.setCompletionMode(QtWidgets.QCompleter.CompletionMode.PopupCompletion)
     comp.setModelSorting(QtWidgets.QCompleter.ModelSorting.CaseInsensitivelySortedModel)
-
     def _current_prefix(text: str) -> tuple[str, int]:
         pos = text.rfind("/")
         if pos < 0:
             return "", -1
         return text[pos + 1 :], pos
-
     def _show_popup(text: str):
         prefix, start = _current_prefix(text)
         if start < 0:
             return
         comp.setCompletionPrefix(prefix)
         comp.complete()
-
     def _insert_choice(val: str):
         text = edit.text()
         prefix, start = _current_prefix(text)
@@ -1330,13 +1139,10 @@ def _attach_variable_completer(edit: QtWidgets.QLineEdit, names: List[str]):
         new_text += insert
         edit.setText(new_text)
         edit.setCursorPosition(len(new_text))
-
     comp.activated[str].connect(_insert_choice)
     edit.textEdited.connect(_show_popup)
     # 첫 입력 시 바로 /를 치면 팝업이 뜸
     edit.setCompleter(comp)
-
-
 def _actions_from_table(table: QtWidgets.QTableWidget, resolver=None) -> List[Step]:
     steps: List[Step] = []
     for row in range(table.rowCount()):
@@ -1355,8 +1161,6 @@ def _actions_from_table(table: QtWidgets.QTableWidget, resolver=None) -> List[St
                 continue
             steps.append(Step(type=typ, key=val))
     return steps
-
-
 def _fill_action_table(table: QtWidgets.QTableWidget, steps: List[Step]):
     table.setRowCount(0)
     for step in steps:
@@ -1371,12 +1175,8 @@ def _fill_action_table(table: QtWidgets.QTableWidget, steps: List[Step]):
             table.setItem(row, 1, QtWidgets.QTableWidgetItem(step.sleep_value_text()))
         else:
             table.setItem(row, 1, QtWidgets.QTableWidgetItem(step.key or ""))
-
-
 def _condition_type_label(typ: str) -> str:
     return {"all": "AND", "any": "OR", "pixel": "픽셀", "key": "키", "var": "변수", "timer": "타이머"}.get(typ, typ)
-
-
 def _group_child_count(cond: Condition) -> int:
     if not isinstance(cond, Condition):
         return 0
@@ -1396,8 +1196,6 @@ def _group_child_count(cond: Condition) -> int:
         current = getattr(current, "conditions", [current])[0]
     direct_list = getattr(current, "conditions", []) or []
     return len(direct_list) + len(getattr(current, "on_true", []) or []) + len(getattr(current, "on_false", []) or [])
-
-
 def _key_bundle_info(cond: Condition) -> tuple[bool, list[str], str | None]:
     """Detect a pure key bundle group and return (is_bundle, keys, key_mode)."""
     if not isinstance(cond, Condition):
@@ -1417,8 +1215,6 @@ def _key_bundle_info(cond: Condition) -> tuple[bool, list[str], str | None]:
     if not keys:
         return False, [], mode
     return True, keys, mode
-
-
 def _condition_hex_color(cond: Condition) -> str | None:
     if not isinstance(cond, Condition):
         return None
@@ -1431,8 +1227,6 @@ def _condition_hex_color(cond: Condition) -> str | None:
         except Exception:
             pass
     return _rgb_to_hex(cond.color)
-
-
 def _condition_brief(cond: Condition) -> str:
     if not isinstance(cond, Condition):
         return "(조건 없음)"
@@ -1484,8 +1278,6 @@ def _condition_brief(cond: Condition) -> str:
             return f"{cond.name}{suffix}"
         return f"OR 그룹 (하위 {_group_child_count(cond)}개){suffix}"
     return f"{cond.type}{suffix}"
-
-
 def _split_elif_block(blk):
     cond = None
     acts = []
@@ -1505,8 +1297,6 @@ def _split_elif_block(blk):
         except Exception:
             pass
     return cond if isinstance(cond, Condition) else None, list(acts or []), desc or "", enabled_override
-
-
 class ConditionNodeDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -1536,11 +1326,8 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self._open_debugger_fn = open_debugger
         self._pattern_provider = pattern_provider
         self._open_pattern_manager = open_pattern_manager
-
         self._child_conditions: List[Condition] = []
-
         layout = QtWidgets.QVBoxLayout(self)
-
         self.form = QtWidgets.QFormLayout()
         self.type_combo = QtWidgets.QComboBox()
         if allow_group:
@@ -1621,7 +1408,6 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.pixel_expect_combo.currentIndexChanged.connect(self._sync_type_visibility)
         self.group_hint = QtWidgets.QLabel("하위 조건은 트리에서 추가/삭제하세요.")
         self.group_hint.setStyleSheet("color: gray;")
-
         self.form.addRow("조건 타입", self.type_combo)
         self.form.addRow("이름(선택)", self.name_edit)
         self.form.addRow("키/마우스", self.key_edit)
@@ -1658,7 +1444,6 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.form.addRow("타이머 비교", self.timer_op_combo)
         self.form.addRow(self.group_hint)
         layout.addLayout(self.form)
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.test_btn = QtWidgets.QPushButton("테스트")
@@ -1668,12 +1453,10 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.ok_btn)
         btn_row.addWidget(self.cancel_btn)
         layout.addLayout(btn_row)
-
         self.test_btn.clicked.connect(self._toggle_pixel_test)
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         self.type_combo.currentIndexChanged.connect(self._sync_type_visibility)
-
         if cond:
             self._load(cond)
         else:
@@ -1683,10 +1466,8 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 self.type_combo.setCurrentIndex(self.type_combo.findData("pixel"))
             self.key_mode_combo.setCurrentIndex(max(0, self.key_mode_combo.findData("hold")))
             self._sync_type_visibility()
-
     def _current_type(self) -> str:
         return self.type_combo.currentData()
-
     def _sync_type_visibility(self):
         typ = self._current_type()
         is_key = typ == "key"
@@ -1701,7 +1482,6 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 label = self.form.labelForField(w)
                 if label is not None:
                     label.setVisible(visible)
-
         _toggle((self.key_edit, self.key_mode_combo, self.key_group_mode_combo), visible=is_key, enabled=is_key)
         _toggle(
             (
@@ -1737,7 +1517,6 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         _toggle((self.var_name_edit, self.var_value_edit, self.var_op_combo), visible=is_var, enabled=is_var)
         _toggle((self.timer_slot_combo, self.timer_value_spin, self.timer_op_combo), visible=is_timer, enabled=is_timer)
         self.group_hint.setVisible(is_group)
-
     def _load(self, cond: Condition):
         self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(cond.type)))
         if cond.type == "key":
@@ -1787,7 +1566,6 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 self.timer_op_combo.setCurrentIndex(op_idx)
         self.name_edit.setText(cond.name or "")
         self._sync_type_visibility()
-
     def get_condition(self) -> Condition:
         typ = self._current_type()
         name = self.name_edit.text().strip() or None
@@ -1849,7 +1627,6 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             return Condition(type="timer", name=name, timer_index=slot, timer_value=value, timer_operator=op)
         group = Condition(type=typ, name=name, conditions=copy.deepcopy(self._child_conditions))
         return group
-
     def _toggle_pixel_test(self):
         try:
             region = _parse_region(_compose_region_raw(self.region_edit.text(), self.region_offset_edit.text()), resolver=self._resolver)
@@ -1875,7 +1652,6 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             "label": self.name_edit.text().strip() or "조건 테스트",
         }
         self._open_debugger_fn(config)
-
     def closeEvent(self, event: QtGui.QCloseEvent):
         try:
             cur = self.list_widget.currentItem()
@@ -1885,13 +1661,11 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         except Exception:
             pass
         return super().closeEvent(event)
-
     def _install_var_completer(self, edit: QtWidgets.QLineEdit, category: str):
         if not self._variable_provider:
             return
         names = self._variable_provider(category)
         _attach_variable_completer(edit, names)
-
     def _reload_patterns(self):
         self.pattern_combo.clear()
         self.pattern_combo.addItem("선택 안 함", None)
@@ -1903,7 +1677,6 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 names = []
         for name in names:
             self.pattern_combo.addItem(str(name), str(name))
-
     def _open_pattern_manager_cb(self):
         if callable(self._open_pattern_manager):
             try:
@@ -1911,8 +1684,6 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._reload_patterns()
-
-
 class ConditionTreeWidget(QtWidgets.QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1921,18 +1692,93 @@ class ConditionTreeWidget(QtWidgets.QTreeWidget):
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
-
     def set_drop_callback(self, callback: Callable[[], None]):
         self._drop_callback = callback
-
     def dropEvent(self, event: QtGui.QDropEvent):
+        # 다중 선택 이동: Qt 기본 InternalMove 는 현재 아이템만 옮기므로 직접 처리
+        selected = self._top_level_selected(self.selectedItems())
+        if event.source() is self and event.dropAction() == QtCore.Qt.DropAction.MoveAction and len(selected) > 1:
+            pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            target = self.itemAt(pos)
+            indicator = event.dropIndicatorPosition()
+
+            # 선택 항목 내부나 자식으로 드롭하려면 무시
+            if target and any(target is it or self._is_descendant(target, it) for it in selected):
+                event.ignore()
+                return
+
+            # 드롭 위치(parent, row) 계산
+            if indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem and target:
+                parent = target
+                row = target.childCount()
+            elif indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.AboveItem and target:
+                parent = target.parent()
+                row = parent.indexOfChild(target) if parent else self.indexOfTopLevelItem(target)
+            elif indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem and target:
+                parent = target.parent()
+                row = (parent.indexOfChild(target) if parent else self.indexOfTopLevelItem(target)) + 1
+            else:  # OnViewport 또는 대상 없음 -> 최상위 마지막
+                parent = None
+                row = self.topLevelItemCount()
+
+            # 원래 위치 기록 후 분리
+            orig_info = []
+            for it in selected:
+                p = it.parent()
+                idx = p.indexOfChild(it) if p else self.indexOfTopLevelItem(it)
+                orig_info.append((it, p, idx))
+            # 삽입 위치 보정: 같은 부모에서 위쪽 아이템을 들어내면 row 가 앞으로 당겨진다.
+            removed_above = sum(1 for _, p, idx in orig_info if p is parent and idx < row)
+            row -= removed_above
+
+            for it, p, _ in orig_info:
+                if p:
+                    p.takeChild(p.indexOfChild(it))
+                else:
+                    self.takeTopLevelItem(self.indexOfTopLevelItem(it))
+
+            for offset, (it, p, _) in enumerate(orig_info):
+                if parent:
+                    parent.insertChild(row + offset, it)
+                else:
+                    self.insertTopLevelItem(row + offset, it)
+
+            event.accept()
+            if self._drop_callback:
+                self._drop_callback()
+            return
+
+            # 기본 동작 (단일 항목 이동 등)
         # OnItem 드롭을 모든 조건/브랜치에 허용해 하위로 넣을 수 있게 한다.
         super().dropEvent(event)
         if self._drop_callback:
             self._drop_callback()
-
-
+    def _item_path_key(self, item: QtWidgets.QTreeWidgetItem) -> tuple[int, ...]:
+        path: list[int] = []
+        current = item
+        while current:
+            parent = current.parent()
+            row = parent.indexOfChild(current) if parent else self.indexOfTopLevelItem(current)
+            path.append(row)
+            current = parent
+        return tuple(reversed(path))
+    def _is_descendant(self, item: QtWidgets.QTreeWidgetItem, ancestor: QtWidgets.QTreeWidgetItem) -> bool:
+        parent = item.parent()
+        while parent:
+            if parent is ancestor:
+                return True
+            parent = parent.parent()
+        return False
+    def _top_level_selected(self, items: List[QtWidgets.QTreeWidgetItem]) -> List[QtWidgets.QTreeWidgetItem]:
+        """Return selected items without their descendants (ordered by tree path)."""
+        result: List[QtWidgets.QTreeWidgetItem] = []
+        for it in items:
+            if any(self._is_descendant(it, other) for other in items if other is not it):
+                continue
+            result.append(it)
+        return sorted(result, key=self._item_path_key)
 class ConditionDialog(QtWidgets.QDialog):
+    _condition_clipboard: list[Condition] | None = None
     def __init__(
         self,
         parent=None,
@@ -1977,17 +1823,13 @@ class ConditionDialog(QtWidgets.QDialog):
         self._pattern_provider = pattern_provider
         self._open_pattern_manager = open_pattern_manager
         self._trigger_keys_provider = trigger_keys_provider
-
         self.root_condition: Condition | None = None
-
         layout = QtWidgets.QVBoxLayout(self)
-
         name_form = QtWidgets.QFormLayout()
         self.cond_name_edit = QtWidgets.QLineEdit()
         self.cond_name_edit.setPlaceholderText("조건 블록 이름(선택)")
         name_form.addRow("조건 이름", self.cond_name_edit)
         layout.addLayout(name_form)
-
         viewer_row = QtWidgets.QHBoxLayout()
         self.viewer_btn = QtWidgets.QPushButton("이미지 뷰어/피커")
         self.debug_test_btn = QtWidgets.QPushButton("디버그 테스트")
@@ -2000,12 +1842,13 @@ class ConditionDialog(QtWidgets.QDialog):
         viewer_row.addWidget(self.debug_test_btn)
         viewer_row.addWidget(self.viewer_status, 1)
         layout.addLayout(viewer_row)
-
         cond_group = QtWidgets.QGroupBox("조건 트리 (최상위 OR, AND로 묶기)")
         cond_group_layout = QtWidgets.QVBoxLayout(cond_group)
         self.condition_tree = ConditionTreeWidget()
         self.condition_tree.setHeaderLabels(["타입", "이름", "요약", "활성"])
         self.condition_tree.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        # PyQt6 이름 변경: ExtendedSelection 이 올바른 상수
+        self.condition_tree.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.condition_tree.set_drop_callback(self._sync_condition_from_tree)
         self.condition_tree.itemChanged.connect(self._on_item_changed)
         self.condition_tree.setColumnWidth(1, 140)
@@ -2017,13 +1860,14 @@ class ConditionDialog(QtWidgets.QDialog):
         self.condition_tree.setColumnWidth(3, max(checkbox_w + 10, 28))
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Interactive)
         cond_group_layout.addWidget(self.condition_tree)
-
         tree_btn_row = QtWidgets.QHBoxLayout()
         self.add_node_btn = QtWidgets.QPushButton("조건 추가")
         self.add_group_btn = QtWidgets.QPushButton("그룹 추가 (AND/OR)")
         self.add_true_child_btn = QtWidgets.QPushButton("참일 때 하위")
         self.add_false_child_btn = QtWidgets.QPushButton("거짓일 때 하위")
         self.edit_node_btn = QtWidgets.QPushButton("선택 편집")
+        self.copy_node_btn = QtWidgets.QPushButton("복사")
+        self.paste_node_btn = QtWidgets.QPushButton("붙여넣기")
         self.clone_node_btn = QtWidgets.QPushButton("복제")
         self.delete_node_btn = QtWidgets.QPushButton("선택 삭제")
         tree_btn_row.addWidget(self.add_node_btn)
@@ -2031,12 +1875,13 @@ class ConditionDialog(QtWidgets.QDialog):
         tree_btn_row.addWidget(self.add_true_child_btn)
         tree_btn_row.addWidget(self.add_false_child_btn)
         tree_btn_row.addWidget(self.edit_node_btn)
+        tree_btn_row.addWidget(self.copy_node_btn)
+        tree_btn_row.addWidget(self.paste_node_btn)
         tree_btn_row.addWidget(self.clone_node_btn)
         tree_btn_row.addWidget(self.delete_node_btn)
         tree_btn_row.addStretch()
         cond_group_layout.addLayout(tree_btn_row)
         layout.addWidget(cond_group)
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.ok_btn = QtWidgets.QPushButton("확인")
@@ -2044,7 +1889,6 @@ class ConditionDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.ok_btn)
         btn_row.addWidget(self.cancel_btn)
         layout.addLayout(btn_row)
-
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         self.add_node_btn.clicked.connect(self._add_condition_node)
@@ -2052,6 +1896,8 @@ class ConditionDialog(QtWidgets.QDialog):
         self.add_true_child_btn.clicked.connect(lambda: self._add_child_condition("true"))
         self.add_false_child_btn.clicked.connect(lambda: self._add_child_condition("false"))
         self.edit_node_btn.clicked.connect(self._edit_condition_node)
+        self.copy_node_btn.clicked.connect(self._copy_condition_nodes)
+        self.paste_node_btn.clicked.connect(self._paste_condition_nodes)
         self.clone_node_btn.clicked.connect(self._clone_condition_node)
         self.delete_node_btn.clicked.connect(self._delete_condition_node)
         self.condition_tree.itemDoubleClicked.connect(lambda *_: self._edit_condition_node())
@@ -2062,7 +1908,6 @@ class ConditionDialog(QtWidgets.QDialog):
         else:
             self.root_condition = Condition(type="any", conditions=[])
             self._refresh_condition_tree()
-
     def _pattern_names(self) -> list[str]:
         if callable(self._pattern_provider):
             try:
@@ -2070,12 +1915,10 @@ class ConditionDialog(QtWidgets.QDialog):
             except Exception:
                 return []
         return []
-
     def _load(self, cond: MacroCondition):
         self.cond_name_edit.setText(cond.name or "")
         self.root_condition = copy.deepcopy(cond.condition)
         self._refresh_condition_tree()
-
     def _append_condition_item(self, cond: Condition, parent_item=None):
         enabled_flag = getattr(cond, "enabled", True)
         try:
@@ -2119,7 +1962,6 @@ class ConditionDialog(QtWidgets.QDialog):
             for child in cond.on_false:
                 self._append_condition_item(child, false_header)
         return item
-
     def _refresh_condition_tree(self):
         prev_block = self.condition_tree.blockSignals(True)
         try:
@@ -2139,7 +1981,6 @@ class ConditionDialog(QtWidgets.QDialog):
         finally:
             self.condition_tree.blockSignals(prev_block)
         self._apply_enabled_styles()
-
     def _expand_condition_tree(self):
         def walk(item: QtWidgets.QTreeWidgetItem | None):
             if not item:
@@ -2150,21 +1991,17 @@ class ConditionDialog(QtWidgets.QDialog):
                 self.condition_tree.expandItem(item)
             for i in range(item.childCount()):
                 walk(item.child(i))
-
         for i in range(self.condition_tree.topLevelItemCount()):
             walk(self.condition_tree.topLevelItem(i))
-
     def _item_enabled_state(self, item: QtWidgets.QTreeWidgetItem | None) -> bool:
         if not item:
             return True
         if item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable:
             return item.checkState(3) == QtCore.Qt.CheckState.Checked
         return True
-
     def _apply_enabled_styles(self):
         default_brush = QtGui.QBrush(self.condition_tree.palette().color(QtGui.QPalette.ColorRole.Text))
         disabled_brush = QtGui.QBrush(QtGui.QColor("#9aa0a6"))
-
         def walk(item: QtWidgets.QTreeWidgetItem | None, parent_disabled: bool = False):
             if not item:
                 return
@@ -2177,10 +2014,8 @@ class ConditionDialog(QtWidgets.QDialog):
                 item.setForeground(col, brush)
             for idx in range(item.childCount()):
                 walk(item.child(idx), is_disabled)
-
         for i in range(self.condition_tree.topLevelItemCount()):
             walk(self.condition_tree.topLevelItem(i), False)
-
     def _on_item_changed(self, item: QtWidgets.QTreeWidgetItem, column: int):
         if column != 3:
             return
@@ -2188,7 +2023,6 @@ class ConditionDialog(QtWidgets.QDialog):
         if isinstance(data, Condition):
             data.enabled = self._item_enabled_state(item)
         self._apply_enabled_styles()
-
     def _condition_from_item(self, item: QtWidgets.QTreeWidgetItem) -> Condition | None:
         cond = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if not isinstance(cond, Condition):
@@ -2223,7 +2057,6 @@ class ConditionDialog(QtWidgets.QDialog):
                     # 비그룹 노드 아래 자식은 참일 때 분기(default)로 취급
                     cond.on_true.append(child_cond)
         return cond
-
     def _sync_condition_from_tree(self):
         selected_cond = self._selected_condition()
         top_conditions: List[Condition] = []
@@ -2243,7 +2076,6 @@ class ConditionDialog(QtWidgets.QDialog):
             if item:
                 self.condition_tree.setCurrentItem(item)
         self._expand_condition_tree()
-
     def _find_item_for_condition(self, target: Condition) -> QtWidgets.QTreeWidgetItem | None:
         def walk(item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QTreeWidgetItem | None:
             cond = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
@@ -2254,17 +2086,14 @@ class ConditionDialog(QtWidgets.QDialog):
                 if found:
                     return found
             return None
-
         for i in range(self.condition_tree.topLevelItemCount()):
             found = walk(self.condition_tree.topLevelItem(i))
             if found:
                 return found
         return None
-
     def _selected_item(self) -> QtWidgets.QTreeWidgetItem | None:
         selected = self.condition_tree.selectedItems()
         return selected[0] if selected else None
-
     def _selected_branch_marker(self) -> str | None:
         item = self._selected_item()
         if not item:
@@ -2273,7 +2102,6 @@ class ConditionDialog(QtWidgets.QDialog):
         if isinstance(data, str) and data in ("branch_true", "branch_false"):
             return data
         return None
-
     def _selected_condition(self) -> Condition | None:
         item = self._selected_item()
         if not item:
@@ -2288,7 +2116,6 @@ class ConditionDialog(QtWidgets.QDialog):
                 if isinstance(pdata, Condition):
                     return pdata
         return None
-
     def _replace_condition(self, target: Condition, new_cond: Condition) -> bool:
         if self.root_condition is target:
             self.root_condition = new_cond
@@ -2296,7 +2123,6 @@ class ConditionDialog(QtWidgets.QDialog):
         if not self.root_condition:
             return False
         return self._replace_in_children(self.root_condition, target, new_cond)
-
     def _replace_in_children(self, parent: Condition, target: Condition, new_cond: Condition) -> bool:
         for child_list in (parent.conditions, parent.on_true, parent.on_false):
             for idx, child in enumerate(child_list):
@@ -2306,7 +2132,6 @@ class ConditionDialog(QtWidgets.QDialog):
                 if self._replace_in_children(child, target, new_cond):
                     return True
         return False
-
     def _remove_condition(self, parent: Condition, target: Condition) -> bool:
         for child_list in (parent.conditions, parent.on_true, parent.on_false):
             for idx, child in enumerate(child_list):
@@ -2316,7 +2141,6 @@ class ConditionDialog(QtWidgets.QDialog):
                 if self._remove_condition(child, target):
                     return True
         return False
-
     def _find_parent_group(self, current: Condition, target: Condition) -> Condition | None:
         for child in current.conditions:
             if child is target:
@@ -2333,18 +2157,31 @@ class ConditionDialog(QtWidgets.QDialog):
                 return found
         return None
 
+    def _find_container_info(self, target: Condition) -> tuple[list[Condition], int, Condition | None] | None:
+        if not self.root_condition or target is self.root_condition:
+            return None
+
+        def walk(parent: Condition) -> tuple[list[Condition], int, Condition] | None:
+            for child_list in (parent.conditions, parent.on_true, parent.on_false):
+                for idx, child in enumerate(child_list):
+                    if child is target:
+                        return child_list, idx, parent
+                    found = walk(child)
+                    if found:
+                        return found
+            return None
+
+        return walk(self.root_condition)
     def _add_child_condition(self, branch: str):
         parent_cond = self._selected_condition()
         if not parent_cond:
             QtWidgets.QMessageBox.information(self, "선택 없음", "하위 조건을 추가할 상위 조건을 선택하세요.")
             return
-
         branch_marker = self._selected_branch_marker()
         if branch_marker == "branch_false":
             branch = "false"
         elif branch_marker == "branch_true":
             branch = "true"
-
         dlg = ConditionNodeDialog(
             self,
             allow_group=True,
@@ -2362,7 +2199,6 @@ class ConditionDialog(QtWidgets.QDialog):
                 return
         else:
             return
-
         target_list = parent_cond.on_true if branch == "true" else parent_cond.on_false
         target_list.append(new_cond)
         self._refresh_condition_tree()
@@ -2370,7 +2206,6 @@ class ConditionDialog(QtWidgets.QDialog):
         if item:
             self.condition_tree.expandItem(item)
             self.condition_tree.setCurrentItem(item)
-
     def _add_condition_node(self):
         dlg = ConditionNodeDialog(
             self,
@@ -2389,16 +2224,13 @@ class ConditionDialog(QtWidgets.QDialog):
                 return
         else:
             return
-
         selected_cond = self._selected_condition()
         branch_marker = self._selected_branch_marker()
         branch = "false" if branch_marker == "branch_false" else "true"
-
         if self.root_condition is None:
             self.root_condition = Condition(type="any", conditions=[new_cond])
             self._refresh_condition_tree()
             return
-
         # 비그룹 조건이 선택된 경우 기본적으로 참 분기에 자식 추가
         if selected_cond and selected_cond.type not in ("all", "any"):
             if branch == "false":
@@ -2411,7 +2243,6 @@ class ConditionDialog(QtWidgets.QDialog):
                 self.condition_tree.expandItem(item)
                 self.condition_tree.setCurrentItem(item)
             return
-
         target_group: Condition | None = None
         if selected_cond and selected_cond.type in ("all", "any"):
             target_group = selected_cond
@@ -2419,7 +2250,6 @@ class ConditionDialog(QtWidgets.QDialog):
             target_group = self._find_parent_group(self.root_condition, selected_cond)
         elif self.root_condition.type in ("all", "any"):
             target_group = self.root_condition
-
         if not target_group:
             if self.root_condition.type == "any":
                 self.root_condition.conditions.append(new_cond)
@@ -2428,14 +2258,12 @@ class ConditionDialog(QtWidgets.QDialog):
             self._refresh_condition_tree()
             self._expand_condition_tree()
             return
-
         target_group.conditions.append(new_cond)
         self._refresh_condition_tree()
         self.condition_tree.expandAll()
         item = self._find_item_for_condition(target_group)
         if item:
             self.condition_tree.setCurrentItem(item)
-
     def _add_group_condition(self):
         dlg = ConditionNodeDialog(
             self,
@@ -2455,16 +2283,13 @@ class ConditionDialog(QtWidgets.QDialog):
                 return
         else:
             return
-
         selected_cond = self._selected_condition()
         branch_marker = self._selected_branch_marker()
         branch = "false" if branch_marker == "branch_false" else "true"
-
         if self.root_condition is None:
             self.root_condition = new_cond
             self._refresh_condition_tree()
             return
-
         if selected_cond and selected_cond.type not in ("all", "any"):
             if branch == "false":
                 selected_cond.on_false.append(new_cond)
@@ -2476,7 +2301,6 @@ class ConditionDialog(QtWidgets.QDialog):
                 self.condition_tree.expandItem(item)
                 self.condition_tree.setCurrentItem(item)
             return
-
         if selected_cond and selected_cond.type in ("all", "any"):
             selected_cond.conditions.append(new_cond)
             self._refresh_condition_tree()
@@ -2485,7 +2309,6 @@ class ConditionDialog(QtWidgets.QDialog):
             if item:
                 self.condition_tree.setCurrentItem(item)
             return
-
         if selected_cond and self.root_condition:
             parent_group = self._find_parent_group(self.root_condition, selected_cond)
             if parent_group:
@@ -2496,7 +2319,6 @@ class ConditionDialog(QtWidgets.QDialog):
                 if item:
                     self.condition_tree.setCurrentItem(item)
                 return
-
         if self.root_condition.type == "any" and selected_cond is None:
             self.root_condition.conditions.append(new_cond)
             self._refresh_condition_tree()
@@ -2505,13 +2327,32 @@ class ConditionDialog(QtWidgets.QDialog):
             if item:
                 self.condition_tree.setCurrentItem(item)
             return
-
         if self.root_condition.type == "any":
             self.root_condition.conditions.append(new_cond)
         else:
             self.root_condition = Condition(type="any", conditions=[self.root_condition, new_cond])
         self._refresh_condition_tree()
         self._expand_condition_tree()
+    def _insert_conditions_into_list(self, lst: list[Condition], start_index: int, new_conds: list[Condition]) -> list[Condition]:
+        idx = max(0, start_index)
+        inserted: list[Condition] = []
+        for cond in new_conds:
+            lst.insert(idx, cond)
+            inserted.append(cond)
+            idx += 1
+        return inserted
+
+    def _select_conditions_in_tree(self, conds: list[Condition]):
+        self.condition_tree.clearSelection()
+        first_item = None
+        for cond in conds:
+            item = self._find_item_for_condition(cond)
+            if item:
+                item.setSelected(True)
+                if first_item is None:
+                    first_item = item
+        if first_item:
+            self.condition_tree.setCurrentItem(first_item)
 
     def _clone_condition_node(self):
         target = self._selected_condition()
@@ -2520,7 +2361,6 @@ class ConditionDialog(QtWidgets.QDialog):
             return
         new_cond = copy.deepcopy(target)
         inserted = False
-
         if target is self.root_condition:
             if target.type in ("all", "any"):
                 self.root_condition.conditions.append(new_cond)
@@ -2540,13 +2380,10 @@ class ConditionDialog(QtWidgets.QDialog):
                         if walk(child):
                             return True
                 return False
-
             walk(self.root_condition)
-
         if not inserted:
             QtWidgets.QMessageBox.information(self, "복제 실패", "복제 위치를 찾지 못했습니다.")
             return
-
         self._refresh_condition_tree()
         item = self._find_item_for_condition(new_cond)
         if item:
@@ -2554,6 +2391,57 @@ class ConditionDialog(QtWidgets.QDialog):
             if parent:
                 self.condition_tree.expandItem(parent)
             self.condition_tree.setCurrentItem(item)
+    def _copy_condition_nodes(self):
+        items = self.condition_tree._top_level_selected(self.condition_tree.selectedItems())
+        if not items:
+            QtWidgets.QMessageBox.information(self, "선택 없음", "복사할 조건을 선택하세요.")
+            return
+        copied: list[Condition] = []
+        for item in items:
+            cond = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if isinstance(cond, Condition):
+                copied.append(copy.deepcopy(cond))
+        if not copied:
+            QtWidgets.QMessageBox.information(self, "선택 없음", "조건을 선택하세요.")
+            return
+        ConditionDialog._condition_clipboard = copied
+
+    def _paste_condition_nodes(self):
+        if not ConditionDialog._condition_clipboard:
+            QtWidgets.QMessageBox.information(self, "복사본 없음", "먼저 조건을 복사하세요.")
+            return
+        new_conds = [copy.deepcopy(cond) for cond in ConditionDialog._condition_clipboard]
+        branch_marker = self._selected_branch_marker()
+        target_cond = self._selected_condition()
+        inserted: list[Condition] = []
+        if not self.root_condition:
+            if len(new_conds) == 1:
+                self.root_condition = new_conds[0]
+            else:
+                self.root_condition = Condition(type="any", conditions=new_conds)
+            inserted = new_conds
+        elif branch_marker and target_cond:
+            dest = target_cond.on_true if branch_marker == "branch_true" else target_cond.on_false
+            inserted = self._insert_conditions_into_list(dest, len(dest), new_conds)
+        elif target_cond:
+            container = self._find_container_info(target_cond)
+            if container:
+                lst, idx, _parent = container
+                inserted = self._insert_conditions_into_list(lst, idx + 1, new_conds)
+            elif target_cond.type in ("all", "any"):
+                inserted = self._insert_conditions_into_list(target_cond.conditions, len(target_cond.conditions), new_conds)
+            else:
+                self.root_condition = Condition(type="any", conditions=[self.root_condition] + new_conds)
+                inserted = new_conds
+        else:
+            if self.root_condition.type == "any":
+                inserted = self._insert_conditions_into_list(self.root_condition.conditions, len(self.root_condition.conditions), new_conds)
+            else:
+                self.root_condition = Condition(type="any", conditions=[self.root_condition] + new_conds)
+                inserted = new_conds
+        self._refresh_condition_tree()
+        self._expand_condition_tree()
+        self._select_conditions_in_tree(inserted)
 
     def _edit_condition_node(self):
         current_cond = self._selected_condition()
@@ -2591,23 +2479,36 @@ class ConditionDialog(QtWidgets.QDialog):
             new_cond.on_false = copy.deepcopy(getattr(current_cond, "on_false", []))
             self._replace_condition(current_cond, new_cond)
             self._refresh_condition_tree()
-
     def _delete_condition_node(self):
-        current_cond = self._selected_condition()
-        if not current_cond:
+        items = self.condition_tree._top_level_selected(self.condition_tree.selectedItems())
+        if not items:
             QtWidgets.QMessageBox.information(self, "선택 없음", "삭제할 조건을 선택하세요.")
             return
 
-        if self.root_condition is current_cond:
-            self.root_condition = None
-            self._refresh_condition_tree()
+        count = len(items)
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "삭제 확인",
+            f"선택한 조건 {count}개를 삭제할까요?",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
             return
 
-        if self.root_condition and self._remove_condition(self.root_condition, current_cond):
-            self._refresh_condition_tree()
-        else:
-            QtWidgets.QMessageBox.warning(self, "삭제 실패", "조건을 삭제할 수 없습니다.")
+        for item in reversed(items):
+            cond = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if cond is self.root_condition:
+                self.root_condition = None
+                continue
+            info = self._find_container_info(item)
+            if not info:
+                continue
+            container, attr, idx = info
+            seq = getattr(container, attr)
+            if 0 <= idx < len(seq):
+                seq.pop(idx)
 
+        self._refresh_condition_tree()
     def _validate_group_children(self, cond: Condition):
         if cond.type in ("all", "any"):
             if not cond.conditions:
@@ -2616,7 +2517,6 @@ class ConditionDialog(QtWidgets.QDialog):
                 self._validate_group_children(child)
         for child in cond.on_true + cond.on_false:
             self._validate_group_children(child)
-
     def get_condition(self) -> MacroCondition:
         if not self.root_condition:
             raise ValueError("조건을 하나 이상 추가하세요.")
@@ -2627,14 +2527,12 @@ class ConditionDialog(QtWidgets.QDialog):
             setattr(root_copy, "name", name)
         except Exception:
             pass
-
         return MacroCondition(
             condition=root_copy,
             actions=[],
             else_actions=[],
             name=name,
         )
-
     def _condition_debug_payload(self) -> dict:
         macro_cond = self.get_condition()
         return {
@@ -2645,7 +2543,6 @@ class ConditionDialog(QtWidgets.QDialog):
             "label": macro_cond.name or "조건 디버그",
             "image_provider": self._viewer_image_provider if callable(self._viewer_image_provider) else None,
         }
-
     def _start_condition_debug_session_internal(self, *, silent: bool = False) -> bool:
         if not callable(self._start_condition_debug_fn):
             if not silent:
@@ -2666,7 +2563,6 @@ class ConditionDialog(QtWidgets.QDialog):
         if not silent:
             QtWidgets.QMessageBox.information(self, "시작 실패", "디버그 테스트를 시작하지 못했습니다.")
         return False
-
     def _restart_condition_debug_if_running(self):
         if not self._debug_stop_cb:
             return
@@ -2677,7 +2573,6 @@ class ConditionDialog(QtWidgets.QDialog):
         self._debug_stop_cb = None
         self.debug_test_btn.setText("디버그 테스트")
         self._start_condition_debug_session_internal(silent=True)
-
     def _toggle_condition_debug(self):
         if self._debug_stop_cb:
             try:
@@ -2686,24 +2581,19 @@ class ConditionDialog(QtWidgets.QDialog):
                 pass
             return
         self._start_condition_debug_session_internal()
-
     def _on_condition_debug_finished(self):
         self._debug_stop_cb = None
         self.debug_test_btn.setText("디버그 테스트")
-
     def _refresh_viewer_status_label(self, last_dir: str | None = None):
         base_dir = last_dir or self._image_viewer_state.get("last_dir")
         text = f"최근 폴더: {base_dir}" if base_dir else self._viewer_status_hint
         self.viewer_status.setText(text)
-
     def set_viewer_debug_source(self, *, enabled: bool, provider=None):
         self._viewer_image_provider = provider if callable(provider) else None
         self._refresh_viewer_status_label()
         self._restart_condition_debug_if_running()
-
     def notify_viewer_image_changed(self):
         self._restart_condition_debug_if_running()
-
     # 이미지 뷰어 --------------------------------------------------------
     def _open_image_viewer(self):
         try:
@@ -2729,13 +2619,11 @@ class ConditionDialog(QtWidgets.QDialog):
         self._image_viewer.show()
         self._image_viewer.raise_()
         self._image_viewer.activateWindow()
-
     def _focus_viewer_if_open(self):
         if self._image_viewer and self._image_viewer.isVisible():
             self._image_viewer.show()
             self._image_viewer.raise_()
             self._image_viewer.activateWindow()
-
     def _persist_viewer_state(self, data: dict):
         self._image_viewer_state = data or {}
         if callable(self._save_image_viewer_state):
@@ -2744,7 +2632,6 @@ class ConditionDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._refresh_viewer_status_label(self._image_viewer_state.get("last_dir"))
-
     def closeEvent(self, event: QtGui.QCloseEvent):
         if self._debug_stop_cb:
             try:
@@ -2759,13 +2646,10 @@ class ConditionDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         return super().closeEvent(event)
-
-
 class _ImageCanvas(QtWidgets.QWidget):
     sampleChanged = QtCore.pyqtSignal(object)
     zoomChanged = QtCore.pyqtSignal(float)
     imageChanged = QtCore.pyqtSignal()
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMouseTracking(True)
@@ -2788,7 +2672,6 @@ class _ImageCanvas(QtWidgets.QWidget):
         self._region_select_start: QtCore.QPoint | None = None
         self._region_select_rect: tuple[int, int, int, int] | None = None
         self._region_select_cb = None
-
     def clear_image(self):
         self._image = None
         self._pixmap = None
@@ -2805,7 +2688,6 @@ class _ImageCanvas(QtWidgets.QWidget):
         self.sampleChanged.emit(None)
         self.zoomChanged.emit(self._user_zoom)
         self.imageChanged.emit()
-
     def set_image(self, path: Path | None) -> bool:
         if path is None:
             self.clear_image()
@@ -2825,11 +2707,9 @@ class _ImageCanvas(QtWidgets.QWidget):
         self.zoomChanged.emit(self._user_zoom)
         self.imageChanged.emit()
         return True
-
     def set_overlays(self, rects: list[tuple[int, int, int, int]] | None):
         self._overlays = rects or []
         self.update()
-
     def begin_region_selection(self, callback=None) -> bool:
         if not self._image:
             return False
@@ -2839,7 +2719,6 @@ class _ImageCanvas(QtWidgets.QWidget):
         self._region_select_cb = callback
         self.update()
         return True
-
     def cancel_region_selection(self):
         if not self._region_select_active:
             return
@@ -2848,10 +2727,8 @@ class _ImageCanvas(QtWidgets.QWidget):
         self._region_select_rect = None
         self._region_select_cb = None
         self.update()
-
     def is_region_selecting(self) -> bool:
         return bool(self._region_select_active)
-
     def _clamp_center(self):
         if not self._image:
             return
@@ -2860,7 +2737,6 @@ class _ImageCanvas(QtWidgets.QWidget):
         cx = max(0, min(w, self._view_center.x()))
         cy = max(0, min(h, self._view_center.y()))
         self._view_center = QtCore.QPointF(cx, cy)
-
     def _update_draw_rect(self):
         if not self._pixmap:
             self._draw_rect = QtCore.QRectF()
@@ -2881,7 +2757,6 @@ class _ImageCanvas(QtWidgets.QWidget):
         widget_center = QtCore.QPointF(avail.center())
         origin = widget_center - QtCore.QPointF(self._view_center.x() * self._scale, self._view_center.y() * self._scale)
         self._draw_rect = QtCore.QRectF(origin, QtCore.QSizeF(pw * self._scale, ph * self._scale))
-
     def _build_magnifier(self):
         if not self._image or not self._sample:
             return None
@@ -2903,14 +2778,12 @@ class _ImageCanvas(QtWidgets.QWidget):
             QtCore.Qt.TransformationMode.FastTransformation,
         )
         return QtGui.QPixmap.fromImage(scaled)
-
     def _widget_to_image(self, pos: QtCore.QPointF) -> QtCore.QPointF | None:
         if not self._image or self._scale <= 0 or self._draw_rect.isNull():
             return None
         x = (pos.x() - self._draw_rect.left()) / self._scale
         y = (pos.y() - self._draw_rect.top()) / self._scale
         return QtCore.QPointF(x, y)
-
     def _event_image_pos(self, event: QtGui.QMouseEvent) -> tuple[int, int] | None:
         if not self._image:
             return None
@@ -2924,7 +2797,6 @@ class _ImageCanvas(QtWidgets.QWidget):
         x = max(0, min(self._image.width() - 1, x))
         y = max(0, min(self._image.height() - 1, y))
         return x, y
-
     def reset_zoom(self):
         if not self._image:
             return
@@ -2933,11 +2805,9 @@ class _ImageCanvas(QtWidgets.QWidget):
         self._update_draw_rect()
         self._update_sample_from_pos()
         self.zoomChanged.emit(self._user_zoom)
-
     def zoom_step(self, steps: int, anchor: QtCore.QPoint | None = None):
         factor = 1.15 ** steps
         self._apply_zoom(self._user_zoom * factor, anchor=anchor)
-
     def _apply_zoom(self, new_zoom: float, anchor: QtCore.QPoint | None = None):
         if not self._image:
             return
@@ -2961,16 +2831,13 @@ class _ImageCanvas(QtWidgets.QWidget):
         self._update_draw_rect()
         self._update_sample_from_pos()
         self.zoomChanged.emit(self._user_zoom)
-
     def zoom_factor(self) -> float:
         return float(self._user_zoom)
-
     def view_state(self) -> dict:
         return {
             "center": (float(self._view_center.x()), float(self._view_center.y())),
             "zoom": float(self._user_zoom),
         }
-
     def apply_view_state(self, state: dict | None, *, sample_pos=None):
         if not state or not self._image:
             return
@@ -2981,7 +2848,6 @@ class _ImageCanvas(QtWidgets.QWidget):
         self._apply_zoom(float(zoom), anchor=None)
         if sample_pos:
             self.set_sample_from_image_pos(sample_pos)
-
     def set_sample_from_image_pos(self, pos):
         if not self._image or not pos:
             return
@@ -2998,14 +2864,12 @@ class _ImageCanvas(QtWidgets.QWidget):
         hex_text = f"{color.red():02x}{color.green():02x}{color.blue():02x}"
         sample = {"pos": (x, y), "widget_pos": QtCore.QPoint(int(widget_x), int(widget_y)), "color": color, "hex": hex_text}
         self._set_sample(sample)
-
     def _set_sample(self, sample):
         if sample == self._sample:
             return
         self._sample = sample
         self.sampleChanged.emit(sample)
         self.update()
-
     def _update_sample_from_pos(self):
         if not self._image or self._draw_rect.isNull() or not self._last_mouse_pos:
             self._set_sample(None)
@@ -3024,7 +2888,6 @@ class _ImageCanvas(QtWidgets.QWidget):
         hex_text = f"{color.red():02x}{color.green():02x}{color.blue():02x}"
         sample = {"pos": (x, y), "widget_pos": QtCore.QPoint(int(posf.x()), int(posf.y())), "color": color, "hex": hex_text}
         self._set_sample(sample)
-
     def paintEvent(self, event: QtGui.QPaintEvent):
         painter = QtGui.QPainter(self)
         painter.fillRect(self.rect(), QtGui.QColor(10, 12, 16))
@@ -3036,7 +2899,6 @@ class _ImageCanvas(QtWidgets.QWidget):
         # 픽셀 단위 표시를 위해 부드러운 스케일을 끄고 최근접으로 그린다.
         painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, False)
         painter.drawPixmap(self._draw_rect, self._pixmap, QtCore.QRectF(self._pixmap.rect()))
-
         # overlays in image coordinates -> convert to widget coords
         if self._overlays and self._image and not self._draw_rect.isNull() and self._scale > 0:
             pen = QtGui.QPen(QtGui.QColor(255, 80, 80), 2)
@@ -3047,7 +2909,6 @@ class _ImageCanvas(QtWidgets.QWidget):
                 wx = self._draw_rect.left() + ox * self._scale
                 wy = self._draw_rect.top() + oy * self._scale
                 painter.drawRect(QtCore.QRectF(wx, wy, ow * self._scale, oh * self._scale))
-
         if self._region_select_rect and self._image and not self._draw_rect.isNull() and self._scale > 0:
             x, y, w, h = self._region_select_rect
             pen = QtGui.QPen(QtGui.QColor(90, 200, 255), 2, QtCore.Qt.PenStyle.DashLine)
@@ -3057,14 +2918,12 @@ class _ImageCanvas(QtWidgets.QWidget):
             wx = self._draw_rect.left() + x * self._scale
             wy = self._draw_rect.top() + y * self._scale
             painter.drawRect(QtCore.QRectF(wx, wy, w * self._scale, h * self._scale))
-
         if not self._sample:
             return
         pos = self._sample["widget_pos"]
         color = self._sample["color"]
         hex_text = self._sample["hex"]
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-
         magnifier = self._build_magnifier()
         if magnifier:
             mag_size = magnifier.size()
@@ -3086,7 +2945,6 @@ class _ImageCanvas(QtWidgets.QWidget):
             painter.setPen(QtGui.QPen(QtGui.QColor("#ffffff"), 1))
             painter.drawLine(mag_rect.left(), center_pt.y(), mag_rect.right(), center_pt.y())
             painter.drawLine(center_pt.x(), mag_rect.top(), center_pt.x(), mag_rect.bottom())
-
             color_box = QtCore.QRect(mag_rect.right() + 10, mag_rect.top(), 80, mag_rect.height())
             if color_box.right() > self.width() - margin:
                 color_box.moveLeft(mag_rect.left() - color_box.width() - 10)
@@ -3099,7 +2957,6 @@ class _ImageCanvas(QtWidgets.QWidget):
         painter.setPen(QtGui.QColor("#e8f4ff"))
         text = f"{self._sample['pos'][0]},{self._sample['pos'][1]}  #{hex_text}"
         painter.drawText(text_pos, text)
-
     def mouseMoveEvent(self, event: QtGui.QMouseEvent):
         self._last_mouse_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         if self._dragging and self._scale > 0:
@@ -3118,11 +2975,9 @@ class _ImageCanvas(QtWidgets.QWidget):
                 self.update()
         self._update_sample_from_pos()
         super().mouseMoveEvent(event)
-
     def leaveEvent(self, event: QtCore.QEvent):
         self._set_sample(None)
         super().leaveEvent(event)
-
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         if self._region_select_active:
             if event.button() == QtCore.Qt.MouseButton.LeftButton:
@@ -3144,12 +2999,11 @@ class _ImageCanvas(QtWidgets.QWidget):
                         pass
                 event.accept()
                 return
-
         pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         self._last_mouse_pos = pos
         self._update_sample_from_pos()
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            # ÁÂÅ¬¸¯ µå·¡±×·Î ÀÌµ¿¸¸ ¼öÇà
+            # 좌클릭 드래그로 이동만 수행
             self._dragging = True
             self._drag_start = QtCore.QPointF(pos)
             self._center_start = QtCore.QPointF(self._view_center)
@@ -3198,12 +3052,9 @@ class _ImageCanvas(QtWidgets.QWidget):
         else:
             self.zoom_step(steps, anchor=anchor)
         event.accept()
-
     def resizeEvent(self, event: QtGui.QResizeEvent):
         self._update_draw_rect()
         super().resizeEvent(event)
-
-
 class ImageViewerDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -3244,15 +3095,12 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._debug_frame_cache_path: Path | None = None
         self._debug_frame_cache_mtime: float | None = None
         self._debug_frame_cache_frame: np.ndarray | None = None
-
         self._build_ui()
         self.set_start_dir(start_dir, refresh=True)
         self._attach_capture_listener()
         self._notify_condition_window()
-
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
-
         def _make_section(title: str, content: QtWidgets.QWidget, state_key: str, *, default_open: bool = True) -> QtWidgets.QWidget:
             btn = QtWidgets.QToolButton()
             btn.setText(title)
@@ -3264,7 +3112,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             v = QtWidgets.QVBoxLayout(container)
             v.setContentsMargins(0, 0, 0, 0)
             v.addWidget(content)
-
             def _toggle(opened: bool):
                 container.setVisible(opened)
                 btn.setArrowType(QtCore.Qt.ArrowType.DownArrow if opened else QtCore.Qt.ArrowType.RightArrow)
@@ -3274,10 +3121,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
                         self._save_state_cb(self._collect_state())
                     except Exception:
                         pass
-
             btn.toggled.connect(_toggle)
             _toggle(default_open)
-
             wrap = QtWidgets.QWidget()
             wrap_layout = QtWidgets.QVBoxLayout(wrap)
             wrap_layout.setContentsMargins(0, 0, 0, 0)
@@ -3286,7 +3131,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._section_controls[state_key] = btn
             return wrap
         layout.setContentsMargins(6, 6, 6, 6)
-
         top = QtWidgets.QHBoxLayout()
         self.folder_btn = QtWidgets.QPushButton("폴더 선택")
         self.path_label = QtWidgets.QLabel("")
@@ -3311,21 +3155,17 @@ class ImageViewerDialog(QtWidgets.QDialog):
         top.addWidget(self.screenshot_btn)
         top.addWidget(self.close_btn)
         layout.addLayout(top)
-
         self.hud_label = QtWidgets.QLabel("")
         self.hud_label.setStyleSheet("color: #d9e7ff; background: rgba(30,40,60,0.6); padding: 4px;")
         self.path_label.setStyleSheet("color: #9fb2cc;")
         layout.addWidget(self.path_label)
         layout.addWidget(self.hud_label)
-
         self.canvas = _ImageCanvas()
         self.canvas.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         layout.addWidget(self.canvas, 1)
-
         self.status_label = QtWidgets.QLabel("스크린샷 폴더 이미지를 선택하세요.")
         self.status_label.setStyleSheet("color: #b5c2d6;")
         layout.addWidget(self.status_label)
-
         self.folder_btn.clicked.connect(self._choose_folder)
         self.image_combo.currentIndexChanged.connect(self._on_image_changed)
         self.close_btn.clicked.connect(self.close)
@@ -3348,7 +3188,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._start_region_selection,
             context=QtCore.Qt.ShortcutContext.ApplicationShortcut,
         )
-
     def set_start_dir(self, path: Path, *, refresh: bool = False):
         new_dir = Path(path)
         if not new_dir.exists():
@@ -3357,7 +3196,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._current_folder = new_dir
             self._load_folder(new_dir)
             self._remember_folder()
-
     def _remember_folder(self):
         data = {
             "last_dir": str(self._current_folder),
@@ -3368,14 +3206,12 @@ class ImageViewerDialog(QtWidgets.QDialog):
                 self._save_state(data)
             except Exception:
                 pass
-
     def _emit_debug_image_changed(self):
         try:
             if self._condition_window and hasattr(self._condition_window, "notify_viewer_image_changed"):
                 self._condition_window.notify_viewer_image_changed()
         except Exception:
             pass
-
     def _notify_condition_window(self):
         if not self._condition_window or not hasattr(self._condition_window, "set_viewer_debug_source"):
             return
@@ -3386,7 +3222,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             )
         except Exception:
             pass
-
     def _debug_image_payload(self):
         if not self._image_files or self._current_index < 0:
             return None
@@ -3398,7 +3233,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         if frame is None:
             return None
         return {"frame": frame, "label": path.name}
-
     def _load_debug_frame(self, path: Path):
         try:
             mtime = path.stat().st_mtime
@@ -3419,13 +3253,11 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._debug_frame_cache_frame = frame
         self._debug_frame_cache_mtime = mtime
         return frame
-
     def _attach_capture_listener(self):
         if not self._capture_manager or not hasattr(self._capture_manager, "add_capture_listener"):
             return
         if self._capture_listener:
             return
-
         def _listener(path):
             try:
                 QtCore.QMetaObject.invokeMethod(
@@ -3436,13 +3268,11 @@ class ImageViewerDialog(QtWidgets.QDialog):
                 )
             except Exception:
                 pass
-
         try:
             self._capture_manager.add_capture_listener(_listener)
             self._capture_listener = _listener
         except Exception:
             self._capture_listener = None
-
     def _choose_folder(self):
         path = QtWidgets.QFileDialog.getExistingDirectory(self, "스크린샷 폴더 선택", str(self._current_folder))
         if not path:
@@ -3450,7 +3280,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._current_folder = Path(path)
         self._load_folder(self._current_folder)
         self._remember_folder()
-
     def _load_folder(self, folder: Path):
         try:
             files = []
@@ -3479,10 +3308,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self.canvas.clear_image()
             self._status_prefix = "이미지를 찾을 수 없습니다. (png/jpg/jpeg/bmp)"
             self._render_status()
-
     def _on_image_changed(self, idx: int):
         self._select_index(idx)
-
     def _select_index(self, idx: int):
         self._pending_state = self._capture_view_state()
         if not self._image_files:
@@ -3509,7 +3336,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         else:
             self._status_prefix = "이미지를 열 수 없습니다."
             self._render_status()
-
     def _on_sample_changed(self, sample):
         self._last_sample = sample
         if not sample:
@@ -3518,13 +3344,11 @@ class ImageViewerDialog(QtWidgets.QDialog):
         x, y = sample["pos"]
         hex_text = sample["hex"]
         self.status_label.setText(f"x={x}, y={y} | #{hex_text} | Zoom x{self.canvas.zoom_factor():.2f}")
-
     def _on_zoom_changed(self, zoom: float):
         if self._last_sample:
             self._on_sample_changed(self._last_sample)
         else:
             self._render_status()
-
     def _capture_view_state(self) -> dict | None:
         if not self.canvas._image:
             return None
@@ -3532,7 +3356,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         if self._last_sample:
             state["sample"] = self._last_sample.get("pos")
         return state
-
     def _restore_view_state(self):
         state = self._pending_state
         self._pending_state = None
@@ -3543,13 +3366,11 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.canvas.apply_view_state(state, sample_pos=sample)
         if not sample:
             self._render_status()
-
     @QtCore.pyqtSlot(str)
     def _on_capture_from_manager(self, path_str: str):
         if not self.auto_refresh_chk.isChecked():
             return
         self._refresh_folder()
-
     def _nudge_sample(self, dx: int, dy: int):
         img = getattr(self.canvas, "_image", None)
         if img is None:
@@ -3559,7 +3380,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         else:
             x, y = img.width() // 2, img.height() // 2
         self.canvas.set_sample_from_image_pos((x + dx, y + dy))
-
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         key = event.key()
         ctrl = event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
@@ -3623,7 +3443,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
                 self.canvas.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
             return
         super().keyReleaseEvent(event)
-
     def _toggle_focus(self):
         if self.isActiveWindow():
             self._focus_condition_window()
@@ -3633,7 +3452,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self.activateWindow()
             self.canvas.setFocus()
             self._focused_on_viewer = True
-
     def _copy_coords(self):
         if not self._last_sample:
             self.status_label.setText("좌표를 가져오려면 이미지 위에 마우스를 올리세요.")
@@ -3651,7 +3469,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._fill_condition_dialog_region(txt)
-
     def _fill_condition_dialog_region(self, region_text: str):
         """현재 열려 있는 조건 편집/노드 창의 region 필드를 채운다."""
         try:
@@ -3667,7 +3484,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
                         pass
         except Exception:
             pass
-
     def _fill_condition_dialog_color(self, color_text: str):
         """현재 열려 있는 조건 편집/노드 창의 color 필드를 채운다."""
         try:
@@ -3681,7 +3497,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
                         pass
         except Exception:
             pass
-
     def _start_region_selection(self):
         if not getattr(self.canvas, "_image", None):
             self.status_label.setText("범위 선택: 이미지가 없습니다.")
@@ -3702,7 +3517,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         tip = "범위 선택: 시작점과 끝점을 순서대로 클릭하세요. 드래그도 가능합니다."
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), tip, self, QtCore.QRect(), 2500)
         self.status_label.setText("범위 선택: 시작점과 끝점을 클릭하세요. (Ctrl+F1)")
-
     def _on_region_selected(self, region: tuple[int, int, int, int] | None):
         if hasattr(self, "region_select_btn"):
             try:
@@ -3728,7 +3542,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._fill_condition_dialog_region(txt)
-
     def _copy_color(self):
         if not self._last_sample:
             self.status_label.setText("색상을 가져오려면 이미지 위에 마우스를 올리세요.")
@@ -3744,21 +3557,18 @@ class ImageViewerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._fill_condition_dialog_color(hex_text)
-
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         if event.button() == QtCore.Qt.MouseButton.RightButton:
             self._copy_color()
             event.accept()
             return
         super().mousePressEvent(event)
-
     def showEvent(self, event: QtGui.QShowEvent):
         super().showEvent(event)
         self._resize_to_available()
         self._update_hud_text()
         self._attach_capture_listener()
         self.canvas.setFocus()
-
     def closeEvent(self, event: QtGui.QCloseEvent):
         self._remember_folder()
         if self._capture_manager and self._capture_listener and hasattr(self._capture_manager, "remove_capture_listener"):
@@ -3768,18 +3578,15 @@ class ImageViewerDialog(QtWidgets.QDialog):
                 pass
             self._capture_listener = None
         return super().closeEvent(event)
-
     def _resize_to_available(self):
         screen = self.screen() or QtGui.QGuiApplication.primaryScreen()
         if screen:
             geo = screen.availableGeometry()
             self.setGeometry(geo)
-
     def _render_status(self):
         if not self._status_prefix:
             return
         self.status_label.setText(f"{self._status_prefix} | Zoom x{self.canvas.zoom_factor():.2f}")
-
     def _delete_all_in_folder(self):
         folder = Path(self._current_folder)
         if not folder.exists():
@@ -3807,10 +3614,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
                 pass
         self._load_folder(folder)
         self.status_label.setText(f"삭제 완료: {removed}개 삭제")
-
     def _refresh_folder(self):
         self._load_folder(self._current_folder)
-
     def _open_current_folder(self):
         folder = Path(self._current_folder)
         if not folder.exists():
@@ -3818,7 +3623,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             return
         url = QtCore.QUrl.fromLocalFile(str(folder))
         QtGui.QDesktopServices.openUrl(url)
-
     def _delete_current_file(self):
         if not self._image_files or self._current_index < 0 or self._current_index >= len(self._image_files):
             QtWidgets.QMessageBox.information(self, "삭제 대상 없음", "삭제할 이미지가 없습니다.")
@@ -3844,7 +3648,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._select_index(max(0, next_idx))
         else:
             self.status_label.setText("이미지를 삭제했습니다. (폴더 비어 있음)")
-
     def _current_hotkey_info(self) -> dict:
         if callable(self._screenshot_hotkeys_provider):
             try:
@@ -3852,7 +3655,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
             except Exception:
                 return {}
         return {}
-
     def _update_hud_text(self):
         hk = self._current_hotkey_info()
         hk_start = hk.get("start") or "-"
@@ -3862,14 +3664,12 @@ class ImageViewerDialog(QtWidgets.QDialog):
             f"핫키: 좌클릭 드래그 이동, Alt+휠/± 확대, 0 리셋, F1 좌표 복사, Ctrl+F1 범위 복사, F2 색상 복사(우클릭 가능), "
             f"F5 새로고침, Delete 현재 삭제, ←/→ 이미지 이동, ESC 닫기 | 스크린샷: 시작={hk_start}, 정지={hk_stop}, 단일={hk_cap}"
         )
-
     def _open_screenshot(self):
         if callable(self._open_screenshot_dialog):
             try:
                 self._open_screenshot_dialog()
             except Exception:
                 pass
-
     def _focus_condition_window(self):
         if self._condition_window:
             try:
@@ -3889,8 +3689,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._focused_on_viewer = False
-
-
 class _NoHoverDelegate(QtWidgets.QStyledItemDelegate):
     def paint(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
         opt = QtWidgets.QStyleOptionViewItem(option)
@@ -3903,13 +3701,10 @@ class _NoHoverDelegate(QtWidgets.QStyledItemDelegate):
         opt.state &= ~hover_flag
         opt.state &= ~focus_flag
         super().paint(painter, opt, index)
-
-
 class _TypeIndentDelegate(QtWidgets.QStyledItemDelegate):
     def __init__(self, tree: QtWidgets.QTreeWidget):
         super().__init__(tree)
         self.tree = tree
-
     def _level(self, index: QtCore.QModelIndex) -> int:
         if hasattr(self.tree, "_item_level"):
             return self.tree._item_level(index)
@@ -3919,7 +3714,6 @@ class _TypeIndentDelegate(QtWidgets.QStyledItemDelegate):
             level += 1
             parent = parent.parent()
         return level
-
     def paint(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
         opt = QtWidgets.QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
@@ -3941,7 +3735,6 @@ class _TypeIndentDelegate(QtWidgets.QStyledItemDelegate):
         opt.rect = opt.rect.adjusted(indent * level, 0, 0, 0)
         style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
         style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
-
     def sizeHint(self, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex) -> QtCore.QSize:
         opt = QtWidgets.QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
@@ -3950,13 +3743,10 @@ class _TypeIndentDelegate(QtWidgets.QStyledItemDelegate):
         indent = getattr(self.tree, "_type_indent", max(12, self.tree.indentation()))
         size.setWidth(size.width() + indent * level)
         return size
-
-
 class _DepthCheckDelegate(QtWidgets.QStyledItemDelegate):
     def __init__(self, tree: QtWidgets.QTreeWidget):
         super().__init__(tree)
         self.tree = tree
-
     def _level(self, index: QtCore.QModelIndex) -> int:
         if hasattr(self.tree, "_item_level"):
             return self.tree._item_level(index)
@@ -3966,7 +3756,6 @@ class _DepthCheckDelegate(QtWidgets.QStyledItemDelegate):
             level += 1
             parent = parent.parent()
         return level
-
     def paint(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
         opt = QtWidgets.QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
@@ -3989,7 +3778,6 @@ class _DepthCheckDelegate(QtWidgets.QStyledItemDelegate):
         opt.rect = opt.rect.adjusted(indent * level, 0, 0, 0)
         style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
         style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
-
     def sizeHint(self, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex) -> QtCore.QSize:
         opt = QtWidgets.QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
@@ -3998,11 +3786,8 @@ class _DepthCheckDelegate(QtWidgets.QStyledItemDelegate):
         indent = getattr(self.tree, "_type_indent", max(12, self.tree.indentation()))
         size.setWidth(size.width() + indent * level)
         return size
-
-
 class _VariableSeparatorDelegate(QtWidgets.QStyledItemDelegate):
     """Draw a thicker vertical line after each (이름, 값) 쌍."""
-
     def paint(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
         super().paint(painter, option, index)
         model = index.model()
@@ -4018,8 +3803,6 @@ class _VariableSeparatorDelegate(QtWidgets.QStyledItemDelegate):
         rect = option.rect
         painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
         painter.restore()
-
-
 class _ProfileListDelegate(QtWidgets.QStyledItemDelegate):
     def _to_brush(self, value):
         if isinstance(value, QtGui.QBrush):
@@ -4029,7 +3812,6 @@ class _ProfileListDelegate(QtWidgets.QStyledItemDelegate):
         if isinstance(value, str):
             return QtGui.QBrush(QtGui.QColor(value))
         return None
-
     def paint(
         self,
         painter: QtGui.QPainter,
@@ -4038,17 +3820,14 @@ class _ProfileListDelegate(QtWidgets.QStyledItemDelegate):
     ):
         opt = QtWidgets.QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
-
         bg_brush = self._to_brush(index.data(QtCore.Qt.ItemDataRole.BackgroundRole))
         fg_brush = self._to_brush(index.data(QtCore.Qt.ItemDataRole.ForegroundRole))
-
         if bg_brush:
             try:
                 hover_flag = QtWidgets.QStyle.StateFlag.State_MouseOver  # Qt6
             except AttributeError:
                 hover_flag = QtWidgets.QStyle.State_MouseOver  # Qt5 fallback
             opt.state &= ~hover_flag
-
         if bg_brush:
             painter.save()
             painter.fillRect(opt.rect, bg_brush)
@@ -4063,13 +3842,9 @@ class _ProfileListDelegate(QtWidgets.QStyledItemDelegate):
                 QtGui.QPalette.ColorRole.HighlightedText,
             ):
                 opt.palette.setBrush(role, fg_brush)
-
         super().paint(painter, opt, index)
-
-
 class _VariableHeader(QtWidgets.QHeaderView):
     """Header with a bold separator after each 값 열."""
-
     def paintSection(self, painter: QtGui.QPainter, rect: QtCore.QRect, logicalIndex: int):
         super().paintSection(painter, rect, logicalIndex)
         model = self.model()
@@ -4082,8 +3857,6 @@ class _VariableHeader(QtWidgets.QHeaderView):
             painter.setPen(pen)
             painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
             painter.restore()
-
-
 class ActionTreeWidget(QtWidgets.QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -4155,11 +3928,9 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         self._child_hint_key: tuple[int, str] | None = None
         self._child_hint_time: float = 0.0
         self.itemChanged.connect(self._handle_item_changed)
-
     def _first_column_rect(self, index: QtCore.QModelIndex) -> QtCore.QRect:
         idx = index.sibling(index.row(), 1)
         return self.visualRect(idx)
-
     def _item_level(self, index: QtCore.QModelIndex) -> int:
         item = self.itemFromIndex(index)
         if not item:
@@ -4179,7 +3950,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             level += 1
             current = parent
         return level
-
     def _is_block_marker(self, data) -> bool:
         if isinstance(data, Action) and data.type in ("if", "group"):
             return True
@@ -4188,7 +3958,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if isinstance(data, dict) and data.get("marker") == "__elif__":
             return True
         return False
-
     def _can_have_children_data(self, data) -> bool:
         if isinstance(data, Action) and data.type in ("if", "group"):
             return True
@@ -4197,13 +3966,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if isinstance(data, dict) and data.get("marker") == "__elif__":
             return True
         return False
-
     def _can_have_children_item(self, item: QtWidgets.QTreeWidgetItem | None) -> bool:
         if not item:
             return False
         data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         return self._can_have_children_data(data)
-
     def _orig_text(self, item: QtWidgets.QTreeWidgetItem, col: int) -> str:
         """Cache original text so we can append markers without losing indentation alignment."""
         key = QtCore.Qt.ItemDataRole.UserRole + 5
@@ -4212,12 +3979,10 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             cached = item.text(col)
             item.setData(col, key, cached)
         return str(cached)
-
     def _set_type_text(self, item: QtWidgets.QTreeWidgetItem, text: str):
         key = QtCore.Qt.ItemDataRole.UserRole + 5
         item.setText(1, text)
         item.setData(1, key, text)
-
     def _set_drop_enabled(self, item: QtWidgets.QTreeWidgetItem, enabled: bool):
         flags = item.flags()
         if enabled:
@@ -4225,7 +3990,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         else:
             flags &= ~QtCore.Qt.ItemFlag.ItemIsDropEnabled
         item.setFlags(flags)
-
     def _block_root_index(self, index: QtCore.QModelIndex) -> QtCore.QModelIndex | None:
         current = index
         while current.isValid():
@@ -4234,13 +3998,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 return current
             current = current.parent()
         return None
-
     def _expander_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
         size = self._expander_size
         margin = self._expander_margin
         right = rect.right() - margin
         return QtCore.QRect(right - size, rect.center().y() - size // 2, size, size)
-
     def _draw_block_background(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
         block_index = self._block_root_index(index)
         if not block_index:
@@ -4249,7 +4011,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         color = QtGui.QColor("#e9f2ff" if is_header else "#f7faff")
         color.setAlpha(150 if is_header else 110)
         painter.fillRect(option.rect, color)
-
     def _draw_indent_guides(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
         level = self._item_level(index)
         if level <= 0:
@@ -4263,7 +4024,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         for depth in range(1, level + 1):
             x = type_rect.left() + depth * indent - indent // 2
             painter.drawLine(x, option.rect.top(), x, option.rect.bottom())
-
     def _draw_expander(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
         item = self.itemFromIndex(index)
         if not item or item.childCount() == 0:
@@ -4298,7 +4058,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             ]
         painter.drawPolyline(QtGui.QPolygonF(pts))
         painter.restore()
-
     def _drag_pixmap_for_mode(self, mode: str) -> QtGui.QPixmap:
         if mode in self._drag_pixmap_cache:
             return self._drag_pixmap_cache[mode]
@@ -4322,28 +4081,23 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         painter.end()
         self._drag_pixmap_cache[mode] = pm
         return pm
-
     def _update_drag_pixmap_mode(self, mode: str):
         if self._drag_pixmap_mode == mode:
             return
         self._drag_pixmap_mode = mode
         if self._active_drag:
             self._active_drag.setPixmap(self._drag_pixmap_for_mode(mode))
-
     def _clear_drop_feedback(self):
         if self._drop_feedback is not None:
             self._drop_feedback = None
             self.viewport().update()
-
     def _maybe_show_child_hint(self, item: QtWidgets.QTreeWidgetItem | None, mode: str):
         # 힌트 툴팁은 사용하지 않는다(시각 노이즈 제거).
         return
-
     def _is_drop_allowed(self, indicator: QtWidgets.QAbstractItemView.DropIndicatorPosition, target_item: QtWidgets.QTreeWidgetItem | None) -> bool:
         if indicator == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem:
             return bool(target_item) and bool(target_item.flags() & QtCore.Qt.ItemFlag.ItemIsDropEnabled) and self._can_have_children_item(target_item)
         return True
-
     def _is_seq_column_area(self, pos: QtCore.QPoint) -> bool:
         """Return True if the drop position is within the 순번(column 0) area."""
         col = self.columnAt(pos.x())
@@ -4353,7 +4107,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if col == -1 and pos.x() <= self.columnWidth(0) + 4:
             return True
         return False
-
     def _normalized_indicator(
         self,
         pos: QtCore.QPoint,
@@ -4375,7 +4128,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 else QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem
             )
         return indicator, allowed_child
-
     def _update_drop_feedback(self, event: QtGui.QDragMoveEvent | QtGui.QDropEvent | QtGui.QDragEnterEvent | None):
         if event is None:
             self._clear_drop_feedback()
@@ -4413,7 +4165,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         self._update_drag_pixmap_mode(mode)
         self._maybe_show_child_hint(target_item, mode)
         self.viewport().update()
-
     def _paint_drop_feedback(self):
         if not self._drop_feedback:
             return
@@ -4465,7 +4216,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 right = view_rect.right() - 6
             painter.drawLine(left, y, right, y)
         painter.end()
-
     def _disabled_depth(self, item: QtWidgets.QTreeWidgetItem) -> int | None:
         if not item:
             return None
@@ -4483,18 +4233,15 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 return max(0, level - ancestor_level)
             current = current.parent()
         return None
-
     def _disabled_overlay_color(self, depth: int) -> QtGui.QColor:
         color = QtGui.QColor(self._disabled_base_color)
         alpha = max(70, 200 - min(depth, 6) * 18)
         color.setAlpha(alpha)
         return color
-
     def _disabled_text_brush(self, depth: int) -> QtGui.QBrush:
         color = QtGui.QColor(self._disabled_text_color)
         color = color.lighter(100 + min(depth, 6) * 8)
         return QtGui.QBrush(color)
-
     def _apply_enabled_styles(self):
         default_brush = QtGui.QBrush(self.palette().color(QtGui.QPalette.ColorRole.Text))
         stack: list[QtWidgets.QTreeWidgetItem | None] = [self.topLevelItem(i) for i in range(self.topLevelItemCount())]
@@ -4523,7 +4270,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 item.setIcon(1, QtGui.QIcon())
             for i in range(item.childCount()):
                 stack.append(item.child(i))
-
     def _collapse_branch(self, item: QtWidgets.QTreeWidgetItem | None):
         if not item:
             return
@@ -4532,7 +4278,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             self.setExpanded(idx, False)
         for i in range(item.childCount()):
             self._collapse_branch(item.child(i))
-
     def _handle_item_changed(self, item: QtWidgets.QTreeWidgetItem, column: int):
         if column != 5:
             return
@@ -4554,7 +4299,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             self.expandItem(item)
         self._apply_enabled_styles()
         self.viewport().update()
-
     def _draw_disabled_overlay(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
         item = self.itemFromIndex(index)
         if not item:
@@ -4563,12 +4307,10 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if depth is None:
             return
         painter.fillRect(option.rect, self._disabled_overlay_color(depth))
-
     def drawRow(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
         painter.save()
         self._draw_block_background(painter, option, index)
         painter.restore()
-
         opt = QtWidgets.QStyleOptionViewItem(option)
         # 마우스 호버/포커스가 체크박스 영역을 덮지 않도록 제거 (Qt6 호환)
         try:
@@ -4580,26 +4322,21 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         opt.state &= ~hover_flag
         opt.state &= ~focus_flag
         super().drawRow(painter, opt, index)
-
         painter.save()
         self._draw_disabled_overlay(painter, option, index)
         self._draw_indent_guides(painter, option, index)
         self._draw_expander(painter, option, index)
         painter.restore()
-
     def paintEvent(self, event: QtGui.QPaintEvent):
         super().paintEvent(event)
         self._paint_drop_feedback()
-
     def _drag_default_action(self) -> QtCore.Qt.DropAction:
         modifiers = QtWidgets.QApplication.keyboardModifiers()
         return QtCore.Qt.DropAction.CopyAction if modifiers & QtCore.Qt.KeyboardModifier.AltModifier else QtCore.Qt.DropAction.MoveAction
-
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent):
         event.setDropAction(self._drag_default_action())
         super().dragEnterEvent(event)
         self._update_drop_feedback(event)
-
     def startDrag(self, supported_actions: QtCore.Qt.DropActions):
         indexes = self.selectedIndexes()
         if not indexes:
@@ -4612,16 +4349,13 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         self._active_drag = None
         self._drag_pixmap_mode = None
         self._clear_drop_feedback()
-
     def dragMoveEvent(self, event: QtGui.QDragMoveEvent):
         event.setDropAction(self._drag_default_action())
         super().dragMoveEvent(event)
         self._update_drop_feedback(event)
-
     def dragLeaveEvent(self, event: QtGui.QDragLeaveEvent):
         super().dragLeaveEvent(event)
         self._clear_drop_feedback()
-
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         index = self.indexAt(pos)
@@ -4656,7 +4390,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                     event.accept()
                     return
         super().mousePressEvent(event)
-
     def _format_value(self, act: Action) -> str:
         suffix_bits = []
         if getattr(act, "once_per_macro", False):
@@ -4722,10 +4455,8 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 val_text = str(value)
             return f"타이머{slot}={val_text}초" + suffix
         return suffix.strip()
-
     def _format_desc(self, act: Action) -> str:
         return getattr(act, "description", "") or ""
-
     def _apply_once_style(self, item: QtWidgets.QTreeWidgetItem, act: Action):
         """색상으로 1회 실행/첫 입력 보장 액션을 표시."""
         default_brush = QtGui.QBrush(self.palette().color(QtGui.QPalette.ColorRole.Text))
@@ -4734,7 +4465,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         brush = once_brush if has_flag else default_brush
         for col in range(item.columnCount()):
             item.setForeground(col, brush)
-
     def _append_action_item(self, act: Action, parent_item=None, insert_row: int | None = None):
         label = act.type
         item = QtWidgets.QTreeWidgetItem(
@@ -4762,7 +4492,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 parent_item.addChild(item)
             else:
                 parent_item.insertChild(insert_row, item)
-
         if act.type == "if":
             for child in act.actions:
                 self._append_action_item(child, item)
@@ -4781,7 +4510,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             for child in act.actions:
                 self._append_action_item(child, item)
         return item
-
     def _insert_after(self, act: Action, after_item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QTreeWidgetItem:
         parent = after_item.parent()
         if parent:
@@ -4789,14 +4517,12 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             return self._append_action_item(act, parent, row)
         row = self.indexOfTopLevelItem(after_item) + 1
         return self._append_action_item(act, None, row)
-
     def _find_else_header(self, item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QTreeWidgetItem | None:
         for i in range(item.childCount()):
             child = item.child(i)
             if child.data(0, QtCore.Qt.ItemDataRole.UserRole) == "__else__":
                 return child
         return None
-
     def _ensure_else_header(self, item: QtWidgets.QTreeWidgetItem, *, create_if_missing: bool) -> QtWidgets.QTreeWidgetItem | None:
         found = self._find_else_header(item)
         if found or not create_if_missing:
@@ -4809,7 +4535,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         self._set_drop_enabled(else_header, True)
         item.addChild(else_header)
         return else_header
-
     def _create_elif_header(self, parent: QtWidgets.QTreeWidgetItem, cond: Condition, desc: str | None = None) -> QtWidgets.QTreeWidgetItem:
         enabled_flag = getattr(cond, "enabled", True)
         try:
@@ -4837,14 +4562,12 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         else:
             parent.addChild(header)
         return header
-
     def remove_else_header(self, item: QtWidgets.QTreeWidgetItem):
         header = self._find_else_header(item)
         if header:
             idx = item.indexOfChild(header)
             item.takeChild(idx)
         self.renumber()
-
     def load_actions(self, actions: List[Action]):
         # Block signals/repaints during bulk load to avoid per-item itemChanged churn.
         prev_block = self.blockSignals(True)
@@ -4859,14 +4582,12 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             self.setUpdatesEnabled(True)
             self.blockSignals(prev_block)
             self.viewport().update()
-
     def collapse_all(self, checked: bool = False):
         """모든 노드를 접는다(버튼에서 bool 시그널을 받아도 허용)."""
         self.setUpdatesEnabled(False)
         super().collapseAll()
         self.setUpdatesEnabled(True)
         self.viewport().update()
-
     def renumber(self):
         counter = 1
         stack: list[QtWidgets.QTreeWidgetItem | None] = [
@@ -4881,7 +4602,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             for i in reversed(range(item.childCount())):
                 stack.append(item.child(i))
         self._apply_enabled_styles()
-
     def _is_descendant(self, item: QtWidgets.QTreeWidgetItem, ancestor: QtWidgets.QTreeWidgetItem) -> bool:
         parent = item.parent()
         while parent:
@@ -4889,14 +4609,12 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 return True
             parent = parent.parent()
         return False
-
     def _top_level_ancestor(self, item: QtWidgets.QTreeWidgetItem | None) -> QtWidgets.QTreeWidgetItem | None:
         """Return the highest ancestor (or self) for the given item."""
         current = item
         while current and current.parent():
             current = current.parent()
         return current
-
     def _item_path_key(self, item: QtWidgets.QTreeWidgetItem) -> tuple[int, ...]:
         path: list[int] = []
         current = item
@@ -4906,7 +4624,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             path.append(row)
             current = parent
         return tuple(reversed(path))
-
     def _top_level_selected(self, items: List[QtWidgets.QTreeWidgetItem]) -> List[QtWidgets.QTreeWidgetItem]:
         result: List[QtWidgets.QTreeWidgetItem] = []
         for it in items:
@@ -4914,10 +4631,8 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 continue
             result.append(it)
         return sorted(result, key=self._item_path_key)
-
     def _expanded_keys(self) -> set[tuple[int, ...]]:
         keys: set[tuple[int, ...]] = set()
-
         def walk(item: QtWidgets.QTreeWidgetItem):
             key = self._item_path_key(item)
             idx = self.indexFromItem(item)
@@ -4925,11 +4640,9 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 keys.add(key)
             for i in range(item.childCount()):
                 walk(item.child(i))
-
         for i in range(self.topLevelItemCount()):
             walk(self.topLevelItem(i))
         return keys
-
     def _restore_expanded(self, keys: set[tuple[int, ...]]):
         def walk(item: QtWidgets.QTreeWidgetItem):
             key = self._item_path_key(item)
@@ -4938,10 +4651,8 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 self.setExpanded(idx, key in keys)
             for i in range(item.childCount()):
                 walk(item.child(i))
-
         for i in range(self.topLevelItemCount()):
             walk(self.topLevelItem(i))
-
     def move_selected_within_parent(self, offset: int) -> tuple[bool, str | None, QtWidgets.QTreeWidgetItem | None]:
         items = self._top_level_selected(self.selectedItems())
         if not items:
@@ -4983,7 +4694,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         self.scrollToItem(primary)
         self.renumber()
         return True, None, primary
-
     def _clone_tree_item(self, item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QTreeWidgetItem:
         clone = QtWidgets.QTreeWidgetItem([item.text(col) for col in range(item.columnCount())])
         clone_data = copy.deepcopy(item.data(0, QtCore.Qt.ItemDataRole.UserRole))
@@ -4996,7 +4706,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         for idx in range(item.childCount()):
             clone.addChild(self._clone_tree_item(item.child(idx)))
         return clone
-
     def dropEvent(self, event: QtGui.QDropEvent):
         modifiers = QtWidgets.QApplication.keyboardModifiers()
         pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
@@ -5005,7 +4714,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         force_top_level = self._is_seq_column_area(pos)
         indicator, allowed_child = self._normalized_indicator(pos, indicator, target, force_sibling=force_top_level)
         target_for_insert = self._top_level_ancestor(target) if force_top_level else target
-
         def compute_parent_and_row(
             indicator_value: QtWidgets.QAbstractItemView.DropIndicatorPosition,
             target_item: QtWidgets.QTreeWidgetItem | None,
@@ -5022,7 +4730,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 elif indicator_value == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport:
                     insert_at = self.topLevelItemCount()
                 return parent_item, insert_at
-
             if indicator_value == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport:
                 return None, self.topLevelItemCount()
             if indicator_value == QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem and allow_child and target_item:
@@ -5041,7 +4748,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             if insert_at < 0:
                 insert_at = self.topLevelItemCount()
             return parent_item, insert_at
-
         if modifiers & QtCore.Qt.KeyboardModifier.AltModifier and event.source() in (self, self.viewport()):
             selected = self._top_level_selected(self.selectedItems())
             if not selected:
@@ -5050,7 +4756,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             if target_for_insert is None and indicator != QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport:
                 indicator = QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport
             parent, insert_row = compute_parent_and_row(indicator, target_for_insert, allowed_child)
-
             new_items: list[QtWidgets.QTreeWidgetItem] = []
             for item in selected:
                 clone = self._clone_tree_item(item)
@@ -5103,7 +4808,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 self.setCurrentItem(items[0])
             self.renumber()
         self._clear_drop_feedback()
-
     def _action_from_item(self, item: QtWidgets.QTreeWidgetItem) -> Action | None:
         data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if not isinstance(data, Action):
@@ -5148,7 +4852,6 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             if child_action:
                 act.actions.append(child_action)
         return act
-
     def collect_actions(self) -> List[Action]:
         actions: List[Action] = []
         for i in range(self.topLevelItemCount()):
@@ -5156,21 +4859,17 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             if act:
                 actions.append(act)
         return actions
-
     def selected_item(self) -> QtWidgets.QTreeWidgetItem | None:
         selected = self.selectionModel().selectedRows()
         if not selected:
             return None
         return self.itemFromIndex(selected[0])
-
     def selected_action(self) -> Action | None:
         item = self.selected_item()
         if not item:
             return None
         data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         return data if isinstance(data, Action) else None
-
-
 class ActionEditDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -5223,9 +4922,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._existing_children: List[Action] = []
         self._existing_else: List[Action] = []
         self._existing_elifs: List[tuple[Condition, List[Action]]] = []
-
         layout = QtWidgets.QVBoxLayout(self)
-
         form = QtWidgets.QFormLayout()
         self.type_combo = QtWidgets.QComboBox()
         for label, val in [
@@ -5280,11 +4977,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.goto_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._refresh_goto_targets()
         _orig_show_popup = self.goto_combo.showPopup
-
         def _show_popup():
             self._refresh_goto_targets()
             _orig_show_popup()
-
         self.goto_combo.showPopup = _show_popup
         self.var_name_edit = QtWidgets.QLineEdit()
         self.var_value_edit = QtWidgets.QLineEdit()
@@ -5331,13 +5026,11 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.override_preset_btn.setToolTip("누름 70-120ms, 키 사이 80-150ms")
         self.override_preset_btn.clicked.connect(self._set_override_preset)
         self.delay_override_check.toggled.connect(self._toggle_override_enabled)
-
         delay_layout.addWidget(QtWidgets.QLabel("누름→뗌 지연"), 1, 0)
         delay_layout.addWidget(self.override_press_edit, 1, 1)
         delay_layout.addWidget(QtWidgets.QLabel("키 사이 지연"), 2, 0)
         delay_layout.addWidget(self.override_gap_edit, 2, 1)
         delay_layout.addWidget(self.override_preset_btn, 1, 2, 2, 1)
-
         self._install_var_completer(self.sleep_edit, "sleep")
         self._install_var_completer(self.region_edit, "region")
         self._install_var_completer(self.var_value_edit, "var")
@@ -5354,7 +5047,6 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.var_name_edit.setCompleter(comp)
         self.cond_label = QtWidgets.QLabel("(조건 없음)")
         self.edit_cond_btn = QtWidgets.QPushButton("조건 편집")
-
         form.addRow("타입", self.type_combo)
         form.addRow("이름(선택)", self.name_edit)
         form.addRow("설명", self.desc_edit)
@@ -5392,7 +5084,6 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow(self.delay_override_group)
         layout.addLayout(form)
         self._form_layout = form
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.ok_btn = QtWidgets.QPushButton("확인")
@@ -5402,7 +5093,6 @@ class ActionEditDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.ok_btn)
         btn_row.addWidget(self.cancel_btn)
         layout.addLayout(btn_row)
-
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         self.edit_cond_btn.clicked.connect(self._edit_condition)
@@ -5412,33 +5102,27 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_button_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self.type_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self._toggle_override_enabled()
-
         if action:
             self._load(action)
         else:
             self._sync_fields()
             self._update_trigger_warning()
-
     def showEvent(self, event: QtGui.QShowEvent):
         super().showEvent(event)
         if self._current_type() == "goto":
             self._refresh_goto_targets()
-
     def _set_field_visible(self, widget: QtWidgets.QWidget, visible: bool):
         label = self._form_layout.labelForField(widget) if hasattr(self, "_form_layout") else None
         if label:
             label.setVisible(visible)
         widget.setVisible(visible)
-
     def _toggle_override_enabled(self):
         enabled = self.delay_override_check.isChecked()
         for w in (self.override_press_edit, self.override_gap_edit, self.override_preset_btn):
             w.setEnabled(enabled)
-
     def _set_override_preset(self):
         self.override_press_edit.setText("70-120")
         self.override_gap_edit.setText("80-150")
-
     def _parse_repeat_input(self) -> tuple[int, Optional[tuple[int, int]], Optional[str]]:
         raw_repeat = self.repeat_edit.text() or ""
         normalized = self._normalize_repeat_text(raw_repeat)
@@ -5466,7 +5150,6 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.repeat_edit.setText(str(val))
             return val, None, None
         raise ValueError("반복 횟수는 정수 또는 A~B 형식(정수 범위)로 입력하세요. 예: 1 또는 1~4")
-
     @staticmethod
     def _normalize_repeat_text(text: str) -> str:
         raw = unicodedata.normalize("NFKC", str(text or ""))
@@ -5494,13 +5177,11 @@ class ActionEditDialog(QtWidgets.QDialog):
         raw = raw.replace("\uD68C", "").replace("\uBC88", "")
         raw = re.sub(r"\s+", "", raw)
         return raw
-
     def _install_var_completer(self, edit: QtWidgets.QLineEdit, category: str):
         if not self._variable_provider:
             return
         names = self._variable_provider(category) if callable(self._variable_provider) else []
         _attach_variable_completer(edit, names)
-
     def _refresh_goto_targets(self, preserve: str | None = None):
         current = preserve if preserve is not None else self.goto_combo.currentData()
         self.goto_combo.blockSignals(True)
@@ -5528,10 +5209,8 @@ class ActionEditDialog(QtWidgets.QDialog):
             current_idx = self.goto_combo.count() - 1
         self.goto_combo.setCurrentIndex(current_idx)
         self.goto_combo.blockSignals(False)
-
     def _current_type(self) -> str:
         return self.type_combo.currentData()
-
     def _sync_fields(self):
         typ = self._current_type()
         mouse_types = ("mouse_click", "mouse_down", "mouse_up", "mouse_move")
@@ -5550,7 +5229,6 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_repeat = typ in ("press", "down", "up") or typ in mouse_types
         show_group_repeat = show_group and self.group_mode_combo.currentData() == "repeat_n"
         show_pause_keep = typ in ("down", "mouse_down")
-
         self._set_field_visible(self.key_edit, show_key)
         self.key_edit.setEnabled(show_key)
         self._set_field_visible(self.mouse_button_combo, show_mouse_btn)
@@ -5569,29 +5247,24 @@ class ActionEditDialog(QtWidgets.QDialog):
             self._refresh_goto_targets()
         self._set_field_visible(self.goto_combo, show_goto)
         self.goto_combo.setEnabled(show_goto)
-
         self._set_field_visible(self.var_name_edit, show_var)
         self._set_field_visible(self.var_value_edit, show_var)
         for w in (self.var_name_edit, self.var_value_edit):
             w.setEnabled(show_var)
-
         self._set_field_visible(self.timer_slot_combo, show_timer)
         self._set_field_visible(self.timer_value_spin, show_timer)
         for w in (self.timer_slot_combo, self.timer_value_spin):
             w.setEnabled(show_timer)
-
         self._set_field_visible(self.region_edit, show_pixel_get)
         self._set_field_visible(self.region_offset_edit, show_pixel_get)
         self._set_field_visible(self.pixel_target_edit, show_pixel_get)
         self.region_edit.setEnabled(show_pixel_get)
         self.region_offset_edit.setEnabled(show_pixel_get)
         self.pixel_target_edit.setEnabled(show_pixel_get)
-
         self._set_field_visible(self.group_mode_combo, show_group)
         self.group_mode_combo.setEnabled(show_group)
         self._set_field_visible(self.group_repeat_spin, show_group_repeat)
         self.group_repeat_spin.setEnabled(show_group_repeat)
-
         self._set_field_visible(self.if_confirm_spin, show_if)
         self.if_confirm_spin.setEnabled(show_if)
         self._set_field_visible(self.cond_label, show_if)
@@ -5601,7 +5274,6 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._set_field_visible(self.delay_override_group, show_override)
         self.delay_override_group.setEnabled(show_override)
         self._toggle_override_enabled()
-
     def _edit_condition(self):
         seed_cond = self._condition or Condition(type="pixel", region=(0, 0, 1, 1), color=(255, 0, 0), tolerance=0)
         seed_name = getattr(seed_cond, "name", None)
@@ -5634,7 +5306,6 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.cond_label.setText(_condition_brief(self._condition))
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "조건 오류", str(exc))
-
     def _load(self, act: Action):
         self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(act.type)))
         self.name_edit.setText(act.name or "")
@@ -5716,7 +5387,6 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._existing_else = copy.deepcopy(getattr(act, "else_actions", []))
         self._sync_fields()
         self._update_trigger_warning()
-
     def _update_trigger_warning(self):
         if not hasattr(self, "key_warn_label"):
             return
@@ -5742,7 +5412,6 @@ class ActionEditDialog(QtWidgets.QDialog):
                     break
         self.key_warn_label.setText(warn)
         self.key_warn_label.setVisible(bool(warn))
-
     def get_action(self) -> Action:
         typ = self._current_type()
         name = self.name_edit.text().strip() or None
@@ -5879,8 +5548,6 @@ class ActionEditDialog(QtWidgets.QDialog):
             if is_elif:
                 setattr(act, "_as_elif", True)
         return act
-
-
 class AppScopeDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, scope: str = "global", targets=None, apply_all_cb=None):
         super().__init__(parent)
@@ -5888,18 +5555,14 @@ class AppScopeDialog(QtWidgets.QDialog):
         self.setModal(True)
         self.resize(520, 420)
         self._apply_all_cb = apply_all_cb
-
         layout = QtWidgets.QVBoxLayout(self)
-
         form = QtWidgets.QFormLayout()
         self.scope_combo = QtWidgets.QComboBox()
         self.scope_combo.addItem("전역 (어디서나)", "global")
         self.scope_combo.addItem("특정 앱에서만", "app")
         form.addRow("동작 범위", self.scope_combo)
-
         self.app_target_group = QtWidgets.QGroupBox("특정 앱 선택 (scope=특정 앱일 때만 적용)")
         target_layout = QtWidgets.QVBoxLayout(self.app_target_group)
-
         proc_row = QtWidgets.QHBoxLayout()
         self.process_combo = QtWidgets.QComboBox()
         self.process_combo.setMinimumContentsLength(25)
@@ -5912,7 +5575,6 @@ class AppScopeDialog(QtWidgets.QDialog):
         proc_row.addWidget(self.process_refresh_btn)
         proc_row.addWidget(self.process_add_btn)
         target_layout.addLayout(proc_row)
-
         file_row = QtWidgets.QHBoxLayout()
         self.process_pick_btn = QtWidgets.QPushButton("EXE 선택...")
         self.process_active_btn = QtWidgets.QPushButton("현재 활성 창 추가")
@@ -5922,14 +5584,11 @@ class AppScopeDialog(QtWidgets.QDialog):
         file_row.addWidget(self.process_remove_btn)
         file_row.addStretch()
         target_layout.addLayout(file_row)
-
         self.app_target_list = QtWidgets.QListWidget()
         self.app_target_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         target_layout.addWidget(self.app_target_list)
-
         layout.addLayout(form)
         layout.addWidget(self.app_target_group)
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.apply_all_btn = QtWidgets.QPushButton("모든 매크로에 적용")
@@ -5940,7 +5599,6 @@ class AppScopeDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.ok_btn)
         btn_row.addWidget(self.cancel_btn)
         layout.addLayout(btn_row)
-
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         self.scope_combo.currentIndexChanged.connect(self._update_scope_ui)
@@ -5950,19 +5608,16 @@ class AppScopeDialog(QtWidgets.QDialog):
         self.process_active_btn.clicked.connect(self._add_active_process)
         self.process_remove_btn.clicked.connect(self._remove_selected_targets)
         self.apply_all_btn.clicked.connect(self._apply_all)
-
         self._set_target_list(targets or [])
         idx = self.scope_combo.findData(scope or "global")
         self.scope_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self._update_scope_ui()
         self._refresh_process_list()
-
     def _apply_all(self):
         if not self._apply_all_cb:
             return
         self._apply_all_cb(self.selected_scope(), self.selected_targets())
         QtWidgets.QMessageBox.information(self, "적용 완료", "모든 매크로에 적용되었습니다.")
-
     def _target_key(self, name: str | None, path: str | None) -> str:
         if path:
             try:
@@ -5970,7 +5625,6 @@ class AppScopeDialog(QtWidgets.QDialog):
             except Exception:
                 return str(path).lower()
         return (name or "").strip().lower()
-
     def _format_process_label(self, info: dict) -> str:
         name = info.get("name") or "(알 수 없음)"
         pid = info.get("pid")
@@ -5981,7 +5635,6 @@ class AppScopeDialog(QtWidgets.QDialog):
         if path:
             bits.append(path)
         return " | ".join(bits)
-
     def _refresh_process_list(self):
         self.process_combo.clear()
         try:
@@ -5995,7 +5648,6 @@ class AppScopeDialog(QtWidgets.QDialog):
         self.process_combo.setEnabled(True)
         for info in infos:
             self.process_combo.addItem(self._format_process_label(info), info)
-
     def _add_target_entry(self, name: str | None, path: str | None):
         key = self._target_key(name, path)
         if not key:
@@ -6013,12 +5665,10 @@ class AppScopeDialog(QtWidgets.QDialog):
         item = QtWidgets.QListWidgetItem(" | ".join(part for part in label_parts if part))
         item.setData(QtCore.Qt.ItemDataRole.UserRole, {"name": name, "path": path})
         self.app_target_list.addItem(item)
-
     def _remove_selected_targets(self):
         for item in self.app_target_list.selectedItems():
             row = self.app_target_list.row(item)
             self.app_target_list.takeItem(row)
-
     def _set_target_list(self, targets):
         self.app_target_list.clear()
         for t in targets or []:
@@ -6026,7 +5676,6 @@ class AppScopeDialog(QtWidgets.QDialog):
             if not target:
                 continue
             self._add_target_entry(target.name, target.path)
-
     def _collect_targets(self) -> list[AppTarget]:
         targets: list[AppTarget] = []
         for idx in range(self.app_target_list.count()):
@@ -6037,12 +5686,10 @@ class AppScopeDialog(QtWidgets.QDialog):
                 if target and (target.name or target.path):
                     targets.append(target)
         return targets
-
     def _add_selected_process(self):
         data = self.process_combo.currentData()
         if isinstance(data, dict):
             self._add_target_entry(data.get("name"), data.get("path"))
-
     def _add_active_process(self):
         try:
             info = get_foreground_process()
@@ -6052,25 +5699,19 @@ class AppScopeDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "추가 실패", "활성 창 정보를 가져오지 못했습니다.")
             return
         self._add_target_entry(info.get("name"), info.get("path"))
-
     def _pick_process_file(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "실행 파일 선택", "", "Executables (*.exe);;All Files (*.*)")
         if path:
             self._add_target_entry(Path(path).name, path)
-
     def _update_scope_ui(self):
         enabled = self.scope_combo.currentData() == "app"
         self.app_target_group.setEnabled(bool(enabled))
-
     def selected_scope(self) -> str:
         return self.scope_combo.currentData() or "global"
-
     def selected_targets(self) -> list[AppTarget]:
         return self._collect_targets()
-
 class MacroDialog(QtWidgets.QDialog):
     _action_clipboard: list[Action] | None = None
-
     def __init__(
         self,
         parent=None,
@@ -6123,9 +5764,7 @@ class MacroDialog(QtWidgets.QDialog):
         self._interaction_block: list[str] = []
         self._stop_others_on_trigger = False
         self._suspend_others_while_running = False
-
         layout = QtWidgets.QVBoxLayout(self)
-
         form = QtWidgets.QFormLayout()
         self.name_edit = QtWidgets.QLineEdit()
         self.trigger_edit = QtWidgets.QLineEdit()
@@ -6217,7 +5856,6 @@ class MacroDialog(QtWidgets.QDialog):
         inter_row.addWidget(self.interaction_btn)
         inter_row.addWidget(self.interaction_summary, stretch=1)
         inter_row.addStretch()
-
         form.addRow("이름(선택)", self.name_edit)
         form.addRow("설명(선택)", self.desc_edit)
         form.addRow("트리거 입력/모드", trigger_input_row)
@@ -6230,7 +5868,6 @@ class MacroDialog(QtWidgets.QDialog):
         # 상호작용 라벨을 생략해 공간을 확보하고 바로 버튼/요약을 배치
         form.addRow(inter_row)
         layout.addLayout(form)
-
         for chk in (
             self.trigger_mod_ctrl,
             self.trigger_mod_shift,
@@ -6249,7 +5886,6 @@ class MacroDialog(QtWidgets.QDialog):
         self.trigger_down_btn.clicked.connect(lambda: self._move_trigger_row(1))
         self._sync_builder_from_trigger_text()
         self._sync_trigger_hold_visibility()
-
         self.action_tree = ActionTreeWidget()
         layout.addWidget(self.action_tree)
         move_row = QtWidgets.QHBoxLayout()
@@ -6282,7 +5918,6 @@ class MacroDialog(QtWidgets.QDialog):
         btns.addWidget(self.collapse_all_btn)
         btns.addStretch()
         layout.addLayout(btns)
-
         # 중단 시 실행 액션 편집 영역
         self.stop_group = QtWidgets.QGroupBox("중단 시 실행 (토글/홀드 해제 시 1회)")
         self.stop_group.setCheckable(True)
@@ -6300,7 +5935,6 @@ class MacroDialog(QtWidgets.QDialog):
         self.stop_collapse_btn.setChecked(True)
         header_row.addWidget(self.stop_collapse_btn)
         stop_layout.addLayout(header_row)
-
         self.stop_content = QtWidgets.QWidget()
         stop_content_layout = QtWidgets.QVBoxLayout(self.stop_content)
         self.stop_action_tree = ActionTreeWidget()
@@ -6327,7 +5961,6 @@ class MacroDialog(QtWidgets.QDialog):
         stop_content_layout.addLayout(stop_btns)
         stop_layout.addWidget(self.stop_content)
         layout.addWidget(self.stop_group)
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.ok_btn = QtWidgets.QPushButton("확인")
@@ -6335,7 +5968,6 @@ class MacroDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.ok_btn)
         btn_row.addWidget(self.cancel_btn)
         layout.addLayout(btn_row)
-
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         self.scope_btn.clicked.connect(self._open_scope_dialog)
@@ -6367,7 +5999,6 @@ class MacroDialog(QtWidgets.QDialog):
         self.stop_expand_btn.clicked.connect(self.stop_action_tree.expandAll)
         self.stop_tree_collapse_btn.clicked.connect(self.stop_action_tree.collapse_all)
         self._update_interaction_summary()
-
         if macro:
             self._load_macro(macro)
         else:
@@ -6390,15 +6021,12 @@ class MacroDialog(QtWidgets.QDialog):
             self._set_scope_label()
             self.trigger_hold_spin.setValue(0.0)
             self._sync_trigger_hold_visibility()
-
     def _populate_trigger_menu(self):
         menu = self.trigger_menu
         menu.clear()
-
         def add(label: str, value: str):
             act = menu.addAction(label)
             act.triggered.connect(lambda _, v=value: self.trigger_edit.setText(v))
-
         add("마우스 왼쪽 (mouse1)", "mouse1")
         add("마우스 오른쪽 (mouse2)", "mouse2")
         add("마우스 휠 클릭 (mouse3)", "mouse3")
@@ -6426,7 +6054,6 @@ class MacroDialog(QtWidgets.QDialog):
         menu.addSeparator()
         for i in range(1, 13):
             add(f"F{i}", f"f{i}")
-
     def _sync_trigger_from_builder(self):
         if self._updating_trigger_builder:
             return
@@ -6448,7 +6075,6 @@ class MacroDialog(QtWidgets.QDialog):
             self.trigger_edit.setText(combined)
         finally:
             self._updating_trigger_builder = False
-
     def _sync_builder_from_trigger_text(self):
         if self._updating_trigger_builder:
             return
@@ -6466,11 +6092,9 @@ class MacroDialog(QtWidgets.QDialog):
             self.trigger_edit.setText(normalize_trigger_key(text))
         finally:
             self._updating_trigger_builder = False
-
     def _sync_trigger_hold_visibility(self):
         is_hold = (self.trigger_mode_combo.currentText() or "hold").lower() == "hold"
         self.trigger_hold_spin.setVisible(is_hold)
-
     def _format_hold_value(self, hold: float | None) -> str:
         if hold in (None, "", False):
             return "즉시"
@@ -6481,7 +6105,6 @@ class MacroDialog(QtWidgets.QDialog):
         if abs(val - round(val)) < 1e-6:
             return f"{int(round(val))}s" if val > 0 else "즉시"
         return f"{val:.2f}s"
-
     def _resize_trigger_table_height(self):
         table = getattr(self, "trigger_table", None)
         if not table:
@@ -6499,7 +6122,6 @@ class MacroDialog(QtWidgets.QDialog):
         min_height = max(1, height if rows > 0 else header_h + frame_h)
         table.setMinimumHeight(min_height)
         table.setMaximumHeight(min_height)
-
     def _set_trigger_row(self, row: int, *, key: str, mode: str, hold: float | None):
         if row < 0:
             return
@@ -6513,11 +6135,9 @@ class MacroDialog(QtWidgets.QDialog):
         self.trigger_table.setItem(row, 1, mode_item)
         self.trigger_table.setItem(row, 2, hold_item)
         self._resize_trigger_table_height()
-
     def _selected_trigger_row(self) -> int:
         sel = self.trigger_table.selectionModel().selectedRows()
         return sel[0].row() if sel else -1
-
     def _find_trigger_row(self, key: str) -> int:
         target = key.strip().lower()
         for r in range(self.trigger_table.rowCount()):
@@ -6525,7 +6145,6 @@ class MacroDialog(QtWidgets.QDialog):
             if item and item.text().strip().lower() == target:
                 return r
         return -1
-
     def _collect_triggers(self) -> list[MacroTrigger]:
         triggers: list[MacroTrigger] = []
         for row in range(self.trigger_table.rowCount()):
@@ -6544,13 +6163,11 @@ class MacroDialog(QtWidgets.QDialog):
             if key:
                 triggers.append(MacroTrigger(key=key, mode=mode, hold_press_seconds=hold))
         return triggers
-
     def _current_trigger_keys(self) -> list[str]:
         try:
             return [t.key for t in self._collect_triggers()]
         except Exception:
             return []
-
     def _load_triggers(self, triggers: list[MacroTrigger]):
         self.trigger_table.setRowCount(0)
         for idx, trig in enumerate(triggers or []):
@@ -6560,7 +6177,6 @@ class MacroDialog(QtWidgets.QDialog):
         if triggers:
             self.trigger_table.selectRow(0)
             self._on_trigger_selection_changed()
-
     def _on_trigger_selection_changed(self):
         row = self._selected_trigger_row()
         if row < 0:
@@ -6579,7 +6195,6 @@ class MacroDialog(QtWidgets.QDialog):
         except Exception:
             self.trigger_hold_spin.setValue(0.0)
         self._sync_trigger_hold_visibility()
-
     def _move_trigger_row(self, offset: int):
         if offset == 0:
             return
@@ -6598,7 +6213,6 @@ class MacroDialog(QtWidgets.QDialog):
         for col, item in enumerate(data):
             self.trigger_table.setItem(target, col, item)
         self.trigger_table.selectRow(target)
-
     def _delete_selected_trigger(self):
         rows = sorted({idx.row() for idx in self.trigger_table.selectionModel().selectedRows()}, reverse=True)
         if not rows and self.trigger_table.rowCount() > 0:
@@ -6608,7 +6222,6 @@ class MacroDialog(QtWidgets.QDialog):
         if self.trigger_table.rowCount() > 0:
             self.trigger_table.selectRow(min(rows[0], self.trigger_table.rowCount() - 1))
         self._resize_trigger_table_height()
-
     def _add_or_update_trigger(self, *, force_new: bool = False, require_selection: bool = False):
         key = normalize_trigger_key(self.trigger_edit.text().strip())
         if not key:
@@ -6639,7 +6252,6 @@ class MacroDialog(QtWidgets.QDialog):
         self.trigger_table.selectRow(target_row)
         self.trigger_table.resizeRowsToContents()
         self._resize_trigger_table_height()
-
     def _scope_summary_text(self) -> str:
         if self._scope != "app":
             return "전역 (어디서나)"
@@ -6656,17 +6268,14 @@ class MacroDialog(QtWidgets.QDialog):
         if len(labels) > 3:
             labels = labels[:3] + ["..."]
         return f"특정 앱: {', '.join(labels)}"
-
     def _set_scope_label(self):
         self.scope_summary.setText(self._scope_summary_text())
-
     def _open_scope_dialog(self):
         dlg = AppScopeDialog(self, scope=self._scope, targets=self._app_targets, apply_all_cb=self._apply_scope_all_cb)
         if _run_dialog_non_modal(dlg):
             self._scope = dlg.selected_scope()
             self._app_targets = dlg.selected_targets()
             self._set_scope_label()
-
     def _collect_app_targets(self) -> list[AppTarget]:
         targets: list[AppTarget] = []
         for t in self._app_targets or []:
@@ -6674,11 +6283,9 @@ class MacroDialog(QtWidgets.QDialog):
             if target:
                 targets.append(target)
         return targets
-
     def _selected_item(self, tree: ActionTreeWidget | None = None) -> QtWidgets.QTreeWidgetItem | None:
         tree = tree or self.action_tree
         return tree.selected_item() if tree else None
-
     def _selected_if_item(self, tree: ActionTreeWidget | None = None) -> QtWidgets.QTreeWidgetItem | None:
         item = self._selected_item(tree)
         while item:
@@ -6687,10 +6294,8 @@ class MacroDialog(QtWidgets.QDialog):
                 return item
             item = item.parent()
         return None
-
     def _available_labels(self, tree: ActionTreeWidget | None = None) -> list[str]:
         labels: list[str] = []
-
         def walk(actions: list[Action]):
             for act in actions or []:
                 if getattr(act, "type", None) == "label" and getattr(act, "label", None):
@@ -6700,7 +6305,6 @@ class MacroDialog(QtWidgets.QDialog):
                 for blk in getattr(act, "elif_blocks", []) or []:
                     _, branch, _, _ = _split_elif_block(blk)
                     walk(branch or [])
-
         target_tree = tree or self.action_tree
         walk(target_tree.collect_actions() if target_tree else [])
         uniq: list[str] = []
@@ -6708,7 +6312,6 @@ class MacroDialog(QtWidgets.QDialog):
             if name and name not in uniq:
                 uniq.append(name)
         return uniq
-
     def _with_action_tree(self, tree: ActionTreeWidget | None, fn):
         if not tree:
             return
@@ -6718,7 +6321,6 @@ class MacroDialog(QtWidgets.QDialog):
             fn()
         finally:
             self.action_tree = prev
-
     def _set_stop_group_enabled(self, enabled: bool):
         widgets = [
             self.stop_action_tree,
@@ -6737,23 +6339,19 @@ class MacroDialog(QtWidgets.QDialog):
             if w:
                 w.setEnabled(enabled)
         self._update_stop_collapsed()
-
     def _update_stop_collapsed(self):
         collapsed = self.stop_collapse_btn.isChecked() if self.stop_collapse_btn else False
         if self.stop_content:
             self.stop_content.setVisible(not collapsed)
         if self.stop_collapse_btn:
             self.stop_collapse_btn.setText("펼치기" if collapsed else "접기")
-
     def _update_interaction_summary(self):
         mode_label = {"none": "없음", "stop": "중지", "suspend": "대기"}.get((self._interaction_mode or "none").lower(), "없음")
-
         def _short(items: list[str], default: str = "전체") -> str:
             if not items:
                 return default
             txt = ", ".join(items[:3])
             return txt + ("..." if len(items) > 3 else "")
-
         parts = [mode_label]
         parts.append(f"대상: {_short(self._interaction_targets)}")
         if self._interaction_excludes:
@@ -6763,7 +6361,6 @@ class MacroDialog(QtWidgets.QDialog):
         if self._interaction_block:
             parts.append(f"차단: {_short(self._interaction_block, default='없음')}")
         self.interaction_summary.setText(" | ".join(parts))
-
     def _open_interaction_dialog(self):
         dlg = InteractionDialog(
             mode=self._interaction_mode,
@@ -6786,13 +6383,11 @@ class MacroDialog(QtWidgets.QDialog):
             self._stop_others_on_trigger = self._interaction_mode == "stop"
             self._suspend_others_while_running = self._interaction_mode == "suspend"
             self._update_interaction_summary()
-
     def _move_selected(self, offset: int, btn: QtWidgets.QPushButton, tree: ActionTreeWidget | None = None):
         target_tree = tree or self.action_tree
         moved, reason, _ = target_tree.move_selected_within_parent(offset)
         if not moved and reason:
             QtWidgets.QToolTip.showText(btn.mapToGlobal(btn.rect().center()), reason, btn, btn.rect(), 1200)
-
     def _add_action(self, *, as_child: bool = False, tree: ActionTreeWidget | None = None):
         target_tree = tree or self.action_tree
         dlg = ActionEditDialog(
@@ -6845,7 +6440,6 @@ class MacroDialog(QtWidgets.QDialog):
             if new_item:
                 target_tree.setCurrentItem(new_item)
             target_tree.renumber()
-
     def _find_elif_target(self, reference: QtWidgets.QTreeWidgetItem | None, *, tree: ActionTreeWidget | None = None) -> QtWidgets.QTreeWidgetItem | None:
         tgt = tree or self.action_tree
         if reference and tgt:
@@ -6870,7 +6464,6 @@ class MacroDialog(QtWidgets.QDialog):
             if isinstance(cand_data, Action) and cand_data.type == "if":
                 return candidate
         return None
-
     def _merge_if_into_prev_as_elif(
         self,
         src_item: QtWidgets.QTreeWidgetItem,
@@ -6904,7 +6497,6 @@ class MacroDialog(QtWidgets.QDialog):
             if not suppress_warning:
                 QtWidgets.QMessageBox.information(self, "대상 없음", "ELIF 대상 if를 찾지 못했습니다.")
             return False
-
         base_cond = copy.deepcopy(new_act.condition)
         if hasattr(base_cond, "name") and not getattr(base_cond, "name", None):
             base_cond.name = new_act.name or new_act.description
@@ -6913,7 +6505,6 @@ class MacroDialog(QtWidgets.QDialog):
             setattr(base_cond, "enabled", src_enabled)
         except Exception:
             pass
-
         new_blocks: list[tuple[Condition, list[Action], str, bool | None]] = [
             (base_cond, copy.deepcopy(new_act.actions), new_act.description or new_act.name or "", src_enabled)
         ]
@@ -6928,7 +6519,6 @@ class MacroDialog(QtWidgets.QDialog):
             except Exception:
                 pass
             new_blocks.append((copy.deepcopy(c), copy.deepcopy(a), desc_text or "", enabled_val))
-
         normalized_blocks = [(cond, acts, desc) for cond, acts, desc, _ in new_blocks]
         target_act.elif_blocks = (target_act.elif_blocks or []) + normalized_blocks
         if new_act.else_actions:
@@ -6936,7 +6526,6 @@ class MacroDialog(QtWidgets.QDialog):
                 target_act.else_actions.extend(copy.deepcopy(new_act.else_actions))
             else:
                 target_act.else_actions = copy.deepcopy(new_act.else_actions)
-
         expanded = tgt._expanded_keys()
         for cond, acts, desc_text, enabled_flag in new_blocks:
             header = tgt._create_elif_header(prev_if_item, cond, desc_text)
@@ -6951,18 +6540,15 @@ class MacroDialog(QtWidgets.QDialog):
             else_header = tgt._ensure_else_header(prev_if_item, create_if_missing=True)
             for child in new_act.else_actions:
                 tgt._append_action_item(copy.deepcopy(child), else_header)
-
         # remove original item
         if parent:
             parent.takeChild(idx)
         else:
             tgt.takeTopLevelItem(idx)
-
         tgt._restore_expanded(expanded)
         tgt.expandItem(prev_if_item)
         tgt.renumber()
         return True
-
     def _insert_elif_from_action(self, act: Action, target: QtWidgets.QTreeWidgetItem | None, *, tree: ActionTreeWidget | None = None) -> bool:
         tgt = tree or self.action_tree
         target_if = self._find_elif_target(target, tree=tgt)
@@ -6993,7 +6579,6 @@ class MacroDialog(QtWidgets.QDialog):
             tgt.setCurrentItem(header)
             tgt.renumber()
         return True
-
     def _refresh_if_item(self, if_item: QtWidgets.QTreeWidgetItem | None, *, tree: ActionTreeWidget | None = None):
         if not if_item:
             return
@@ -7008,7 +6593,6 @@ class MacroDialog(QtWidgets.QDialog):
             if_item.setText(3, tgt._format_value(updated_if))
             if_item.setText(4, tgt._format_desc(updated_if))
             tgt._apply_once_style(if_item, updated_if)
-
     def _add_else_branch(self, *, tree: ActionTreeWidget | None = None):
         tgt = tree or self.action_tree
         if_item = self._selected_if_item(tgt)
@@ -7022,7 +6606,6 @@ class MacroDialog(QtWidgets.QDialog):
             tgt.setCurrentItem(header)
             tgt.renumber()
             tgt.renumber()
-
     def _delete_else_branch(self, *, tree: ActionTreeWidget | None = None):
         tgt = tree or self.action_tree
         target = self._selected_if_item(tgt)
@@ -7030,7 +6613,6 @@ class MacroDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "선택 없음", "ELSE를 제거할 if를 선택하세요.")
             return
         tgt.remove_else_header(target)
-
     def _edit_action(self):
         item = self._selected_item()
         if not item:
@@ -7218,7 +6800,6 @@ class MacroDialog(QtWidgets.QDialog):
             # 편집 전 펼침 상태만 복원하고 추가 확장은 하지 않는다.
             self.action_tree._restore_expanded(expanded_before)
             self.action_tree.renumber()
-
     def _copy_action(self, tree: ActionTreeWidget | None = None):
         target_tree = tree or self.action_tree
         if not target_tree:
@@ -7273,7 +6854,6 @@ class MacroDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "선택 없음", "액션을 선택하세요.")
             return
         MacroDialog._action_clipboard = copied
-
     def _paste_action(self, tree: ActionTreeWidget | None = None):
         target_tree = tree or self.action_tree
         if not target_tree:
@@ -7291,7 +6871,6 @@ class MacroDialog(QtWidgets.QDialog):
             actions_to_paste = [copy.deepcopy(act) for act in clipboard]
         else:
             actions_to_paste = [copy.deepcopy(clipboard)]
-
         new_items: list[QtWidgets.QTreeWidgetItem] = []
         expand_item = None
         parent = None
@@ -7314,7 +6893,6 @@ class MacroDialog(QtWidgets.QDialog):
                 )
                 insert_row = (base_row + 1) if base_row >= 0 else None
                 expand_item = parent
-
         for act in actions_to_paste:
             item = target_tree._append_action_item(act, parent, insert_row)
             new_items.append(item)
@@ -7322,7 +6900,6 @@ class MacroDialog(QtWidgets.QDialog):
                 insert_row = parent.indexOfChild(item) + 1
             else:
                 insert_row = target_tree.indexOfTopLevelItem(item) + 1
-
         if expand_item is None and new_items:
             expand_item = new_items[0]
         if expand_item:
@@ -7333,7 +6910,6 @@ class MacroDialog(QtWidgets.QDialog):
                 item.setSelected(True)
             target_tree.setCurrentItem(new_items[0])
         target_tree.renumber()
-
     def _delete_action(self):
         selected = self.action_tree._top_level_selected(self.action_tree.selectedItems())
         if not selected:
@@ -7353,7 +6929,6 @@ class MacroDialog(QtWidgets.QDialog):
                 if idx >= 0:
                     self.action_tree.takeTopLevelItem(idx)
         self.action_tree.renumber()
-
     def _load_macro(self, macro: Macro):
         self.name_edit.setText(macro.name or "")
         self.desc_edit.setText(getattr(macro, "description", "") or "")
@@ -7408,7 +6983,6 @@ class MacroDialog(QtWidgets.QDialog):
             self._stop_others_on_trigger = self._interaction_mode == "stop"
             self._suspend_others_while_running = self._interaction_mode == "suspend"
         self._update_interaction_summary()
-
     def get_macro(self) -> Macro:
         # 빌더 체크박스/입력값을 우선 반영해 텍스트를 최신 상태로 맞춘다.
         self._sync_trigger_from_builder()
@@ -7456,8 +7030,6 @@ class MacroDialog(QtWidgets.QDialog):
             scope=scope,
             app_targets=app_targets,
         )
-
-
 class ScreenshotDialog(QtWidgets.QDialog):
     def __init__(self, manager: ScreenCaptureManager, parent=None, *, save_state_cb=None):
         super().__init__(parent)
@@ -7480,9 +7052,7 @@ class ScreenshotDialog(QtWidgets.QDialog):
             "중간": {"format": "jpeg", "jpeg_quality": 80, "png_level": 4},
             "저용량": {"format": "jpeg", "jpeg_quality": 50, "png_level": 6},
         }
-
         layout = QtWidgets.QVBoxLayout(self)
-
         form = QtWidgets.QFormLayout()
         self.interval_spin = QtWidgets.QDoubleSpinBox()
         self.interval_spin.setRange(MIN_INTERVAL_SECONDS, 60.0)
@@ -7490,7 +7060,6 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self.interval_spin.setSingleStep(0.001)
         self.interval_spin.setValue(self.manager.interval)
         form.addRow("캡처 주기(초)", self.interval_spin)
-
         self.start_hotkey_edit = QtWidgets.QLineEdit(self.manager.hotkeys.start or "")
         self.start_hotkey_edit.setPlaceholderText("예: f9")
         self.stop_hotkey_edit = QtWidgets.QLineEdit(self.manager.hotkeys.stop or "")
@@ -7500,7 +7069,6 @@ class ScreenshotDialog(QtWidgets.QDialog):
         form.addRow("시작 단축키", self.start_hotkey_edit)
         form.addRow("정지 단축키", self.stop_hotkey_edit)
         form.addRow("단일 캡처 단축키", self.capture_hotkey_edit)
-
         self.hotkey_checkbox = QtWidgets.QCheckBox("단축키 활성화")
         self.hotkey_checkbox.setChecked(self.manager.hotkeys.enabled)
         form.addRow(self.hotkey_checkbox)
@@ -7508,7 +7076,6 @@ class ScreenshotDialog(QtWidgets.QDialog):
         for name in self._sorted_preset_names():
             self.preset_combo.addItem(name)
         form.addRow("품질 프리셋", self.preset_combo)
-
         self.format_combo = QtWidgets.QComboBox()
         self.format_combo.addItems(["jpeg", "png"])
         fmt_idx = self.format_combo.findText(self.manager.image_format)
@@ -7523,22 +7090,17 @@ class ScreenshotDialog(QtWidgets.QDialog):
         form.addRow("포맷", self.format_combo)
         form.addRow("JPEG 품질 (낮음=작음)", self.jpeg_quality_spin)
         form.addRow("PNG 압축(0~9)", self.png_level_spin)
-
         self.queue_spin = QtWidgets.QSpinBox()
         self.queue_spin.setRange(1, 2000)
         self.queue_spin.setValue(self.manager.max_queue_size)
         form.addRow("버퍼 크기(프레임)", self.queue_spin)
-
         self.output_label = QtWidgets.QLabel(str(self.manager.output_dir))
         self.output_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         form.addRow("저장 위치", self.output_label)
-
         layout.addLayout(form)
         layout.addWidget(QtWidgets.QLabel("단축키는 단일 키 이름(f9, home 등)만 지원합니다."))
-
         self.status_label = QtWidgets.QLabel(self._status_text())
         layout.addWidget(self.status_label)
-
         btn_row = QtWidgets.QHBoxLayout()
         self.start_btn = QtWidgets.QPushButton("캡처 시작")
         self.stop_btn = QtWidgets.QPushButton("캡처 정지")
@@ -7548,7 +7110,6 @@ class ScreenshotDialog(QtWidgets.QDialog):
             btn_row.addWidget(btn)
         btn_row.addWidget(self.open_dir_btn)
         layout.addLayout(btn_row)
-
         self.start_btn.clicked.connect(self._start_capture)
         self.stop_btn.clicked.connect(self._stop_capture)
         self.close_btn.clicked.connect(self.close)
@@ -7561,7 +7122,6 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self.hotkey_checkbox.toggled.connect(self._apply_only)
         self._toggle_format_fields(self.format_combo.currentText())
         self._sync_preset_from_manager(force=True)
-
     def _name_sort_key(self, name: str):
         def _bucket(ch: str) -> int:
             if ch.isascii() and ch.isalpha():
@@ -7571,21 +7131,17 @@ class ScreenshotDialog(QtWidgets.QDialog):
             if ch.isdigit():
                 return 2
             return 3
-
         if not name:
             return ((3, ""),)
-
         key_parts = [(_bucket(ch), ch.casefold()) for ch in name]
         key_parts.append((4, len(name)))
         return tuple(key_parts)
-
     def _sorted_preset_names(self) -> list[str]:
         names = list(self._presets.keys())
         return sorted(
             names,
             key=lambda n: (-1, "") if n == "사용자 설정" else (0, self._name_sort_key(n)),
         )
-
     def _status_text(self) -> str:
         state = "동작 중" if self.manager.is_running else "중지"
         hotkey_state = (
@@ -7601,7 +7157,6 @@ class ScreenshotDialog(QtWidgets.QDialog):
             f"상태: {state} | 주기: {self.manager.interval}초 | 핫키: {hotkey_state} "
             f"(시작={hk_start}, 정지={hk_stop}, 단일={hk_cap}) | 포맷: {self.manager.image_format} | 버퍼: {self.manager.max_queue_size}"
         )
-
     def _apply_only(self):
         interval = float(self.interval_spin.value())
         start_key = self.start_hotkey_edit.text().strip() or None
@@ -7622,36 +7177,29 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self._update_status()
         if self._save_state_cb:
             self._save_state_cb(self._collect_state())
-
     def _start_capture(self):
         self._apply_only()
         self.manager.start(reset_counter=True)
         self._update_status()
-
     def _stop_capture(self):
         self.manager.stop()
         self._update_status()
-
     def _update_status(self):
         self.status_label.setText(self._status_text())
-
     def _toggle_format_fields(self, fmt: str):
         is_jpeg = fmt.lower() == "jpeg"
         self.jpeg_quality_spin.setEnabled(is_jpeg)
         self.png_level_spin.setEnabled(not is_jpeg)
-
     def _mark_preset_custom(self):
         idx = self.preset_combo.findText("사용자 설정")
         if idx >= 0 and self.preset_combo.currentIndex() != idx:
             self.preset_combo.blockSignals(True)
             self.preset_combo.setCurrentIndex(idx)
             self.preset_combo.blockSignals(False)
-
     def _on_custom_changed(self, *args):
         # 사용자가 품질 값을 직접 수정하면 사용자 설정으로 전환
         self._mark_preset_custom()
         self._update_status()
-
     def _apply_preset_selection(self, name: str):
         preset = self._presets.get(name)
         if preset is None:
@@ -7670,7 +7218,6 @@ class ScreenshotDialog(QtWidgets.QDialog):
             self.png_level_spin.blockSignals(False)
         self._toggle_format_fields(fmt)
         self._update_status()
-
     def _current_preset_name(self) -> str:
         fmt = self.manager.image_format
         jq = self.manager.jpeg_quality
@@ -7685,7 +7232,6 @@ class ScreenshotDialog(QtWidgets.QDialog):
             if fmt == "png" and int(preset.get("png_level", -1)) == int(pl):
                 return name
         return "사용자 설정"
-
     def _sync_preset_from_manager(self, force: bool = False):
         name = self._current_preset_name()
         idx = self.preset_combo.findText(name)
@@ -7693,11 +7239,9 @@ class ScreenshotDialog(QtWidgets.QDialog):
             self.preset_combo.blockSignals(True)
             self.preset_combo.setCurrentIndex(idx)
             self.preset_combo.blockSignals(False)
-
     def _open_dir(self):
         url = QtCore.QUrl.fromLocalFile(str(self.manager.output_dir))
         QtGui.QDesktopServices.openUrl(url)
-
     def closeEvent(self, event: QtGui.QCloseEvent):
         # 창을 닫을 때도 현재 설정을 적용/저장해두어 추가 클릭 없이 유지되도록 한다.
         try:
@@ -7705,7 +7249,6 @@ class ScreenshotDialog(QtWidgets.QDialog):
         except Exception:
             pass
         return super().closeEvent(event)
-
     def _collect_state(self) -> dict:
         return {
             "interval": self.manager.interval,
@@ -7718,8 +7261,6 @@ class ScreenshotDialog(QtWidgets.QDialog):
             "hotkey_capture": self.manager.hotkeys.capture,
             "hotkey_enabled": self.manager.hotkeys.enabled,
         }
-
-
 class DebuggerDialog(QtWidgets.QDialog):
     def _make_section(self, title: str, content: QtWidgets.QWidget, state_key: str, *, default_open: bool = True) -> QtWidgets.QWidget:
         btn = QtWidgets.QToolButton()
@@ -7732,7 +7273,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         v = QtWidgets.QVBoxLayout(container)
         v.setContentsMargins(0, 0, 0, 0)
         v.addWidget(content)
-
         def _toggle(opened: bool):
             container.setVisible(opened)
             btn.setArrowType(QtCore.Qt.ArrowType.DownArrow if opened else QtCore.Qt.ArrowType.RightArrow)
@@ -7742,10 +7282,8 @@ class DebuggerDialog(QtWidgets.QDialog):
                     self._save_state_cb(self._collect_state())
                 except Exception:
                     pass
-
         btn.toggled.connect(_toggle)
         _toggle(default_open)
-
         wrap = QtWidgets.QWidget()
         wrap_layout = QtWidgets.QVBoxLayout(wrap)
         wrap_layout.setContentsMargins(0, 0, 0, 0)
@@ -7807,13 +7345,10 @@ class DebuggerDialog(QtWidgets.QDialog):
         self._compare_color_override: tuple[int, int, int] | None = None
         self._section_controls: dict[str, QtWidgets.QToolButton] = {}
         self._use_viewer_image: bool = False
-
         self._build_ui()
         self._restore_state(state or {})
-
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
-
         status_row = QtWidgets.QHBoxLayout()
         self.state_label = QtWidgets.QLabel("엔진 상태: -")
         self.pause_label = QtWidgets.QLabel("일시정지: -")
@@ -7842,7 +7377,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         status_row.addWidget(self.viewer_image_chk)
         status_row.addStretch()
         layout.addLayout(status_row)
-
         cond_group = QtWidgets.QGroupBox("조건 디버그")
         cond_layout = QtWidgets.QVBoxLayout(cond_group)
         cond_header = QtWidgets.QHBoxLayout()
@@ -7922,13 +7456,11 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.condition_tree.header().setStretchLastSection(True)
         cond_layout.addWidget(self.condition_tree, 1)
         layout.addWidget(self._make_section("조건 디버그", cond_group, "section_condition", default_open=True))
-
         self.pixel_status = QtWidgets.QLabel("픽셀 테스트: -")
         self.pixel_status.setWordWrap(True)
         self.pixel_status.setFrameShape(QtWidgets.QFrame.Shape.Panel)
         self.pixel_status.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
         self.pixel_status.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
-
         test_group = QtWidgets.QGroupBox("픽셀 테스트 입력")
         test_layout = QtWidgets.QGridLayout(test_group)
         self.region_input = QtWidgets.QLineEdit("0,0,100,100")
@@ -7965,10 +7497,8 @@ class DebuggerDialog(QtWidgets.QDialog):
         tw_layout.addWidget(self.pixel_status)
         tw_layout.addWidget(test_group)
         layout.addWidget(self._make_section("픽셀 테스트", test_wrap, "section_pixel", default_open=True))
-
         self.start_btn.clicked.connect(self._start_test)
         self.stop_btn.clicked.connect(self._stop_test)
-
         var_group = QtWidgets.QGroupBox("실시간 변수")
         var_group_layout = QtWidgets.QVBoxLayout(var_group)
         self.var_table = QtWidgets.QTableWidget(0, 3)
@@ -7978,25 +7508,20 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.var_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         var_group_layout.addWidget(self.var_table)
         layout.addWidget(self._make_section("실시간 변수", var_group, "section_vars", default_open=True))
-
         layout.addWidget(QtWidgets.QLabel("최근 로그/이벤트"))
         self.log_view = QtWidgets.QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setAcceptRichText(True)
         self.log_view.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
         layout.addWidget(self.log_view, 1)
-
         self.resize(900, 600)
-
     def show_and_raise(self):
         self.show()
         self.raise_()
         self.activateWindow()
-
     @property
     def use_viewer_image(self) -> bool:
         return bool(self._use_viewer_image)
-
     def _restore_state(self, state: dict):
         if not isinstance(state, dict):
             return
@@ -8060,7 +7585,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 pass
         if state.get("visible"):
             QtCore.QTimer.singleShot(0, self.show_and_raise)
-
     def _collect_state(self) -> dict:
         g = self.geometry()
         return {
@@ -8078,7 +7602,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             "use_viewer_image": bool(self.viewer_image_chk.isChecked()) if hasattr(self, "viewer_image_chk") else False,
             "sections": {k: btn.isChecked() for k, btn in self._section_controls.items()},
         }
-
     def closeEvent(self, event: QtGui.QCloseEvent):
         self.stop_condition_debug()
         if callable(self._close_cb):
@@ -8093,7 +7616,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.hide()
         event.accept()
         return super().closeEvent(event)
-
     def _set_state_labels(self, state: dict):
         running = state.get("running", False)
         active = state.get("active", False)
@@ -8102,11 +7624,9 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.state_label.setStyleSheet(f"color: {'limegreen' if active else 'gray'}; font-weight: bold;")
         self.pause_label.setText(f"일시정지: {'ON' if paused else 'OFF'}")
         self.pause_label.setStyleSheet(f"color: {'orange' if paused else 'skyblue'}; font-weight: bold;")
-
     def _set_current_path(self, text: str):
         # 표시하지 않음(요청으로 숨김)
         return
-
     def _extract_seq_path(self, event: dict) -> str | None:
         seq_chain = event.get("seq_chain")
         if isinstance(seq_chain, (list, tuple)) and seq_chain:
@@ -8140,7 +7660,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                     dedup.append(n)
             return "-".join(str(n) for n in dedup)
         return None
-
     def _append_log_line(self, text: str, seq: int | None = None, *, rich: bool = False):
         ts = _format_dt()
         self._log_seq += 1
@@ -8149,11 +7668,9 @@ class DebuggerDialog(QtWidgets.QDialog):
         self._log_buffer.append((entry, rich))
         if len(self._log_buffer) > self._max_logs:
             self._log_buffer = self._log_buffer[-self._max_logs :]
-
         def _to_html(item: tuple[str, bool]) -> str:
             content, is_rich = item
             return content if is_rich else html.escape(content).replace("\n", "<br>")
-
         html_text = "<br>".join(_to_html(item) for item in self._log_buffer)
         self.log_view.setHtml(html_text)
         # 즉시, 그리고 이벤트 루프 이후 한 번 더 스크롤을 맨 아래로 이동시켜 항상 최신 로그를 표시
@@ -8166,13 +7683,11 @@ class DebuggerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         QtCore.QTimer.singleShot(0, lambda: self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum()))
-
     def _collect_pixel_samples(self, tree: dict | None, *, only_failed: bool = False, dedup_by_coord: bool = False) -> list[str]:
         if not tree:
             return []
         samples: list[str] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -8180,7 +7695,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 except Exception:
                     return None
             return None
-
         def _walk(node):
             if not isinstance(node, dict):
                 return
@@ -8207,16 +7721,13 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return samples
-
     def _failed_pixel_details(self, tree: dict | None, *, dedup_by_coord: bool = False) -> list[dict]:
         if not tree:
             return []
         items: list[dict] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -8224,7 +7735,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 except Exception:
                     return None
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -8267,16 +7777,13 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return items
-
     def _failed_pixel_details(self, tree: dict | None, *, dedup_by_coord: bool = False) -> list[dict]:
         if not tree:
             return []
         items: list[dict] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -8284,7 +7791,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 except Exception:
                     return None
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -8323,16 +7829,13 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return items
-
     def _failed_pixel_details(self, tree: dict | None, *, dedup_by_coord: bool = False) -> list[dict]:
         if not tree:
             return []
         items: list[dict] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -8340,7 +7843,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 except Exception:
                     return None
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -8379,16 +7881,13 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return items
-
     def _collect_pixel_coords(self, tree: dict | None, *, only_failed: bool = False, dedup_by_coord: bool = False) -> list[tuple[int, int]]:
         if not tree:
             return []
         coords: list[tuple[int, int]] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -8396,7 +7895,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 except Exception:
                     return None
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -8418,16 +7916,13 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return coords
-
     def _failed_pixel_details(self, tree: dict | None, *, dedup_by_coord: bool = False) -> list[dict]:
         if not tree:
             return []
         items: list[dict] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -8435,7 +7930,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 except Exception:
                     return None
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -8474,15 +7968,12 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return items
-
     def _collect_pixel_results(self, tree: dict | None) -> list[bool | None]:
         if not tree:
             return []
         results: list[bool | None] = []
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -8494,15 +7985,12 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return results
-
     def _failed_pixel_bbox(self, tree: dict | None):
         if not tree:
             return None
         boxes: list[tuple[int, int, int, int]] = []
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -8525,7 +8013,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         if not boxes:
             return None
@@ -8534,13 +8021,11 @@ class DebuggerDialog(QtWidgets.QDialog):
         max_x = max(b[0] + b[2] for b in boxes)
         max_y = max(b[1] + b[3] for b in boxes)
         return (min_x, min_y, max_x - min_x, max_y - min_y)
-
     def _failed_pixel_details(self, tree: dict | None, *, dedup_by_coord: bool = False) -> list[dict]:
         if not tree:
             return []
         items: list[dict] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -8548,7 +8033,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 except Exception:
                     return None
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -8587,14 +8071,11 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return items
-
     def _first_failed_pixel_image(self, tree: dict | None):
         if not tree:
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return None
@@ -8622,15 +8103,12 @@ class DebuggerDialog(QtWidgets.QDialog):
                 if found:
                     return found
             return None
-
         return _walk(tree)
-
     def _collect_pixel_coords(self, tree: dict | None, *, only_failed: bool = False, dedup_by_coord: bool = False) -> list[tuple[int, int]]:
         if not tree:
             return []
         coords: list[tuple[int, int]] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -8638,7 +8116,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 except Exception:
                     return None
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -8660,15 +8137,12 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return coords
-
     def _failed_pixel_bbox(self, tree: dict | None):
         if not tree:
             return None
         boxes: list[tuple[int, int, int, int]] = []
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -8691,7 +8165,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         if not boxes:
             return None
@@ -8700,11 +8173,9 @@ class DebuggerDialog(QtWidgets.QDialog):
         max_x = max(b[0] + b[2] for b in boxes)
         max_y = max(b[1] + b[3] for b in boxes)
         return (min_x, min_y, max_x - min_x, max_y - min_y)
-
     def _first_failed_pixel_image(self, tree: dict | None):
         if not tree:
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return None
@@ -8732,9 +8203,7 @@ class DebuggerDialog(QtWidgets.QDialog):
                 if found:
                     return found
             return None
-
         return _walk(tree)
-
     def _on_interval_changed(self, value: int):
         self._interval_ms = int(value)
         if callable(self._interval_changed_cb):
@@ -8749,7 +8218,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 self._save_state_cb(self._collect_state())
             except Exception:
                 pass
-
     def _on_tolerance_changed(self, value: int):
         self._tolerance = int(value)
         if callable(self._tolerance_changed_cb):
@@ -8762,7 +8230,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 self._save_state_cb(self._collect_state())
             except Exception:
                 pass
-
     def _clear_all(self):
         self.var_table.setRowCount(0)
         self._var_rows.clear()
@@ -8771,7 +8238,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.log_view.clear()
         self.pixel_status.setText("픽셀 테스트: -")
         self._reset_condition_debug_ui()
-
     def _reset_condition_debug_ui(self):
         self.condition_tree.clear()
         self.condition_state_label.setText("전체 결과: -")
@@ -8781,7 +8247,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         self._last_condition_result = None
         self._last_capture_ts = 0.0
         self._refresh_capture_ui()
-
     def _refresh_capture_ui(self):
         on = self._fail_capture_enabled
         self.capture_toggle_btn.blockSignals(True)
@@ -8794,7 +8259,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.capture_cooldown_spin.setEnabled(True)
         self.capture_confirm_spin.setEnabled(True)
         self.capture_limit_edit.setEnabled(True)
-
     def _on_capture_toggle(self, checked: bool):
         self._fail_capture_enabled = bool(checked)
         self._last_condition_result = None
@@ -8811,7 +8275,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 self._save_state_cb(self._collect_state())
             except Exception:
                 pass
-
     def _on_capture_cooldown_changed(self, value: float):
         self._fail_capture_cooldown = float(value)
         if self._save_state_cb:
@@ -8819,7 +8282,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 self._save_state_cb(self._collect_state())
             except Exception:
                 pass
-
     def _on_capture_confirm_changed(self, value: int):
         self._fail_capture_confirmations = max(1, int(value))
         self._fail_capture_false_streak = 0
@@ -8828,7 +8290,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 self._save_state_cb(self._collect_state())
             except Exception:
                 pass
-
     def _on_capture_limit_changed(self, text: str):
         txt = text.strip()
         if not txt:
@@ -8843,10 +8304,8 @@ class DebuggerDialog(QtWidgets.QDialog):
                 self._save_state_cb(self._collect_state())
             except Exception:
                 pass
-
     def toggle_fail_capture_from_hotkey(self):
         self._on_capture_toggle(not self._fail_capture_enabled)
-
     def _set_test_inputs(self, config: dict):
         if not isinstance(config, dict):
             return
@@ -8876,7 +8335,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._pending_label = config.get("label") or self._pending_label
-
     def start_condition_debug(self, eval_fn, *, label: str | None = None, stop_cb=None):
         self._condition_eval_fn = eval_fn
         self._condition_stop_cb = stop_cb
@@ -8885,7 +8343,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         self._condition_timer.setInterval(self._interval_ms)
         self._condition_timer.start()
         self.condition_stop_btn.setEnabled(True)
-
     def stop_condition_debug(self, *, notify: bool = True):
         if self._condition_timer.isActive():
             self._condition_timer.stop()
@@ -8899,16 +8356,13 @@ class DebuggerDialog(QtWidgets.QDialog):
                 cb()
             except Exception:
                 pass
-
     def _on_condition_stop_clicked(self):
         self.stop_condition_debug()
-
     def _on_use_viewer_toggled(self, checked: bool):
         self._use_viewer_image = bool(checked)
         # 디버그 중이면 바로 갱신
         if self._condition_timer.isActive():
             self._tick_condition_debug()
-
     def _tick_condition_debug(self):
         if not callable(self._condition_eval_fn):
             self.stop_condition_debug(notify=False)
@@ -8936,7 +8390,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         self._condition_label = label
         self._render_condition_tree(result_tree, label=label)
         self._maybe_capture_failure(result_tree, label=label)
-
     def _update_condition_status(self, result: bool | None, *, error: str | None = None, fail_text: str | None = None, label: str | None = None):
         lbl = label or self._condition_label
         if error:
@@ -8954,7 +8407,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             self.condition_fail_label.setText(f"실패/오류: {error}")
         elif fail_text is not None:
             self.condition_fail_label.setText(f"실패 경로: {fail_text}" if fail_text else "실패 경로: -")
-
     def _render_condition_tree(self, tree: dict, *, label: str, compare_color: tuple[int, int, int] | None = None):
         self.condition_tree.clear()
         self._last_condition_tree = tree
@@ -8967,7 +8419,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         fail_path = self._find_first_failure_path(tree, [])
         fail_text = " > ".join(fail_path) if fail_path else "-"
         self._update_condition_status(tree.get("result"), fail_text=fail_text, label=label)
-
     def _set_condition_pending(self, label: str | None = None):
         """조건 디버그 영역을 '참 대기중' 상태로 초기화."""
         self._last_condition_tree = None
@@ -8977,7 +8428,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.condition_state_label.setStyleSheet("color: darkorange; font-weight: bold;")
         self.condition_fail_label.setText("실패 경로: -")
         self._last_condition_result = None
-
     def _maybe_capture_failure(self, tree: dict, *, label: str):
         if not self._fail_capture_enabled:
             self._last_condition_result = tree.get("result")
@@ -9024,7 +8474,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         if self._fail_capture_false_streak < self._fail_capture_confirmations:
             self._last_condition_result = result_now
             return
-
         # 연속 실패 조건을 만족한 경우에만 캡처 실행
         self._last_capture_ts = now
         self._fail_capture_count += 1
@@ -9054,7 +8503,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             self._append_log_line(f"[캡처] 제한 {self._fail_capture_limit}장에 도달하여 캡처 OFF")
             self._on_capture_toggle(False)
             return
-
     def _on_condition_compare_color(self):
         text = self.condition_color_compare_edit.text().strip()
         if not text:
@@ -9072,7 +8520,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         if not tree:
             self._append_log_line("색상 대조: 조건 결과가 없습니다.")
             return
-
         def _walk(node):
             results = []
             if node.get("type") == "pixel":
@@ -9101,7 +8548,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             for child in node.get("on_false") or []:
                 results.extend(_walk(child))
             return results
-
         results = _walk(tree)
         if not results:
             self._append_log_line("색상 대조: 픽셀 조건이 없습니다.")
@@ -9123,7 +8569,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             self._render_condition_tree(tree, label=self._condition_label, compare_color=self._compare_color_override)
         except Exception:
             pass
-
     def _on_condition_compare_reset(self):
         self._compare_color_override = None
         self.condition_color_compare_edit.clear()
@@ -9133,7 +8578,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 self._render_condition_tree(tree, label=self._condition_label, compare_color=None)
             except Exception:
                 pass
-
     def _build_condition_item(self, node: dict, *, compare_color: tuple[int, int, int] | None = None) -> QtWidgets.QTreeWidgetItem:
         cond = node.get("cond")
         cond_type = node.get("type") or getattr(cond, "type", "")
@@ -9144,11 +8588,9 @@ class DebuggerDialog(QtWidgets.QDialog):
         result_text = "참" if result_bool else "거짓"
         if base_result is not None and base_result != result_bool:
             result_text += f" / base={'참' if base_result else '거짓'}"
-
         color_chip_html = ""
         tgt_hex = None
         tooltip_parts: list[str] = []
-
         # 비교 색상 결과 추가 + 색상 칩 준비
         if cond_type == "pixel":
             detail = node.get("detail", {}).get("pixel") or {}
@@ -9174,7 +8616,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                 sample_hex = _rgb_to_hex(sample)
                 if sample_hex:
                     tooltip_parts.append(f"샘플: {sample_hex}")
-
         detail_text = self._format_condition_detail(cond_type, node.get("detail") or {}, cond)
         item = QtWidgets.QTreeWidgetItem([label, result_text, detail_text])
         if tgt_hex:
@@ -9220,7 +8661,6 @@ class DebuggerDialog(QtWidgets.QDialog):
                     compare_ok = any(child_compare_results)
                 item.setText(1, f"{item.text(1)} / 대조={'참' if compare_ok else '거짓'}")
         return item
-
     def _apply_condition_color(self, item: QtWidgets.QTreeWidgetItem, detail: dict, result: bool):
         # 색상 대조 여부와 관계없이 실제 결과(result)로 색상을 결정한다.
         if detail.get("error"):
@@ -9230,7 +8670,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         brush = QtGui.QBrush(QtGui.QColor(color))
         for col in range(item.columnCount()):
             item.setForeground(col, brush)
-
     def _format_condition_detail(self, cond_type: str, detail: dict, cond: Condition | None) -> str:
         if not detail:
             return ""
@@ -9267,7 +8706,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             key_info = detail.get("key")
             return f"{key_info.get('key')} ({key_info.get('mode')}) pressed={key_info.get('pressed')} prev={key_info.get('prev')}"
         return ""
-
     def _find_first_failure_path(self, node: dict, prefix: list[str]) -> list[str]:
         label = node.get("name") or _condition_type_label(node.get("type", "") or "") or "(조건)"
         current_path = prefix + [label]
@@ -9286,7 +8724,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             if fail:
                 return fail
         return []
-
     def _current_test_config(self) -> dict:
         expect_exists = bool(self.expect_combo.currentData()) if self.expect_combo.currentIndex() >= 0 else True
         return {
@@ -9297,7 +8734,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             "interval": int(self.interval_spin.value()),
             "label": self._pending_label or "디버거 테스트",
         }
-
     def _start_test(self):
         if self._testing:
             return
@@ -9319,17 +8755,14 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self._start_test_cb(config, self._on_test_stopped)
-
     def _stop_test(self):
         if callable(self._stop_test_cb):
             self._stop_test_cb()
         self._on_test_stopped()
-
     def _on_test_stopped(self):
         self._testing = False
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-
     def _update_variable(self, event: dict):
         cat = event.get("category", "")
         name = event.get("name") or ""
@@ -9347,7 +8780,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         else:
             self.var_table.item(row, 1).setText(str(value))
             self.var_table.item(row, 2).setText(ts)
-
     def _update_pixel_status(self, event: dict):
         source = event.get("source") or "test"
         label = event.get("label") or "-"
@@ -9370,7 +8802,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             f"(기대={'있음' if expect else '없음'}, 발견={'있음' if found else '없음'}{count_txt}, {tol_txt}, 영역={region_txt}, 색상={color_txt})"
         )
         self.pixel_status.setText(f"픽셀 테스트: {msg}")
-
     def _is_enabled_event(self, event: dict) -> bool:
         if event.get("enabled") is False:
             return False
@@ -9378,7 +8809,6 @@ class DebuggerDialog(QtWidgets.QDialog):
         if detail.get("enabled") is False:
             return False
         return True
-
     def handle_event(self, event: dict):
         etype = event.get("type")
         if etype in {"action_start", "action_end", "action", "condition_result"} and not self._is_enabled_event(event):
@@ -9494,8 +8924,6 @@ class DebuggerDialog(QtWidgets.QDialog):
             self._append_log_line(f"[매크로 종료] {label} ({event.get('reason') or ''})")
         elif etype == "log":
             self._append_log_line(event.get("message", ""))
-
-
 class ColorToleranceDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, state: dict | None = None, save_state_cb=None):
         super().__init__(parent)
@@ -9518,13 +8946,11 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         self._build_ui()
         self._load_state(state or {})
         self._refresh_previews()
-
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         layout.addLayout(self._build_input_row())
         layout.addWidget(self._build_result_group())
         layout.addWidget(self._build_history_group())
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.calc_btn = QtWidgets.QPushButton("추출")
@@ -9536,20 +8962,16 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.reset_btn)
         btn_row.addWidget(self.close_btn)
         layout.addLayout(btn_row)
-
         self.calc_btn.clicked.connect(self._compute)
         self.save_btn.clicked.connect(self._save_named_entry)
         self.reset_btn.clicked.connect(self._reset_inputs)
         self.close_btn.clicked.connect(self.reject)
-
         self.resize(800, 620)
-
     def _build_input_row(self):
         row = QtWidgets.QHBoxLayout()
         row.addWidget(self._build_input_group(True))
         row.addWidget(self._build_input_group(False))
         return row
-
     def _build_input_group(self, allowed: bool):
         title = "허용 색상 (HEX, 개행)" if allowed else "불허 색상 (HEX, 개행)"
         group = QtWidgets.QGroupBox(title)
@@ -9562,7 +8984,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         preview.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
         hint = QtWidgets.QLabel("")
         hint.setStyleSheet("color: red;")
-
         if allowed:
             self.allowed_edit = edit
             self.allowed_preview = preview
@@ -9571,14 +8992,12 @@ class ColorToleranceDialog(QtWidgets.QDialog):
             self.blocked_edit = edit
             self.blocked_preview = preview
             self.blocked_hint = hint
-
         edit.textChanged.connect(self._refresh_previews)
         vbox.addWidget(edit)
         vbox.addWidget(QtWidgets.QLabel("미리보기"))
         vbox.addWidget(preview)
         vbox.addWidget(hint)
         return group
-
     def _build_result_group(self):
         group = QtWidgets.QGroupBox("결과")
         grid = QtWidgets.QGridLayout(group)
@@ -9596,29 +9015,22 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         self.status_label.setWordWrap(True)
         self.copy_btn = QtWidgets.QPushButton("HEX 복사")
         self.copy_btn.setEnabled(False)
-
         self.buffer_slider.valueChanged.connect(self._update_buffer_display)
         self.copy_btn.clicked.connect(self._copy_hex)
-
         grid.addWidget(QtWidgets.QLabel("이름"), 0, 0)
         grid.addWidget(self.name_edit, 0, 1, 1, 2)
-
         grid.addWidget(QtWidgets.QLabel("제안 색상"), 1, 0)
         result_row = QtWidgets.QHBoxLayout()
         result_row.addWidget(self.result_hex_label, 1)
         result_row.addWidget(self.copy_btn)
         grid.addLayout(result_row, 1, 1, 1, 2)
-
         grid.addWidget(QtWidgets.QLabel("기본 tol"), 2, 0)
         grid.addWidget(self.result_tol_label, 2, 1, 1, 2)
-
         grid.addWidget(QtWidgets.QLabel("여유 버퍼"), 3, 0)
         grid.addWidget(self.buffer_slider, 3, 1)
         grid.addWidget(self.buffer_info, 3, 2)
-
         grid.addWidget(self.status_label, 4, 0, 1, 3)
         return group
-
     def _build_history_group(self):
         group = QtWidgets.QGroupBox("최근 계산 내역")
         hbox = QtWidgets.QHBoxLayout(group)
@@ -9627,15 +9039,12 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         self.history_combo.setMinimumContentsLength(30)
         self.history_load_btn = QtWidgets.QPushButton("불러오기")
         self.history_clear_btn = QtWidgets.QPushButton("내역 비우기")
-
         self.history_load_btn.clicked.connect(self._load_history_entry)
         self.history_clear_btn.clicked.connect(self._clear_history)
-
         hbox.addWidget(self.history_combo, 1)
         hbox.addWidget(self.history_load_btn)
         hbox.addWidget(self.history_clear_btn)
         return group
-
     def _refresh_previews(self):
         allowed_colors, allowed_error = _try_parse_hex_lines(self.allowed_edit.toPlainText())
         blocked_colors, blocked_error = _try_parse_hex_lines(self.blocked_edit.toPlainText())
@@ -9643,7 +9052,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         self._fill_preview(self.blocked_preview, blocked_colors)
         self.allowed_hint.setText(allowed_error)
         self.blocked_hint.setText(blocked_error)
-
     def _fill_preview(self, widget: QtWidgets.QListWidget, colors: list[str]):
         widget.clear()
         for hex_txt in colors:
@@ -9655,14 +9063,12 @@ class ColorToleranceDialog(QtWidgets.QDialog):
             fg = QtCore.Qt.GlobalColor.black if luminance > 150 else QtCore.Qt.GlobalColor.white
             item.setForeground(QtGui.QBrush(fg))
             widget.addItem(item)
-
     def _set_status(self, text: str, *, error: bool = False):
         self.status_label.setText(text)
         if error:
             self.status_label.setStyleSheet("color: red;")
         else:
             self.status_label.setStyleSheet("")
-
     def _compute(self, add_history: bool = True):
         allowed_text = self.allowed_edit.toPlainText()
         blocked_text = self.blocked_edit.toPlainText()
@@ -9672,18 +9078,15 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         except ValueError as exc:
             self._set_status(str(exc), error=True)
             return
-
         try:
             result = _solve_color_tolerance(allowed_hex, blocked_hex)
         except Exception as exc:
             self._set_status(f"계산 중 오류: {exc}", error=True)
             return
-
         self._render_result(result)
         if add_history:
             self._append_history(allowed_text, blocked_text, result, name=self.name_edit.text().strip())
         self._save_state()
-
     def _render_result(self, result: dict):
         self._current_result = result
         hex_txt = result.get("hex") or ""
@@ -9691,7 +9094,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         chip = _color_chip_html(display_hex if display_hex != "-" else None)
         self.result_hex_label.setText(f"{chip}<b>{html.escape(display_hex)}</b>")
         self.copy_btn.setEnabled(bool(hex_txt))
-
         base_tol = int(result.get("tolerance", 0))
         min_req = int(result.get("min_required_tolerance", base_tol))
         self.result_tol_label.setText(f"{base_tol} (최소 요구 {min_req})")
@@ -9701,7 +9103,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         self.buffer_slider.setValue(0)
         self.buffer_slider.setEnabled(buffer_extra > 0)
         self.buffer_slider.blockSignals(False)
-
         ok = bool(result.get("ok"))
         min_block = result.get("min_block_distance")
         margin = result.get("margin")
@@ -9718,7 +9119,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
             margin_txt = margin if isinstance(margin, (int, float)) else 0
             msg += f" (최소 충돌 {conflicts}개, tol {base_tol}, 여유 {margin_txt})"
             self._set_status(msg, error=True)
-
     def _save_named_entry(self):
         if not self._current_result:
             self._set_status("먼저 추출을 실행하세요.", error=True)
@@ -9732,7 +9132,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         self._append_history(allowed_text, blocked_text, self._current_result, name=name)
         self._save_state()
         self._set_status(f"'{name}'으로 저장했습니다.", error=False)
-
     def _update_buffer_display(self):
         if not self._current_result:
             self.buffer_info.setText("여유 버퍼: -")
@@ -9746,7 +9145,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
             self.buffer_info.setText(f"+{extra} → 현재 tol {current_tol} (최대 {max_tol})")
         else:
             self.buffer_info.setText("불허 색상까지 여유가 없습니다.")
-
     def _copy_hex(self):
         if not self._current_result:
             return
@@ -9756,7 +9154,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         clean_hex = hex_txt.upper()
         QtGui.QGuiApplication.clipboard().setText(clean_hex)
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"복사됨: {clean_hex}", self, QtCore.QRect(), 1200)
-
     def _reset_inputs(self):
         self.allowed_edit.clear()
         self.blocked_edit.clear()
@@ -9770,7 +9167,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         self._set_status("입력을 초기화했습니다.")
         self._refresh_previews()
         self._save_state()
-
     def _append_history(self, allowed_text: str, blocked_text: str, result: dict, *, name: str = ""):
         entry = {
             "ts": _format_dt(),
@@ -9788,7 +9184,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         self._history.insert(0, entry)
         self._history = self._history[: self._max_history]
         self._refresh_history_combo()
-
     def _refresh_history_combo(self):
         self.history_combo.blockSignals(True)
         self.history_combo.clear()
@@ -9802,7 +9197,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
             summary = f"[{ok_txt}] {label} ({ts})"
             self.history_combo.addItem(summary)
         self.history_combo.blockSignals(False)
-
     def _load_history_entry(self):
         idx = self.history_combo.currentIndex()
         if idx < 0 or idx >= len(self._history):
@@ -9813,13 +9207,11 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         self.name_edit.setText(entry.get("name", ""))
         self._refresh_previews()
         self._compute(add_history=False)
-
     def _clear_history(self):
         self._history = []
         self._refresh_history_combo()
         self._save_state()
         self._set_status("최근 계산 내역을 비웠습니다.")
-
     def _load_state(self, state: dict):
         if not isinstance(state, dict):
             return
@@ -9830,7 +9222,6 @@ class ColorToleranceDialog(QtWidgets.QDialog):
         if isinstance(history, list):
             self._history = history[: self._max_history]
             self._refresh_history_combo()
-
     def _save_state(self):
         if not callable(self._save_state_cb):
             return
@@ -9841,12 +9232,9 @@ class ColorToleranceDialog(QtWidgets.QDialog):
             "name_text": self.name_edit.text(),
         }
         self._save_state_cb(data)
-
     def closeEvent(self, event: QtGui.QCloseEvent):
         self._save_state()
         return super().closeEvent(event)
-
-
 class PixelPatternManagerDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, patterns: dict | None = None, open_image_viewer=None, sample_provider=None):
         super().__init__(parent)
@@ -9879,20 +9267,16 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self._build_ui()
         self._load_patterns()
         self._attach_viewer_change_listener()
-
     def _sanitize_pattern(self, pat: PixelPattern) -> PixelPattern:
         pat.tolerance = 0
         for pt in pat.points:
             pt.tolerance = None
         return pat
-
     def _sanitize_all_patterns(self):
         for name, pat in list(self.patterns.items()):
             self.patterns[name] = self._sanitize_pattern(pat)
-
     def _attach_viewer_change_listener(self):
         self._ensure_viewer_listener()
-
     def _ensure_viewer_listener(self):
         if self._viewer_connected:
             return
@@ -9906,10 +9290,8 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             self._viewer_connected = True
         except Exception:
             self._viewer_connected = False
-
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
-
         # 이름/설명 입력을 상단에 배치해 선택/입력 흐름을 명확히 한다.
         info_widget = QtWidgets.QWidget()
         info_form = QtWidgets.QFormLayout(info_widget)
@@ -9927,7 +9309,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         info_form.addRow("설명", self.desc_edit)
         layout.addWidget(info_widget)
         info_widget.hide()  # 이름/설명 입력란은 모달 편집만 사용하므로 UI에서 숨김
-
         top_row = QtWidgets.QHBoxLayout()
         # 패턴 목록: 이름/설명 2열 테이블
         self.list_widget = QtWidgets.QTableWidget(0, 2)
@@ -9956,7 +9337,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         list_btn_wrap.setLayout(list_btns)
         top_row.addWidget(list_btn_wrap)
         layout.addLayout(top_row)
-
         point_btn_row = QtWidgets.QHBoxLayout()
         self.add_point_btn = QtWidgets.QPushButton("커서 픽셀 추가 (F3)")
         self.del_point_btn = QtWidgets.QPushButton("포인트 삭제")
@@ -9964,7 +9344,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         point_btn_row.addWidget(self.add_point_btn)
         point_btn_row.addWidget(self.del_point_btn)
         point_btn_row.addWidget(self.clear_point_btn)
-
         self.table = QtWidgets.QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["x", "y", "color", ""])
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
@@ -9972,7 +9351,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.PreventContextMenu)
         self.table.itemChanged.connect(lambda *_: self._update_preview())
         self.table.itemSelectionChanged.connect(self._highlight_selected_point)
-
         preview_wrap = QtWidgets.QVBoxLayout()
         self.preview_label = QtWidgets.QLabel("미리보기")
         self.preview_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -10003,11 +9381,9 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.overlay_status.setStyleSheet("color: gray;")
         bg_row.addWidget(self.overlay_status, 2)
         preview_wrap.addLayout(bg_row)
-
         layout.addLayout(point_btn_row)
         layout.addWidget(self.table)
         layout.addLayout(preview_wrap)
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.save_btn = QtWidgets.QPushButton("저장")
@@ -10015,7 +9391,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.save_btn)
         btn_row.addWidget(self.close_btn)
         layout.addLayout(btn_row)
-
         # Signals
         self.add_btn.clicked.connect(self._add_pattern)
         self.dup_btn.clicked.connect(self._dup_pattern)
@@ -10031,9 +9406,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             self._add_point_from_cursor,
             context=QtCore.Qt.ShortcutContext.ApplicationShortcut,
         )
-
         self.resize(520, 640)
-
     def _load_patterns(self):
         self._loading_patterns = True
         self.list_widget.setRowCount(0)
@@ -10061,7 +9434,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             self.preview_label.setPixmap(QtGui.QPixmap())
             self.preview_label.setText("포인트 없음")
             self.size_label.setText("")
-
     def _current_pattern(self) -> PixelPattern:
         if not self._current_name or self._current_name not in self.patterns:
             cur_row = self.list_widget.currentRow()
@@ -10079,7 +9451,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             self.list_widget.setItem(0, 1, QtWidgets.QTableWidgetItem(pat.description or ""))
             self.list_widget.setCurrentCell(0, 0)
         return pat
-
     def _save_current_pattern(self, *, name_hint: str | None = None, keep_name: bool = False):
         # name_hint: 저장 대상 패턴명(이전 선택 항목). 없으면 현재 이름을 사용.
         if not self.patterns and self.list_widget.rowCount() == 0 and not (self._current_name or name_hint):
@@ -10119,7 +9490,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             dx = x_val - anchor_x
             dy = y_val - anchor_y
             new_points.append(PixelPatternPoint(dx=dx, dy=dy, color=color, tolerance=None))
-
         if new_points:
             pat.points = new_points
         pat = pat.normalized()
@@ -10139,7 +9509,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             self._select_by_name(pat.name)
         # 엔진과 공용 패턴 저장소에 즉시 반영해 다른 창에서도 곧바로 보이게 한다.
         self._push_patterns_to_owner()
-
     def _select_by_name(self, name: str):
         for i in range(self.list_widget.rowCount()):
             item = self.list_widget.item(i, 0)
@@ -10148,13 +9517,11 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
                 self.list_widget.setCurrentCell(i, 0)
                 self.list_widget.blockSignals(prev)
                 break
-
     def _row_name(self, row: int) -> str | None:
         if row < 0:
             return None
         item = self.list_widget.item(row, 0)
         return item.text() if item else None
-
     def _display_pattern(self, pat: PixelPattern):
         pat = self._sanitize_pattern(pat)
         self._current_name = pat.name
@@ -10165,7 +9532,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         for pt in pat.points:
             self._append_point_row(pt.dx, pt.dy, pt.color, pt.tolerance)
         self._update_preview()
-
     def _on_select_pattern_cell(self, cur_row: int, _cur_col: int, prev_row: int, _prev_col: int):
         if self._loading_patterns:
             return
@@ -10192,7 +9558,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.desc_edit.setText(pat.description or "")
         self.tol_spin.setValue(0)
         self._display_pattern(pat)
-
     def _append_point_row(self, dx: int, dy: int, color: RGB, tol: Optional[int] = None):
         self._loading_points = True
         row = self.table.rowCount()
@@ -10212,7 +9577,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.table.setCellWidget(row, 3, del_btn)
         self._loading_points = False
         self.table.resizeRowsToContents()
-
     def _prompt_new_pattern(self) -> tuple[str, str | None] | None:
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("새 패턴")
@@ -10237,14 +9601,12 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.warning(self, "이름 필요", "패턴 이름을 입력하세요.")
                 continue
             return name, (desc_edit.text().strip() or None)
-
     def _next_default_name(self) -> str:
         base = "pattern"
         idx = 1
         while f"{base}{idx}" in self.patterns:
             idx += 1
         return f"{base}{idx}"
-
     def _add_pattern(self):
         # 현재 선택 패턴은 이름을 보존한 채 먼저 저장
         try:
@@ -10252,7 +9614,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._keep_name_on_next_save = False
-
         result = self._prompt_new_pattern()
         if result is None:
             return
@@ -10280,7 +9641,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self._display_pattern(pat)
         # 즉시 저장해 다른 창/세션에서도 바로 보이도록 한다.
         self._push_patterns_to_owner()
-
     def _edit_pattern_meta_dialog(self, row: int, _col: int):
         name = self._row_name(row)
         if not name or name not in self.patterns:
@@ -10321,7 +9681,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self._load_patterns()
         self._select_by_name(new_name)
         self._push_patterns_to_owner()
-
     def _dup_pattern(self):
         pat = self._current_pattern()
         new_name = pat.name + "_copy"
@@ -10338,26 +9697,22 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self._load_patterns()
         self._select_by_name(new_name)
         self._push_patterns_to_owner()
-
     def _del_pattern(self):
         if self._current_name and self._current_name in self.patterns:
             self.patterns.pop(self._current_name, None)
         self._load_patterns()
         self._push_patterns_to_owner()
-
     def _add_point_from_cursor(self):
         if self.list_widget.rowCount() == 0:
             self._load_patterns()
         if self.list_widget.currentRow() < 0 and self.list_widget.rowCount() > 0:
             self.list_widget.setCurrentCell(0, 0)
-
         sample = None
         if callable(self._sample_provider):
             try:
                 sample = self._sample_provider()
             except Exception:
                 sample = None
-
         if sample and isinstance(sample, dict) and sample.get("pos") is not None:
             x, y = sample.get("pos")
             qcolor = sample.get("color")
@@ -10374,14 +9729,12 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             except Exception:
                 QtWidgets.QMessageBox.warning(self, "캡처 실패", "현재 커서 위치 픽셀을 읽지 못했습니다.")
                 return
-
         pat = self._current_pattern()
         if self._anchor_image_pos is None or not pat.points:
             self._anchor_image_pos = (int(x), int(y))
         anchor_x, anchor_y = self._anchor_image_pos
         dx = int(x) - anchor_x
         dy = int(y) - anchor_y
-
         self._append_point_row(int(dx), int(dy), color)
         # 새로 추가된 행을 선택해 즉시 눈에 보이도록
         row = self.table.rowCount() - 1
@@ -10394,20 +9747,17 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             f"추가: x={x}, y={y}, #{color[0]:02x}{color[1]:02x}{color[2]:02x}",
             self,
         )
-
     def _del_points(self):
         rows = sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True)
         for r in rows:
             self.table.removeRow(r)
         self._update_preview()
-
     def _clear_points(self):
         self.table.setRowCount(0)
         self._anchor_pos = None
         self._anchor_image_pos = None
         self._highlight_dx_dy = None
         self._update_preview()
-
     def _delete_point_row(self, button: QtWidgets.QPushButton):
         for r in range(self.table.rowCount()):
             if self.table.cellWidget(r, 3) is button:
@@ -10415,7 +9765,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
                 break
         self._highlight_dx_dy = None
         self._update_preview()
-
     def _highlight_selected_point(self):
         if self._loading_points:
             return
@@ -10436,7 +9785,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         except Exception:
             self._highlight_dx_dy = None
         self._update_preview()
-
     def _update_preview(self):
         if self._loading_points:
             return
@@ -10505,7 +9853,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         # 미리보기 갱신 후 오버레이도 최신으로
         if self.overlay_btn.isChecked():
             self._show_pattern_on_viewer()
-
     def accept(self):
         try:
             row = self.list_widget.currentRow()
@@ -10515,7 +9862,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         return super().accept()
-
     def _save_and_mark_dirty(self):
         try:
             row = self.list_widget.currentRow()
@@ -10525,11 +9871,9 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             self.overlay_status.setText("패턴 저장됨")
         except Exception:
             pass
-
     def _toggle_stay_on_top(self, checked: bool):
         self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, checked)
         self.show()
-
     def _open_viewer(self):
         if callable(self._open_image_viewer):
             try:
@@ -10543,7 +9887,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
                 pass
         # 새로 열린 뷰어에도 리스너를 연결한다.
         QtCore.QTimer.singleShot(0, self._ensure_viewer_listener)
-
     def _show_pattern_on_viewer(self):
         self._ensure_viewer_listener()
         self._overlay_visible = self.overlay_btn.isChecked()
@@ -10552,30 +9895,25 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         if viewer is None or not hasattr(viewer, "canvas"):
             self.overlay_status.setText("이미지 뷰어 없음")
             return
-
         if not self.overlay_btn.isChecked():
             viewer.canvas.set_overlays([])
             self.overlay_status.setText("패턴 표시 꺼짐")
             return
-
         if not pat.points:
             self.overlay_status.setText("패턴 없음")
             viewer.canvas.set_overlays([])
             return
-
         # 매칭: 현재 뷰어 이미지에서 패턴 존재 위치를 찾는다.
         qimg = getattr(viewer.canvas, "_image", None)
         if qimg is None or qimg.isNull():
             self.overlay_status.setText("이미지가 없습니다")
             viewer.canvas.set_overlays([])
             return
-
         matches = self._find_pattern_in_qimage(qimg, pat)
         if not matches:
             self.overlay_status.setText("패턴을 찾지 못했습니다")
             viewer.canvas.set_overlays([])
             return
-
         rects: list[tuple[int, int, int, int]] = []
         for mx, my in matches:
             for pt in pat.points:
@@ -10583,7 +9921,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         viewer.canvas.set_overlays(rects)
         viewer.canvas.update()
         self.overlay_status.setText(f"패턴 {len(matches)}곳 표시")
-
     @staticmethod
     def _find_pattern_in_qimage(qimg: QtGui.QImage, pattern: PixelPattern) -> list[tuple[int, int]]:
         """Return list of (x,y) top-left matches within the image."""
@@ -10596,7 +9933,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         max_dy = max(p.dy for p in norm.points)
         if w - max_dx <= 0 or h - max_dy <= 0:
             return []
-
         # Convert qimage to numpy uint8 HxWx4 then to RGB
         fmt = qimg.format()
         if fmt != QtGui.QImage.Format.Format_RGBA8888:
@@ -10604,10 +9940,8 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         ptr = qimg.bits()
         ptr.setsize(qimg.sizeInBytes())
         import numpy as np
-
         arr = np.frombuffer(ptr, np.uint8).reshape((h, qimg.bytesPerLine() // 4, 4))
         arr = arr[:, : w, :3]
-
         matches: list[tuple[int, int]] = []
         tol_default = 0
         pts = norm.points
@@ -10627,7 +9961,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             for xv in xs:
                 matches.append((int(xv), int(y)))
         return matches
-
     def _on_viewer_changed(self, *_):
         # 이미지가 바뀌거나 샘플이 변하면 자동으로 오버레이를 끈다.
         self.overlay_btn.setChecked(False)
@@ -10638,7 +9971,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self.overlay_status.setText("이미지 변경: 패턴 표시 꺼짐")
-
     def _push_patterns_to_owner(self):
         """엔진과 공용 패턴 파일에 현재 패턴을 즉시 반영해 재열 때 사라지지 않도록 한다."""
         try:
@@ -10647,7 +9979,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             _save_shared_patterns(self.patterns)
         except Exception:
             pass
-
 class PixelTestDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -10674,7 +10005,6 @@ class PixelTestDialog(QtWidgets.QDialog):
         self._testing = False
         self._build_ui()
         self._load_state(state or {})
-
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
@@ -10708,7 +10038,6 @@ class PixelTestDialog(QtWidgets.QDialog):
         self.interval_spin.setRange(50, 5000)
         self.interval_spin.setSuffix(" ms")
         self.interval_spin.setValue(200)
-
         form.addRow("Region x,y,w,h", self.region_edit)
         color_row = QtWidgets.QHBoxLayout()
         color_row.setContentsMargins(0, 0, 0, 0)
@@ -10733,7 +10062,6 @@ class PixelTestDialog(QtWidgets.QDialog):
         form.addRow("기대 상태", self.expect_combo)
         form.addRow("테스트 주기", self.interval_spin)
         layout.addLayout(form)
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.start_btn = QtWidgets.QPushButton("테스트 시작")
@@ -10741,13 +10069,10 @@ class PixelTestDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.start_btn)
         btn_row.addWidget(self.close_btn)
         layout.addLayout(btn_row)
-
         self.start_btn.clicked.connect(self._toggle_test)
         self.close_btn.clicked.connect(self.reject)
-
         self.resize(420, 260)
         self._sync_expect_visibility()
-
     def _reload_patterns(self):
         self.pattern_combo.clear()
         self.pattern_combo.addItem("선택 안 함", None)
@@ -10760,7 +10085,6 @@ class PixelTestDialog(QtWidgets.QDialog):
         for name in names:
             self.pattern_combo.addItem(str(name), str(name))
         self._sync_pattern_visibility()
-
     def _open_pattern_manager_cb(self):
         if callable(self._open_pattern_manager):
             try:
@@ -10768,7 +10092,6 @@ class PixelTestDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._reload_patterns()
-
     def _sync_pattern_visibility(self):
         use_pat = self.pattern_check.isChecked()
         self.color_wrap.setVisible(not use_pat)
@@ -10788,14 +10111,12 @@ class PixelTestDialog(QtWidgets.QDialog):
             lbl = self._form.labelForField(self.min_count_spin) if hasattr(self, "_form") else None
             if lbl is not None:
                 lbl.setVisible(not use_pat)
-
     def _sync_expect_visibility(self):
         allow_min = bool(self.expect_combo.currentData()) if self.expect_combo.currentIndex() >= 0 else True
         self.min_count_spin.setEnabled(allow_min)
         lbl = self._form.labelForField(self.min_count_spin) if hasattr(self, "_form") else None
         if lbl is not None:
             lbl.setEnabled(allow_min)
-
     def _current_resolver(self):
         if callable(self._resolver_provider):
             try:
@@ -10803,7 +10124,6 @@ class PixelTestDialog(QtWidgets.QDialog):
             except Exception:
                 return None
         return None
-
     def _parse_inputs(self):
         resolver = self._current_resolver()
         region = _parse_region(self.region_edit.text(), resolver=resolver)
@@ -10814,7 +10134,6 @@ class PixelTestDialog(QtWidgets.QDialog):
         expect_exists = bool(self.expect_combo.currentData()) if self.expect_combo.currentIndex() >= 0 else True
         min_count = max(1, int(self.min_count_spin.value())) if expect_exists else 1
         return region, color, pattern_name, tolerance, expect_exists, min_count
-
     def _toggle_test(self):
         if self._testing:
             self._stop_testing()
@@ -10844,16 +10163,13 @@ class PixelTestDialog(QtWidgets.QDialog):
         self._testing = True
         self.start_btn.setText("테스트 중지")
         self._save_state()
-
     def _stop_testing(self):
         if callable(self._stop_test):
             self._stop_test()
         self._on_test_stopped()
-
     def _on_test_stopped(self):
         self._testing = False
         self.start_btn.setText("테스트 시작")
-
     def _load_state(self, state: dict):
         if not isinstance(state, dict):
             return
@@ -10888,7 +10204,6 @@ class PixelTestDialog(QtWidgets.QDialog):
             self.interval_spin.setValue(interval)
         except Exception:
             pass
-
     def _save_state(self):
         if not self._save_state_cb:
             return
@@ -10902,13 +10217,10 @@ class PixelTestDialog(QtWidgets.QDialog):
             "pattern": self.pattern_combo.currentData() if self.pattern_check.isChecked() else None,
         }
         self._save_state_cb(data)
-
     def closeEvent(self, event: QtGui.QCloseEvent):
         self._stop_testing()
         self._save_state()
         return super().closeEvent(event)
-
-
 class PresetTransferDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -10950,14 +10262,12 @@ class PresetTransferDialog(QtWidgets.QDialog):
         self._current_scale_default = current_scale
         self._last_sample_calc: dict | None = None
         self._build_ui()
-
     def _log(self, msg: str):
         if callable(self._log_cb):
             try:
                 self._log_cb(msg)
             except Exception:
                 pass
-
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         self.tabs = QtWidgets.QTabWidget()
@@ -10966,7 +10276,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         self.tabs.addTab(self.sample_tab, "샘플 좌표 변환")
         self.tabs.addTab(self.scale_tab, "해상도+앱 배율")
         layout.addWidget(self.tabs)
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.save_btn = QtWidgets.QPushButton("저장")
@@ -10974,11 +10283,9 @@ class PresetTransferDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.save_btn)
         btn_row.addWidget(self.cancel_btn)
         layout.addLayout(btn_row)
-
         self.save_btn.clicked.connect(self._handle_save)
         self.cancel_btn.clicked.connect(self.reject)
         self.resize(780, 520)
-
     # 샘플 탭 ------------------------------------------------------------
     def _build_sample_tab(self):
         self.sample_tab = QtWidgets.QWidget()
@@ -10986,7 +10293,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         desc = QtWidgets.QLabel("기준 좌표(x,y)와 변환 좌표(x',y')를 'x,y' 형식으로 최소 2개 이상 입력하세요. (3개 권장)")
         desc.setWordWrap(True)
         layout.addWidget(desc)
-
         preset_row = QtWidgets.QHBoxLayout()
         self.sample_preset_label = QtWidgets.QLabel("불러온 좌표 프리셋: (없음)")
         self.sample_preset_label.setStyleSheet("color: gray;")
@@ -10996,13 +10302,11 @@ class PresetTransferDialog(QtWidgets.QDialog):
         preset_row.addWidget(self.sample_preset_load_btn)
         preset_row.addWidget(self.sample_preset_save_btn)
         layout.addLayout(preset_row)
-
         self.sample_table = QtWidgets.QTableWidget(0, 2)
         self.sample_table.setHorizontalHeaderLabels(["기준 (x,y)", "변환 (x',y')"])
         header = self.sample_table.horizontalHeader()
         header.setStretchLastSection(True)
         layout.addWidget(self.sample_table)
-
         btn_row = QtWidgets.QHBoxLayout()
         self.add_sample_btn = QtWidgets.QPushButton("샘플 추가")
         self.del_sample_btn = QtWidgets.QPushButton("선택 삭제")
@@ -11012,10 +10316,8 @@ class PresetTransferDialog(QtWidgets.QDialog):
         btn_row.addStretch()
         btn_row.addWidget(self.calc_sample_btn)
         layout.addLayout(btn_row)
-
         self.sample_result_label = QtWidgets.QLabel("계수: a/b/c/d, RMS: -")
         layout.addWidget(self.sample_result_label)
-
         test_row = QtWidgets.QHBoxLayout()
         test_row.setSpacing(8)
         test_row.addWidget(QtWidgets.QLabel("기준 좌표 테스트"))
@@ -11029,14 +10331,12 @@ class PresetTransferDialog(QtWidgets.QDialog):
         test_row.addWidget(self.sample_test_result)
         test_row.addStretch()
         layout.addLayout(test_row)
-
         self.sample_preview = QtWidgets.QPlainTextEdit()
         self.sample_preview.setReadOnly(True)
         self.sample_preview.setPlaceholderText("보정 계산을 누르면 계수, 프로필 좌표/리전 변환 요약, 예시가 표시됩니다.")
         self.sample_preview.setMinimumHeight(160)
         self.sample_preview.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
         layout.addWidget(self.sample_preview)
-
         self.sample_preset_load_btn.clicked.connect(self._on_load_sample_preset)
         self.sample_preset_save_btn.clicked.connect(self._on_save_sample_preset)
         self.add_sample_btn.clicked.connect(self._add_sample_row)
@@ -11045,7 +10345,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         self.sample_test_btn.clicked.connect(self._on_test_sample_point)
         self.sample_test_input.returnPressed.connect(self._on_test_sample_point)
         self._apply_initial_samples()
-
     def _add_sample_row(self, sample: tuple[float, float, float, float] | None = None):
         row = self.sample_table.rowCount()
         self.sample_table.insertRow(row)
@@ -11055,14 +10354,12 @@ class PresetTransferDialog(QtWidgets.QDialog):
             values = ["", ""]
         for col, val in enumerate(values):
             self.sample_table.setItem(row, col, QtWidgets.QTableWidgetItem(str(val)))
-
     def _remove_sample_rows(self):
         rows = sorted({idx.row() for idx in self.sample_table.selectionModel().selectedRows()}, reverse=True)
         if not rows and self.sample_table.rowCount() > 0:
             rows = [self.sample_table.rowCount() - 1]
         for r in rows:
             self.sample_table.removeRow(r)
-
     def _apply_initial_samples(self):
         preset_state = self._sample_preset_state if isinstance(self._sample_preset_state, dict) else {}
         preset_path = preset_state.get("path")
@@ -11077,7 +10374,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             return
         self._set_sample_rows([])
         self._update_sample_preset_label(None, False)
-
     def _set_sample_rows(self, samples: list[tuple[float, float, float, float]]):
         self.sample_table.setRowCount(0)
         for sample in samples:
@@ -11096,7 +10392,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             self.sample_preview.setPlainText("")
         except Exception:
             pass
-
     def _update_sample_preset_label(self, path: str | None, has_samples: bool):
         if not isinstance(getattr(self, "sample_preset_label", None), QtWidgets.QLabel):
             return
@@ -11113,7 +10408,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             self.sample_preset_label.setText("불러온 좌표 프리셋: (없음)")
             self.sample_preset_label.setToolTip("")
             self.sample_preset_label.setStyleSheet("color: gray;")
-
     def _sample_preset_dir(self) -> Path:
         if self._sample_preset_path:
             try:
@@ -11126,7 +10420,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         return Path.cwd()
-
     @staticmethod
     def _normalize_sample_list(raw) -> list[tuple[float, float, float, float]]:
         items = None
@@ -11164,7 +10457,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             except Exception:
                 continue
         return result
-
     def _load_sample_preset_from_path(self, path: str, *, silent: bool = False, remember: bool = True) -> bool:
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -11189,7 +10481,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         if not silent:
             self._log(f"좌표 프리셋 불러오기: {path} (샘플 {len(samples)}개)")
         return True
-
     def _on_load_sample_preset(self):
         start_dir = self._sample_preset_dir()
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -11198,7 +10489,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         if not path:
             return
         self._load_sample_preset_from_path(path)
-
     def _on_save_sample_preset(self):
         try:
             samples = self._collect_samples()
@@ -11238,7 +10528,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         self._persist_sample_preset_state(samples)
         QtWidgets.QMessageBox.information(self, "저장 완료", f"좌표 프리셋을 저장했습니다.\n{path}")
         self._log(f"좌표 프리셋 저장: {path} (샘플 {len(samples)}개)")
-
     def _persist_sample_preset_state(self, samples: list[tuple[float, float, float, float]] | None):
         if not callable(self._save_sample_preset_state_cb):
             return
@@ -11251,7 +10540,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             self._save_sample_preset_state_cb(payload)
         except Exception:
             pass
-
     @staticmethod
     def _parse_sample_point_text(text: str) -> tuple[float, float]:
         cleaned = text.strip().replace("，", ",")
@@ -11262,7 +10550,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             return float(parts[0]), float(parts[1])
         except Exception as exc:
             raise ValueError("좌표는 숫자여야 합니다.") from exc
-
     def _collect_samples(self) -> list[tuple[float, float, float, float]]:
         samples: list[tuple[float, float, float, float]] = []
         for row in range(self.sample_table.rowCount()):
@@ -11283,7 +10570,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         if len(samples) < 2:
             raise ValueError("샘플을 최소 2개 이상 입력하세요.")
         return samples
-
     @staticmethod
     def _fit_axis(src: list[float], dst: list[float]) -> tuple[float, float]:
         n = len(src)
@@ -11301,7 +10587,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             a = (n * sum_xy - sum_x * sum_y) / denom
             b = (sum_y - a * sum_x) / n
         return a, b
-
     @staticmethod
     def _calc_rms(samples: list[tuple[float, float, float, float]], ax: float, bx: float, cy: float, dy: float) -> float:
         if not samples:
@@ -11312,7 +10597,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             dy_err = cy * sy + dy - ty
             total += dx * dx + dy_err * dy_err
         return math.sqrt(total / len(samples))
-
     def _render_sample_preview(
         self,
         samples: list[tuple[float, float, float, float]],
@@ -11357,7 +10641,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
                 f"(샘플 목표: {tx:.2f}, {ty:.2f})"
             )
         self.sample_preview.setPlainText("\n".join(lines))
-
     def _compute_sample_transform(self) -> tuple[float, float, float, float, float, list[tuple[float, float, float, float]]]:
         samples = self._collect_samples()
         ax, bx = self._fit_axis([s[0] for s in samples], [s[2] for s in samples])
@@ -11390,7 +10673,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             pass
         self._render_sample_preview(samples, ax, bx, cy, dy, rms, changes, change_error)
         return ax, bx, cy, dy, rms, samples
-
     def _on_calc_samples(self):
         try:
             ax, bx, cy, dy, rms, samples = self._compute_sample_transform()
@@ -11411,7 +10693,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             f"RMS 오차: {rms:.3f}\n샘플 {len(samples)}개{extra_line}",
         )
         self._log(f"샘플 좌표 변환 계산: a={ax:.4f}, b={bx:.2f}, c={cy:.4f}, d={dy:.2f}, RMS={rms:.3f}")
-
     def _on_test_sample_point(self):
         if not self._last_sample_calc:
             QtWidgets.QMessageBox.information(self, "보정 필요", "먼저 보정 계산을 실행하세요.")
@@ -11433,7 +10714,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         pred_y = cy * sy + dy
         if isinstance(getattr(self, "sample_test_result", None), QtWidgets.QLabel):
             self.sample_test_result.setText(f"→ 변환 좌표: ({pred_x:.2f}, {pred_y:.2f})")
-
     def _save_from_samples(self) -> bool:
         try:
             ax, bx, cy, dy, rms, samples = self._compute_sample_transform()
@@ -11445,13 +10725,11 @@ class PresetTransferDialog(QtWidgets.QDialog):
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "프로필 오류", str(exc))
             return False
-
         QtWidgets.QMessageBox.information(
             self,
             "변환 성공",
             f"계수: a={ax:.4f}, b={bx:.2f}, c={cy:.4f}, d={dy:.2f}\nRMS 오차: {rms:.3f}\n저장 위치를 선택하세요.",
         )
-
         transformed, changes = _transform_profile_affine(profile, ax, bx, cy, dy)
         transformed.transform_matrix = {
             "ax": float(ax),
@@ -11469,17 +10747,14 @@ class PresetTransferDialog(QtWidgets.QDialog):
         if saved:
             self._log(f"샘플 좌표 기반 변환 완료 (변경 {len(changes)}건, RMS={rms:.3f})")
         return saved
-
     # 해상도/배율 탭 -----------------------------------------------------
     def _build_scale_tab(self):
         self.scale_tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.scale_tab)
-
         form = QtWidgets.QGridLayout()
         form.setHorizontalSpacing(8)
         form.setVerticalSpacing(4)
         form.setContentsMargins(0, 0, 0, 0)
-
         base_label = QtWidgets.QLabel("기준 해상도")
         base_row = QtWidgets.QHBoxLayout()
         base_row.setContentsMargins(0, 0, 0, 0)
@@ -11490,7 +10765,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         base_row.addWidget(self.base_res_edit)
         form.addWidget(base_label, 0, 0)
         form.addLayout(base_row, 0, 1)
-
         base_scale_label = QtWidgets.QLabel("기준 앱 배율(%)")
         base_scale_row = QtWidgets.QHBoxLayout()
         base_scale_row.setContentsMargins(0, 0, 0, 0)
@@ -11502,7 +10776,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         base_scale_row.addStretch()
         form.addWidget(base_scale_label, 1, 0)
         form.addLayout(base_scale_row, 1, 1)
-
         current_label = QtWidgets.QLabel("현재 해상도")
         current_row = QtWidgets.QHBoxLayout()
         current_row.setContentsMargins(0, 0, 0, 0)
@@ -11518,7 +10791,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         current_row.addWidget(self.detect_res_btn)
         form.addWidget(current_label, 2, 0)
         form.addLayout(current_row, 2, 1)
-
         current_scale_label = QtWidgets.QLabel("현재 앱 배율(%)")
         current_scale_row = QtWidgets.QHBoxLayout()
         current_scale_row.setContentsMargins(0, 0, 0, 0)
@@ -11534,15 +10806,12 @@ class PresetTransferDialog(QtWidgets.QDialog):
         current_scale_row.addWidget(self.detect_scale_btn)
         form.addWidget(current_scale_label, 3, 0)
         form.addLayout(current_scale_row, 3, 1)
-
         preview_btn_row = QtWidgets.QHBoxLayout()
         preview_btn_row.addStretch()
         self.scale_preview_btn = QtWidgets.QPushButton("변환 미리보기")
         preview_btn_row.addWidget(self.scale_preview_btn)
         form.addLayout(preview_btn_row, 4, 0, 1, 2)
-
         layout.addLayout(form)
-
         preview_layout = QtWidgets.QVBoxLayout()
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_label = QtWidgets.QLabel("변환 전/후 요약")
@@ -11555,11 +10824,9 @@ class PresetTransferDialog(QtWidgets.QDialog):
         preview_layout.addWidget(preview_label)
         preview_layout.addWidget(self.scale_preview)
         layout.addLayout(preview_layout)
-
         self.detect_res_btn.clicked.connect(lambda: self._detect_current_resolution(silent=False))
         self.detect_scale_btn.clicked.connect(lambda: self._detect_current_scale(silent=False))
         self.scale_preview_btn.clicked.connect(self._preview_scale)
-
     def _detect_current_resolution(self, *, silent: bool = False) -> tuple[int, int] | None:
         if not callable(self.detect_resolution_cb):
             if not silent:
@@ -11575,7 +10842,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         if not silent:
             self._log(f"현재 해상도 감지: {text}")
         return res
-
     def _detect_current_scale(self, *, silent: bool = False) -> float | None:
         if not callable(self.detect_scale_cb):
             if not silent:
@@ -11591,15 +10857,12 @@ class PresetTransferDialog(QtWidgets.QDialog):
         if not silent:
             self._log(f"현재 앱 배율 감지: {text}")
         return scale
-
     def _parse_resolution_field(self, edit: QtWidgets.QLineEdit, default: tuple[int, int]) -> tuple[int, int]:
         text = edit.text().strip()
         return _parse_resolution_text(text, allow_empty=False, default=default)
-
     def _parse_scale_field(self, edit: QtWidgets.QLineEdit, default: float) -> float:
         text = edit.text().strip()
         return _parse_scale_text(text, allow_empty=True, default=default)
-
     def _render_scale_preview(
         self,
         changes: list[tuple[str, str, str]],
@@ -11628,7 +10891,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             if len(filtered) > max_lines:
                 lines.append(f"- ...외 {len(filtered) - max_lines}건")
         self.scale_preview.setPlainText("\n".join(lines))
-
     def _run_scale_transform(self) -> tuple | None:
         try:
             profile = self.profile_provider()
@@ -11645,7 +10907,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "입력 오류", f"기준 앱 배율을 확인하세요: {exc}")
             return None
-
         target_text = self.current_res_edit.text().strip()
         if not target_text:
             detected = self._detect_current_resolution(silent=True)
@@ -11657,7 +10918,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "입력 오류", f"현재 해상도를 확인하세요: {exc}")
             return None
-
         target_scale_text = self.current_scale_edit.text().strip()
         if not target_scale_text:
             detected_scale = self._detect_current_scale(silent=True)
@@ -11669,7 +10929,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "입력 오류", f"앱 배율을 확인하세요: {exc}")
             return None
-
         try:
             scaled_profile, changes, scale_x, scale_y = _scale_profile(
                 profile, base_res, target_res, base_scale, target_scale
@@ -11679,7 +10938,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             return None
         self._render_scale_preview(changes, scale_x, scale_y, base_res, target_res, base_scale, target_scale)
         return scaled_profile, changes, scale_x, scale_y, base_res, target_res, base_scale, target_scale
-
     def _preview_scale(self):
         result = self._run_scale_transform()
         if not result:
@@ -11690,7 +10948,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
             "미리보기 완료",
             f"스케일 계수: x={scale_x:.4f}, y={scale_y:.4f}\n변환 요약을 확인하세요.",
         )
-
     def _save_from_scale(self) -> bool:
         result = self._run_scale_transform()
         if not result:
@@ -11714,7 +10971,6 @@ class PresetTransferDialog(QtWidgets.QDialog):
                 f"scale=({scale_x:.4f}, {scale_y:.4f}), 변경 {len(changes)}건"
             )
         return saved
-
     # 공용 ---------------------------------------------------------------
     def _prompt_save_profile(self, profile: MacroProfile, suggested_path: Path) -> bool:
         save_path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -11729,14 +10985,11 @@ class PresetTransferDialog(QtWidgets.QDialog):
             return False
         QtWidgets.QMessageBox.information(self, "저장 완료", f"새 프로필을 저장했습니다.\n{save_path}")
         return True
-
     def _handle_save(self):
         if self.tabs.currentIndex() == 0:
             self._save_from_samples()
         else:
             self._save_from_scale()
-
-
 class InputTimingTestDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, on_apply_keyboard=None, on_apply_mouse=None):
         super().__init__(parent)
@@ -11762,13 +11015,11 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         self._update_stats()
         self._timer.start()
         self._start_listener()
-
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         self.status_label = QtWidgets.QLabel("키보드나 마우스를 연타해보세요. 누름 시간과 입력 사이 지연을 측정합니다.")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
-
         stats = QtWidgets.QGridLayout()
         stats.addWidget(QtWidgets.QLabel("누름 시간"), 0, 0)
         self.press_stat_label = QtWidgets.QLabel("-")
@@ -11777,11 +11028,9 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         self.gap_stat_label = QtWidgets.QLabel("-")
         stats.addWidget(self.gap_stat_label, 1, 1)
         layout.addLayout(stats)
-
         self.last_sample_label = QtWidgets.QLabel("최근: -")
         self.last_sample_label.setStyleSheet("color: gray;")
         layout.addWidget(self.last_sample_label)
-
         ctrl_row = QtWidgets.QHBoxLayout()
         self.toggle_btn = QtWidgets.QPushButton("측정 중지")
         self.reset_btn = QtWidgets.QPushButton("초기화")
@@ -11793,7 +11042,6 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         ctrl_row.addWidget(self.apply_mouse_btn)
         ctrl_row.addStretch()
         layout.addLayout(ctrl_row)
-
         self.table = QtWidgets.QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["시간", "장치", "입력", "누름(ms)", "입력 사이(ms)", "HWID / Friendly"])
         header = self.table.horizontalHeader()
@@ -11808,22 +11056,18 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table)
-
         self.toggle_btn.clicked.connect(self._toggle_listener)
         self.reset_btn.clicked.connect(self._reset)
         self.apply_keyboard_btn.clicked.connect(self._apply_to_keyboard)
         self.apply_mouse_btn.clicked.connect(self._apply_to_mouse)
-
     def set_apply_callbacks(self, *, keyboard=None, mouse=None):
         self._apply_keyboard_cb = keyboard
         self._apply_mouse_cb = mouse
-
     def _toggle_listener(self):
         if self._listener_thread and self._listener_thread.is_alive():
             self._stop_listener()
         else:
             self._start_listener()
-
     def _start_listener(self):
         if self._listener_thread and self._listener_thread.is_alive():
             return
@@ -11834,7 +11078,6 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         self._listener_thread.start()
         self.toggle_btn.setText("측정 중지")
         self.status_label.setText("측정 중: 키보드나 마우스를 연타해보세요.")
-
     def _stop_listener(self, *, message: str | None = None):
         self._stop_event.set()
         t = self._listener_thread
@@ -11846,7 +11089,6 @@ class InputTimingTestDialog(QtWidgets.QDialog):
             self.status_label.setText(message)
         else:
             self.status_label.setText("중지됨: 다시 시작하려면 측정 시작을 누르세요.")
-
     def _listen_loop(self):
         try:
             inter = Interception()
@@ -11878,7 +11120,6 @@ class InputTimingTestDialog(QtWidgets.QDialog):
                 device.send()
             except Exception:
                 pass
-
     def _build_entry(self, device, ctx, now: float) -> dict | None:
         hwid = ""
         try:
@@ -11916,7 +11157,6 @@ class InputTimingTestDialog(QtWidgets.QDialog):
             device_id=device_id,
             now=now,
         )
-
     def _parse_keyboard_stroke(self, stroke) -> dict | None:
         if stroke is None:
             return None
@@ -11933,7 +11173,6 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         else:
             return None
         return {"action": action, "code": getattr(stroke, "code", None), "label": self._describe_key(stroke)}
-
     def _parse_mouse_stroke(self, stroke) -> dict | None:
         ms = MouseState if "MouseState" in globals() else None
         if stroke is None or ms is None:
@@ -11963,7 +11202,6 @@ class InputTimingTestDialog(QtWidgets.QDialog):
             button, label = up_map[state]
             return {"action": "up", "button": button, "label": label}
         return None
-
     def _handle_timing_event(
         self,
         *,
@@ -11999,7 +11237,6 @@ class InputTimingTestDialog(QtWidgets.QDialog):
             "hwid": hwid or pending.get("hwid"),
             "device_id": device_id or pending.get("device_id"),
         }
-
     def _drain_queue(self):
         dirty = False
         while True:
@@ -12033,14 +11270,12 @@ class InputTimingTestDialog(QtWidgets.QDialog):
                 dirty = True
         if dirty:
             self._update_stats()
-
     def _last_sample_label(self, msg: dict):
         label = msg.get("label") or "-"
         hold_ms = float(msg.get("hold_ms") or 0.0)
         gap_ms = msg.get("gap_ms")
         gap_txt = f", 사이 {gap_ms:.1f}ms" if isinstance(gap_ms, (int, float)) else ""
         self.last_sample_label.setText(f"최근: {label} · 누름 {hold_ms:.1f}ms{gap_txt}")
-
     def _add_row(self, msg: dict):
         row = 0
         self.table.insertRow(row)
@@ -12070,12 +11305,10 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         if self.table.rowCount() > self._max_rows:
             self.table.removeRow(self.table.rowCount() - 1)
         self.table.resizeRowsToContents()
-
     def _friendly_from_hwid(self, hwid: str) -> str:
         if not hwid:
             return ""
         return self._friendly_map.get(hwid.lower(), "") or self._friendly_map.get(hwid.upper(), "")
-
     def _describe_key(self, stroke) -> str:
         base = f"SC {getattr(stroke, 'code', '-')}"
         try:
@@ -12087,17 +11320,14 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         except Exception:
             pass
         return base
-
     def _update_stats(self):
         self.press_stat_label.setText(self._format_stat(self._press_samples))
         self.gap_stat_label.setText(self._format_stat(self._gap_samples))
-
     def _format_stat(self, samples: list[float]) -> str:
         if not samples:
             return "- (샘플 0)"
         avg = sum(samples) / len(samples)
         return f"{avg:.1f} ms (샘플 {len(samples)}, 최소 {min(samples):.1f}, 최대 {max(samples):.1f})"
-
     def _reset(self):
         self._press_samples = []
         self._gap_samples = []
@@ -12106,7 +11336,6 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         self.table.setRowCount(0)
         self.last_sample_label.setText("최근: -")
         self._update_stats()
-
     def _apply_to_keyboard(self):
         hold, gap = self._current_ms()
         if not callable(self._apply_keyboard_cb):
@@ -12119,7 +11348,6 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         self.status_label.setText(
             f"키보드 적용 완료: 누름 {hold if hold is not None else '-'} ms, 사이 {gap if gap is not None else '-'} ms"
         )
-
     def _apply_to_mouse(self):
         hold, gap = self._current_ms()
         if not callable(self._apply_mouse_cb):
@@ -12132,22 +11360,17 @@ class InputTimingTestDialog(QtWidgets.QDialog):
         self.status_label.setText(
             f"마우스 적용 완료: 누름 {hold if hold is not None else '-'} ms, 사이 {gap if gap is not None else '-'} ms"
         )
-
     def _current_ms(self) -> tuple[int | None, int | None]:
         hold = round(sum(self._press_samples) / len(self._press_samples)) if self._press_samples else None
         gap = round(sum(self._gap_samples) / len(self._gap_samples)) if self._gap_samples else None
         return hold, gap
-
     def set_friendly_map(self, friendly: dict[str, str] | None):
         self._friendly_map = friendly or {}
-
     def closeEvent(self, event):
         try:
             self._stop_listener()
         finally:
             super().closeEvent(event)
-
-
 class KeyboardSettingsDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -12188,10 +11411,8 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         self._load_from_profile(profile)
         self._refresh_status(True)
         self._start_activity_monitor(silent=True)
-
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
-
         mode_row = QtWidgets.QHBoxLayout()
         self.hardware_radio = QtWidgets.QRadioButton("하드웨어 (Interception)")
         self.software_radio = QtWidgets.QRadioButton("소프트웨어 (SendInput)")
@@ -12205,7 +11426,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         self.mode_status_label = QtWidgets.QLabel("")
         mode_row.addWidget(self.mode_status_label)
         layout.addLayout(mode_row)
-
         self.hardware_panel = QtWidgets.QGroupBox("하드웨어 입력 (Interception)")
         h_layout = QtWidgets.QVBoxLayout(self.hardware_panel)
         status_row = QtWidgets.QHBoxLayout()
@@ -12228,10 +11448,8 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         reboot_hint = QtWidgets.QLabel("설치/업데이트 후 재부팅이 필요할 수 있습니다.")
         reboot_hint.setStyleSheet("color: #a06000;")
         h_layout.addWidget(reboot_hint)
-
         device_row = QtWidgets.QHBoxLayout()
         device_row.setSpacing(12)
-
         kb_col = QtWidgets.QVBoxLayout()
         kb_col.addWidget(QtWidgets.QLabel("키보드 장치"))
         self.keyboard_table = QtWidgets.QTableWidget(0, 5)
@@ -12253,7 +11471,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         )
         kb_col.addWidget(self.keyboard_table)
         device_row.addLayout(kb_col)
-
         mouse_col = QtWidgets.QVBoxLayout()
         mouse_col.addWidget(QtWidgets.QLabel("마우스 장치"))
         self.mouse_table = QtWidgets.QTableWidget(0, 5)
@@ -12275,15 +11492,12 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         )
         mouse_col.addWidget(self.mouse_table)
         device_row.addLayout(mouse_col)
-
         h_layout.addLayout(device_row)
-
         hw_btn_row = QtWidgets.QHBoxLayout()
         self.refresh_btn = QtWidgets.QPushButton("새로고침")
         hw_btn_row.addWidget(self.refresh_btn)
         hw_btn_row.addStretch()
         h_layout.addLayout(hw_btn_row)
-
         self.activity_group = QtWidgets.QGroupBox("실시간 입력 감지 (키/마우스가 어느 장치에서 왔는지)")
         act_layout = QtWidgets.QVBoxLayout(self.activity_group)
         self.activity_hint = QtWidgets.QLabel("키보드/마우스를 눌러보면 장치 ID와 HWID가 아래 로그에 표시됩니다.")
@@ -12311,14 +11525,12 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         act_btn_row.addStretch()
         act_layout.addLayout(act_btn_row)
         h_layout.addWidget(self.activity_group)
-
         self.software_panel = QtWidgets.QGroupBox("소프트웨어 입력 (SendInput)")
         sw_layout = QtWidgets.QVBoxLayout(self.software_panel)
         sw_label = QtWidgets.QLabel("SendInput 기반으로 키를 전송합니다. 장치 선택은 없습니다.")
         sw_label.setWordWrap(True)
         sw_label.setToolTip(self._anti_cheat_tip)
         sw_layout.addWidget(sw_label)
-
         layout.addWidget(self.hardware_panel)
         layout.addWidget(self.software_panel)
         warn_label = QtWidgets.QLabel(self._anti_cheat_tip)
@@ -12328,9 +11540,7 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         reboot_hint.setStyleSheet("color: #a06000;")
         layout.addWidget(warn_label)
         layout.addWidget(reboot_hint)
-
         layout.addWidget(self._build_delay_group())
-
         test_row = QtWidgets.QHBoxLayout()
         test_row.addWidget(QtWidgets.QLabel("테스트 키"))
         self.test_key_combo = QtWidgets.QComboBox()
@@ -12344,7 +11554,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         test_row.addWidget(self.input_rate_btn)
         test_row.addStretch()
         layout.addLayout(test_row)
-
         footer = QtWidgets.QHBoxLayout()
         footer.addStretch()
         self.apply_btn = QtWidgets.QPushButton("설정 적용")
@@ -12352,7 +11561,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         footer.addWidget(self.apply_btn)
         footer.addWidget(self.close_btn)
         layout.addLayout(footer)
-
         self.hardware_radio.toggled.connect(self._set_mode_ui)
         self.software_radio.toggled.connect(self._set_mode_ui)
         self.refresh_btn.clicked.connect(lambda: self._refresh_status(True))
@@ -12363,11 +11571,9 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         self.close_btn.clicked.connect(self.close)
         self.test_btn.clicked.connect(self._test_clicked)
         self.input_rate_btn.clicked.connect(self._open_input_rate_dialog)
-
     def _build_delay_group(self) -> QtWidgets.QGroupBox:
         group = QtWidgets.QGroupBox("딜레이 설정 (글로벌 기본)")
         layout = QtWidgets.QGridLayout(group)
-
         delay_tip = "예: 40(고정) 또는 40-80(랜덤). ms 단위."
         self.press_delay_edit = QtWidgets.QLineEdit("")
         self.press_delay_edit.setPlaceholderText("기본 0ms(즉시) / 40 또는 40-80")
@@ -12387,7 +11593,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         self.mouse_delay_preset_btn = QtWidgets.QPushButton("휴먼 프리셋(마우스)")
         self.mouse_delay_preset_btn.setToolTip("누름 70-120ms, 클릭 사이 80-150ms")
         self.mouse_delay_preset_btn.clicked.connect(self._set_mouse_delay_preset)
-
         layout.addWidget(QtWidgets.QLabel("키 누름→뗌 지연"), 0, 0)
         layout.addWidget(self.press_delay_edit, 0, 1)
         layout.addWidget(QtWidgets.QLabel("키 사이 지연"), 1, 0)
@@ -12401,9 +11606,7 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         hint = QtWidgets.QLabel("입력 값 그대로 적용(추가 지연 아님). 비우면 0ms로 처리됩니다.")
         hint.setStyleSheet("color: gray;")
         layout.addWidget(hint, 4, 0, 1, 3)
-
         return group
-
     def _load_from_profile(self, profile: MacroProfile):
         mode = getattr(profile, "input_mode", "hardware")
         if mode == "hardware":
@@ -12421,7 +11624,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         self.mouse_press_delay_edit.setText("" if mouse_press_txt in ("0", "0-0") else mouse_press_txt)
         self.mouse_gap_delay_edit.setText("" if mouse_gap_txt in ("0", "0-0") else mouse_gap_txt)
         self.test_key_combo.setCurrentIndex(max(0, self.test_key_combo.findData(getattr(profile, "keyboard_test_key", "f24"))))
-
     def _delay_config_from_ui(self) -> tuple[KeyDelayConfig, KeyDelayConfig]:
         press_val, press_rand, press_min, press_max = _parse_delay_text(self.press_delay_edit.text())
         gap_val, gap_rand, gap_min, gap_max = _parse_delay_text(self.gap_delay_edit.text())
@@ -12448,16 +11650,13 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
             gap_delay_max_ms=m_gap_max,
         )
         return key_cfg, mouse_cfg
-
     def _set_human_delay_preset(self):
         self.press_delay_edit.setText("70-120")
         self.gap_delay_edit.setText("80-150")
         self._set_mouse_delay_preset()
-
     def _set_mouse_delay_preset(self):
         self.mouse_press_delay_edit.setText("70-120")
         self.mouse_gap_delay_edit.setText("80-150")
-
     def _refresh_status(self, force: bool = False):
         provider = self._status_provider or (lambda refresh=True: {})
         try:
@@ -12495,7 +11694,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         mouse_target_hwid = (mouse_target.get("hardware_id") or getattr(self.profile, "mouse_hardware_id", "") or "").lower()
         kb_target_row = 0
         mouse_target_row = 0
-
         self.keyboard_table.setRowCount(len(kb_devices))
         for idx, dev in enumerate(kb_devices):
             hwid = dev.get("hardware_id") or ""
@@ -12526,7 +11724,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
                 kb_target_row = idx
         if kb_devices:
             self.keyboard_table.selectRow(kb_target_row)
-
         self.mouse_table.setRowCount(len(mouse_devices))
         for idx, dev in enumerate(mouse_devices):
             hwid = dev.get("hardware_id") or ""
@@ -12557,17 +11754,14 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
                 mouse_target_row = idx
         if mouse_devices:
             self.mouse_table.selectRow(mouse_target_row)
-
         self._update_activity_hint(installed=installed, admin_ok=admin_ok, has_device=bool(kb_devices or mouse_devices))
         if self._input_rate_dialog:
             self._input_rate_dialog.set_friendly_map(self._friendly_map)
         self._set_mode_ui()
-
     def _set_mode_ui(self):
         hw = self.hardware_radio.isChecked()
         self.hardware_panel.setVisible(hw)
         self.software_panel.setVisible(not hw)
-
     def _selected_keyboard(self) -> dict | None:
         row = self.keyboard_table.currentRow()
         if row < 0:
@@ -12583,7 +11777,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         except Exception:
             dev_id = None
         return {"id": dev_id, "hardware_id": hwid, "friendly_name": friendly}
-
     def _selected_mouse(self) -> dict | None:
         row = self.mouse_table.currentRow()
         if row < 0:
@@ -12599,7 +11792,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         except Exception:
             dev_id = None
         return {"id": dev_id, "hardware_id": hwid, "friendly_name": friendly}
-
     def _apply_clicked(self):
         if not callable(self._apply_callback):
             return
@@ -12628,16 +11820,13 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "설정 적용 실패", str(exc))
         self._refresh_status(False)
-
     def _run_install(self):
         if callable(self._install_callback):
             self._install_callback()
-
     def _test_clicked(self):
         key = self.test_key_combo.currentData() or "f24"
         ok, msg = self.engine.test_keyboard(key)
         QtWidgets.QMessageBox.information(self, "테스트", msg if ok else f"실패: {msg}")
-
     def _open_input_rate_dialog(self):
         if self._input_rate_dialog is None:
             self._input_rate_dialog = InputTimingTestDialog(
@@ -12658,7 +11847,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         self._input_rate_dialog.show()
         self._input_rate_dialog.raise_()
         self._input_rate_dialog.activateWindow()
-
     def _apply_input_timing_to_keyboard(self, hold_ms: int | None, gap_ms: int | None):
         derived_gap = None
         if hold_ms is not None and gap_ms is not None:
@@ -12667,7 +11855,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
             self.press_delay_edit.setText(str(int(hold_ms)))
         if gap_ms is not None:
             self.gap_delay_edit.setText(str(int(derived_gap if derived_gap is not None else gap_ms)))
-
     def _apply_input_timing_to_mouse(self, hold_ms: int | None, gap_ms: int | None):
         derived_gap = None
         if hold_ms is not None and gap_ms is not None:
@@ -12676,7 +11863,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
             self.mouse_press_delay_edit.setText(str(int(hold_ms)))
         if gap_ms is not None:
             self.mouse_gap_delay_edit.setText(str(int(derived_gap if derived_gap is not None else gap_ms)))
-
     # 실시간 입력 감지 ---------------------------------------------------------
     def _update_activity_hint(self, *, installed: bool, admin_ok: bool, has_device: bool):
         if not hasattr(self, "activity_hint"):
@@ -12695,13 +11881,11 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
             return
         self.activity_hint.setText("키보드/마우스를 눌러보면 장치 ID와 HWID가 아래 로그에 표시됩니다.")
         self.activity_toggle_btn.setEnabled(True)
-
     def _toggle_activity_monitor(self):
         if self._activity_running:
             self._stop_activity_monitor()
         else:
             self._start_activity_monitor()
-
     def _start_activity_monitor(self, *, silent: bool = False):
         if self._activity_running:
             return
@@ -12730,7 +11914,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
             self.activity_toggle_btn.setText("실시간 감지 끄기")
         if hasattr(self, "activity_hint"):
             self.activity_hint.setText("감지 중: 키/마우스를 눌러 장치를 확인하세요.")
-
     def _stop_activity_monitor(self):
         self._activity_stop.set()
         t = self._activity_thread
@@ -12740,11 +11923,9 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         self._activity_running = False
         if hasattr(self, "activity_toggle_btn"):
             self.activity_toggle_btn.setText("실시간 감지 켜기")
-
     def _clear_activity_log(self):
         if hasattr(self, "activity_table"):
             self.activity_table.setRowCount(0)
-
     def _activity_loop(self):
         try:
             inter = Interception()
@@ -12773,7 +11954,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
                 device.send()
             except Exception:
                 pass
-
     def _is_mouse_move(self, stroke) -> bool:
         ms = MouseState if "MouseState" in globals() else None
         if not ms:
@@ -12782,7 +11962,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
             return ms(stroke.state) == getattr(ms, "Move", None)
         except Exception:
             return False
-
     def _build_activity_entry(self, device, ctx) -> dict | None:
         hwid = ""
         try:
@@ -12812,12 +11991,10 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         else:
             entry["detail"] = "입력"
         return entry
-
     def _friendly_from_hwid(self, hwid: str) -> str:
         if not hwid:
             return ""
         return self._friendly_map.get(hwid.lower()) or self._friendly_map.get(hwid.upper(), "")
-
     def _format_key_detail(self, stroke) -> str:
         try:
             state = KeyState(stroke.state)
@@ -12843,7 +12020,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         if vk_txt:
             base = f"{vk_txt} / {base}"
         return f"{base} [{state_txt}]"
-
     def _format_mouse_detail(self, stroke) -> str:
         ms = MouseState if "MouseState" in globals() else None
         try:
@@ -12874,7 +12050,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         if x or y:
             label += f" x={x} y={y}"
         return label
-
     def _drain_activity_queue(self):
         if not hasattr(self, "activity_table"):
             return
@@ -12893,7 +12068,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
             self._add_activity_entry(entry)
         if changed and getattr(self, "activity_table", None):
             self.activity_table.resizeRowsToContents()
-
     def _add_activity_entry(self, entry: dict):
         if not hasattr(self, "activity_table"):
             return
@@ -12925,7 +12099,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
         if self.activity_table.rowCount() > self._max_activity_rows:
             self.activity_table.removeRow(self.activity_table.rowCount() - 1)
         self._highlight_device_row(dev_id, hwid, entry.get("type"))
-
     def _highlight_device_row(self, dev_id=None, hwid: str | None = None, kind: str | None = None):
         table = None
         rows = {}
@@ -12955,7 +12128,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
             self._flash_device_row(table, row)
         except Exception:
             pass
-
     def _flash_device_row(self, table, row: int, *, duration_ms: int = 600):
         if table is None or row < 0:
             return
@@ -12967,7 +12139,6 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
                 table.setItem(row, c, item)
             item.setBackground(QtGui.QBrush(QtGui.QColor("#c7f7c4")))
         QtCore.QTimer.singleShot(duration_ms, lambda r=row, t=table: self._reset_device_row_color(t, r))
-
     def _reset_device_row_color(self, table, row: int):
         if table is None or row < 0 or row >= table.rowCount():
             return
@@ -12976,11 +12147,9 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
             item = table.item(row, c)
             if item:
                 item.setBackground(QtGui.QBrush())
-
     def closeEvent(self, event: QtGui.QCloseEvent):
         self._stop_activity_monitor()
         return super().closeEvent(event)
-
 class MacroWindow(QtWidgets.QMainWindow):
     def __init__(self, engine: MacroEngine, profile: MacroProfile | None = None):
         super().__init__()
@@ -13062,7 +12231,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.setWindowTitle(self.base_title)
         self.resize(1100, 820)
         self.setMinimumWidth(780)
-
         self._build_ui()
         self._build_menu()
         self._refresh_profile_header()
@@ -13076,7 +12244,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._mark_dirty(False)
         self._connect_signals()
         self._log_admin_status()
-
         self.engine.update_profile(self.profile)
         self._refresh_pixel_defaults(self.profile)
         try:
@@ -13087,16 +12254,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._last_backend_state = backend_state
         self.profile.input_mode = backend_state.get("requested_mode", self.profile.input_mode)
         self.engine.start()
-
         self.poll_timer = QtCore.QTimer(self)
         self.poll_timer.setInterval(100)
         self.poll_timer.timeout.connect(self._poll_engine)
         self.poll_timer.start()
-
         self._status_hint = "Home=활성, Insert=일시정지, End=종료, 기능 메뉴=디버거/픽셀 테스트"
         self.statusBar().showMessage(self._status_hint)
         self._set_capture_status(self.screenshot_manager.is_running)
-
     def _show_apply_feedback(self, ok: bool):
         """적용 버튼에 짧은 색상 피드백 표시."""
         if not getattr(self, "_apply_flash_timer", None):
@@ -13115,7 +12279,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             )
         self.apply_btn.setStyleSheet(style)
         self._apply_flash_timer.start(700)
-
     def _handle_apply_click(self):
         if getattr(self, "_apply_btn_working_style", None):
             self.apply_btn.setStyleSheet(self._apply_btn_working_style)
@@ -13125,22 +12288,18 @@ class MacroWindow(QtWidgets.QMainWindow):
                 pass
         ok = bool(self._apply_profile())
         self._show_apply_feedback(ok)
-
     def _install_shortcuts(self):
         """설정 적용 단축키 등 공용 단축키 등록."""
         self.apply_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+P"), self)
         self.apply_shortcut.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
         self.apply_shortcut.activated.connect(self._handle_apply_click)
-
     # UI ------------------------------------------------------------------
     def _build_ui(self):
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-
         layout = QtWidgets.QVBoxLayout(central)
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(6)
-
         header = QtWidgets.QWidget()
         header_layout = QtWidgets.QVBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -13148,45 +12307,35 @@ class MacroWindow(QtWidgets.QMainWindow):
         header_layout.addWidget(self._build_status_row())
         header_layout.addWidget(self._build_profile_strip())
         layout.addWidget(header)
-
         macro_group = self._build_macro_group()
         variable_group = self._build_variable_group()
         log_group = self._build_log_group()
-
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         splitter.addWidget(macro_group)
         splitter.addWidget(variable_group)
         splitter.addWidget(log_group)
         splitter.setSizes([400, 260, 200])
         self.main_splitter = splitter
-
         layout.addWidget(splitter, stretch=1)
         layout.setStretch(0, 0)  # header
         layout.setStretch(1, 1)  # splitter with macro/variable/log
-
     def _build_menu(self):
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("파일(&F)")
-
         new_action = QtGui.QAction("새로 만들기", self)
         new_action.setShortcut("Ctrl+N")
         new_action.triggered.connect(self._new_profile)
-
         load_action = QtGui.QAction("불러오기", self)
         load_action.setShortcut("Ctrl+O")
         load_action.triggered.connect(self._load_profile)
-
         save_action = QtGui.QAction("저장", self)
         save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(self._save_profile)
-
         save_as_action = QtGui.QAction("다른 이름으로 저장", self)
         save_as_action.setShortcut("Ctrl+Shift+S")
         save_as_action.triggered.connect(self._save_profile_as)
-
         for act in (new_action, load_action, save_action, save_as_action):
             file_menu.addAction(act)
-
         feature_menu = menu_bar.addMenu("기능(&G)")
         screenshot_action = QtGui.QAction("스크린샷", self)
         screenshot_action.triggered.connect(self._open_screenshot_dialog)
@@ -13209,12 +12358,10 @@ class MacroWindow(QtWidgets.QMainWindow):
         image_viewer_action = QtGui.QAction("이미지 뷰어/피커", self)
         image_viewer_action.triggered.connect(self._open_image_viewer_dialog)
         feature_menu.addAction(image_viewer_action)
-
         settings_menu = menu_bar.addMenu("설정(&S)")
         keyboard_settings_action = QtGui.QAction("키보드 설정", self)
         keyboard_settings_action.triggered.connect(self._open_keyboard_settings)
         settings_menu.addAction(keyboard_settings_action)
-
     def _open_screenshot_dialog(self):
         if self._screenshot_dialog is None:
             self._screenshot_dialog = ScreenshotDialog(
@@ -13226,7 +12373,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._screenshot_dialog.show()
         self._screenshot_dialog.raise_()
         self._screenshot_dialog.activateWindow()
-
     def _open_keyboard_settings(self):
         if self._keyboard_settings_dialog is None:
             self._keyboard_settings_dialog = KeyboardSettingsDialog(
@@ -13249,7 +12395,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._keyboard_settings_dialog.show()
         self._keyboard_settings_dialog.raise_()
         self._keyboard_settings_dialog.activateWindow()
-
     def _apply_keyboard_settings(
         self,
         *,
@@ -13288,7 +12433,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         if not self._loading_profile:
             self._mark_dirty()
         return status
-
     def _run_keyboard_test_main(self):
         key = getattr(self.profile, "keyboard_test_key", "f24") or "f24"
         ok_key, msg_key = self.engine.test_keyboard(key)
@@ -13305,7 +12449,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._update_keyboard_summary(self.engine.keyboard_status(refresh=False))
         except Exception:
             pass
-
     def _run_interception_installer(self):
         installer = Path(__file__).resolve().parent / "interception" / "install-interception.exe"
         if not installer.exists():
@@ -13316,7 +12459,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._append_log("Interception 설치 프로그램을 실행했습니다. 설치 후 재부팅이 필요합니다.")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "설치 실행 실패", str(exc))
-
     def _ensure_debugger(self) -> DebuggerDialog:
         if self.debugger is None:
             self.debugger = DebuggerDialog(
@@ -13341,11 +12483,9 @@ class MacroWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         return self.debugger
-
     def _open_debugger(self):
         dbg = self._ensure_debugger()
         dbg.show_and_raise()
-
     def _open_debugger_with_config(self, config: dict):
         dbg = self._ensure_debugger()
         dbg._set_test_inputs(config or {})
@@ -13364,7 +12504,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
         dbg.show_and_raise()
-
     def _open_color_calc_dialog(self):
         state = self._color_calc_state if isinstance(self._color_calc_state, dict) else {}
         if self._color_calc_dialog is None:
@@ -13374,7 +12513,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._color_calc_dialog.show()
         self._color_calc_dialog.raise_()
         self._color_calc_dialog.activateWindow()
-
     def _open_pixel_test_dialog(self):
         defaults = self._current_pixel_defaults()
         state = self._state.get("pixel_test", {}) if isinstance(self._state, dict) else {}
@@ -13402,7 +12540,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._pixel_test_dialog.show()
         self._pixel_test_dialog.raise_()
         self._pixel_test_dialog.activateWindow()
-
     def _open_preset_transfer_dialog(self):
         try:
             base_res = self._current_base_resolution()
@@ -13412,7 +12549,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             base_scale = self._current_base_scale()
         except Exception:
             base_scale = float(getattr(self.profile, "base_scale_percent", DEFAULT_BASE_SCALE) or DEFAULT_BASE_SCALE)
-
         current_res = None
         try:
             if isinstance(getattr(self, "current_res_edit", None), QtWidgets.QLineEdit):
@@ -13421,7 +12557,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                     current_res = _parse_resolution_text(text, allow_empty=False, default=None)
         except Exception:
             current_res = None
-
         current_scale = None
         try:
             if isinstance(getattr(self, "current_scale_edit", None), QtWidgets.QLineEdit):
@@ -13430,7 +12565,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                     current_scale = _parse_scale_text(scale_text, allow_empty=True, default=None)
         except Exception:
             current_scale = None
-
         dlg = PresetTransferDialog(
             self,
             profile_provider=self._build_profile_from_inputs,
@@ -13452,7 +12586,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
         self._preset_transfer_dialog = dlg
-
     def _open_image_viewer_dialog(self):
         try:
             start_dir = Path(self._image_viewer_state.get("last_dir", SCREENSHOT_DIR))
@@ -13477,10 +12610,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._image_viewer_dialog.show()
         self._image_viewer_dialog.raise_()
         self._image_viewer_dialog.activateWindow()
-
     def set_viewer_debug_source(self, *, enabled: bool, provider=None):
         self._viewer_image_provider = provider if callable(provider) else None
-
     def _focus_image_viewer(self, path: Path | None = None):
         self._open_image_viewer_dialog()
         if self._image_viewer_dialog:
@@ -13497,34 +12628,28 @@ class MacroWindow(QtWidgets.QMainWindow):
                             break
                 except Exception:
                     pass
-
     def _build_profile_strip(self):
         group = QtWidgets.QFrame()
         group.setObjectName("profileStrip")
         group.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         group.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
         group.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
-
         layout = QtWidgets.QVBoxLayout(group)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(6)
-
         theme = self._theme
         btn_style = (
             f"padding: 4px 10px; border: 1px solid {theme['button_border']}; "
             f"border-radius: 6px; background: {theme['button_bg']}; color: {theme['button_text']};"
         )
-
         def _btn(text: str):
             b = QtWidgets.QPushButton(text)
             b.setMinimumHeight(26)
             b.setStyleSheet(btn_style)
             return b
-
         lists_row = QtWidgets.QHBoxLayout()
         lists_row.setContentsMargins(0, 0, 0, 0)
         lists_row.setSpacing(10)
-
         fav_col = QtWidgets.QVBoxLayout()
         fav_col.setContentsMargins(0, 0, 0, 0)
         fav_col.setSpacing(4)
@@ -13549,7 +12674,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.favorite_list.setMaximumHeight(120)
         self.favorite_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         fav_col.addWidget(self.favorite_list)
-
         rec_col = QtWidgets.QVBoxLayout()
         rec_col.setContentsMargins(0, 0, 0, 0)
         rec_col.setSpacing(4)
@@ -13577,16 +12701,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.recent_list.setMaximumHeight(120)
         self.recent_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         rec_col.addWidget(self.recent_list)
-
         self._fav_list_delegate = _ProfileListDelegate(self.favorite_list)
         self.favorite_list.setItemDelegate(self._fav_list_delegate)
         self._recent_list_delegate = _ProfileListDelegate(self.recent_list)
         self.recent_list.setItemDelegate(self._recent_list_delegate)
-
         lists_row.addLayout(fav_col, 1)
         lists_row.addLayout(rec_col, 1)
         layout.addLayout(lists_row)
-
         sel_bg = "#2c4a7a" if theme["is_dark"] else "#dce7ff"
         sel_fg = "#ffffff" if theme["is_dark"] else "#1f3f73"
         hover_bg = theme["panel_alt_bg"]
@@ -13604,24 +12725,20 @@ class MacroWindow(QtWidgets.QMainWindow):
         )
         self.favorite_list.setStyleSheet(list_style)
         self.recent_list.setStyleSheet(list_style)
-
         group.setStyleSheet(
             f"#profileStrip {{ border: 1px solid {theme['panel_border']}; border-radius: 8px; "
             f"background: {theme['panel_bg']}; color: {theme['text']}; }}"
         )
         return group
-
     def _build_status_row(self):
         container = QtWidgets.QFrame()
         container.setObjectName("statusStrip")
         container.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         container.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
         container.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
-
         row = QtWidgets.QHBoxLayout(container)
         row.setContentsMargins(10, 6, 10, 6)
         row.setSpacing(8)
-
         self.running_label = QtWidgets.QLabel("정지")
         self.active_label = QtWidgets.QLabel("비활성")
         self.paused_label = QtWidgets.QLabel("정상")
@@ -13635,7 +12752,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.log_toggle_btn.setAutoRaise(True)
         self.log_toggle_btn.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.log_toggle_btn.toggled.connect(self._toggle_log_enabled)
-
         badge_style = "padding: 3px 6px; border: 1px solid #e3e8f0; border-radius: 6px; background: #f5f7fb;"
         theme = self._theme
         badge_style = (
@@ -13648,7 +12764,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet(badge_style)
         self.capture_label.setVisible(False)
-
         status_label = QtWidgets.QLabel("상태")
         status_label.setStyleSheet("font-weight: 600;")
         badge_grid = QtWidgets.QGridLayout()
@@ -13662,16 +12777,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         badge_grid.addWidget(self.hardware_label, 1, 1)
         badge_grid.addWidget(self.capture_label, 1, 2)
         badge_grid.addWidget(self.log_toggle_btn, 1, 3)
-
         badge_block = QtWidgets.QVBoxLayout()
         badge_block.setContentsMargins(0, 0, 0, 0)
         badge_block.setSpacing(2)
         badge_block.addWidget(status_label)
         badge_block.addLayout(badge_grid)
-
         row.addLayout(badge_block, stretch=2)
         row.addStretch(1)
-
         def _flat_btn(text: str, tooltip: str | None = None):
             btn = QtWidgets.QPushButton(text)
             btn.setMinimumSize(68, 26)
@@ -13682,7 +12794,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             if tooltip:
                 btn.setToolTip(tooltip)
             return btn
-
         self.start_btn = _flat_btn("시작", "엔진 시작")
         self.stop_btn = _flat_btn("정지", "엔진 정지")
         self.pause_btn = _flat_btn("일시정지", "일시정지/재개")
@@ -13697,7 +12808,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._apply_flash_timer = QtCore.QTimer(self)
         self._apply_flash_timer.setSingleShot(True)
         self._apply_flash_timer.timeout.connect(lambda: self.apply_btn.setStyleSheet(self._apply_btn_default_style))
-
         control_grid = QtWidgets.QGridLayout()
         control_grid.setContentsMargins(0, 0, 0, 0)
         control_grid.setHorizontalSpacing(4)
@@ -13709,30 +12819,25 @@ class MacroWindow(QtWidgets.QMainWindow):
         control_grid.addWidget(self.deactivate_btn, 1, 1)
         control_grid.addWidget(self.apply_btn, 1, 2)
         row.addLayout(control_grid, stretch=3)
-
         container.setStyleSheet(
             f"#statusStrip {{ border: 1px solid {theme['panel_border']}; border-radius: 8px; background: {theme['panel_bg']}; color: {theme['text']}; }}"
         )
         return container
-
     def _build_device_group(self):
         group = QtWidgets.QFrame()
         group.setObjectName("inputStrip")
         group.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         group.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
         group.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
-
         layout = QtWidgets.QHBoxLayout(group)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(6)
-
         self.keyboard_mode_label = QtWidgets.QLabel("-")
         self.keyboard_device_label = QtWidgets.QLabel("-")
         self.mouse_device_label = QtWidgets.QLabel("-")
         for lbl in (self.keyboard_mode_label, self.keyboard_device_label, self.mouse_device_label):
             lbl.setStyleSheet("font-weight: 600;")
             lbl.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum)
-
         info_grid = QtWidgets.QGridLayout()
         info_grid.setContentsMargins(0, 0, 0, 0)
         info_grid.setHorizontalSpacing(6)
@@ -13743,10 +12848,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         info_grid.addWidget(self.keyboard_device_label, 1, 1)
         info_grid.addWidget(QtWidgets.QLabel("마우스"), 2, 0)
         info_grid.addWidget(self.mouse_device_label, 2, 1)
-
         layout.addLayout(info_grid, stretch=2)
         layout.addStretch(1)
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.setSpacing(4)
@@ -13763,28 +12866,23 @@ class MacroWindow(QtWidgets.QMainWindow):
             btn_row.addWidget(btn)
         btn_row.addStretch()
         layout.addLayout(btn_row, stretch=3)
-
         group.setStyleSheet(
             f"#inputStrip {{ border: 1px solid {self._theme['panel_border']}; border-radius: 8px; background: {self._theme['panel_alt_bg']}; color: {self._theme['text']}; }}"
         )
         return group
-
     def _build_resolution_group(self):
         group = QtWidgets.QFrame()
         group.setObjectName("resolutionStrip")
         group.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         group.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
         group.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
-
         layout = QtWidgets.QHBoxLayout(group)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
-
         form = QtWidgets.QGridLayout()
         form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(8)
         form.setVerticalSpacing(4)
-
         base_label = QtWidgets.QLabel("기준 해상도")
         base_row = QtWidgets.QHBoxLayout()
         base_row.setContentsMargins(0, 0, 0, 0)
@@ -13799,7 +12897,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         base_row.addWidget(self.set_base_btn)
         form.addWidget(base_label, 0, 0)
         form.addLayout(base_row, 0, 1)
-
         base_scale_label = QtWidgets.QLabel("기준 앱 배율(%)")
         base_scale_row = QtWidgets.QHBoxLayout()
         base_scale_row.setContentsMargins(0, 0, 0, 0)
@@ -13812,7 +12909,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         base_scale_row.addStretch()
         form.addWidget(base_scale_label, 1, 0)
         form.addLayout(base_scale_row, 1, 1)
-
         current_label = QtWidgets.QLabel("현재 해상도")
         current_row = QtWidgets.QHBoxLayout()
         current_row.setContentsMargins(0, 0, 0, 0)
@@ -13827,7 +12923,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         current_row.addWidget(self.detect_res_btn)
         form.addWidget(current_label, 2, 0)
         form.addLayout(current_row, 2, 1)
-
         current_scale_label = QtWidgets.QLabel("현재 앱 배율(%)")
         current_scale_row = QtWidgets.QHBoxLayout()
         current_scale_row.setContentsMargins(0, 0, 0, 0)
@@ -13842,7 +12937,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         current_scale_row.addWidget(self.detect_scale_btn)
         form.addWidget(current_scale_label, 3, 0)
         form.addLayout(current_scale_row, 3, 1)
-
         self.preset_transfer_btn = QtWidgets.QPushButton("프리셋 옮기기...")
         self.preset_transfer_btn.setMinimumHeight(30)
         self.preset_transfer_btn.setStyleSheet(
@@ -13850,18 +12944,14 @@ class MacroWindow(QtWidgets.QMainWindow):
             f"border-radius: 6px; background: {self._theme['button_bg']}; color: {self._theme['button_text']}; padding: 4px 10px;"
         )
         form.addWidget(self.preset_transfer_btn, 4, 0, 1, 2)
-
         layout.addLayout(form)
-
         group.setStyleSheet(
             f"#resolutionStrip {{ border: 1px solid {self._theme['panel_border']}; border-radius: 8px; background: {self._theme['panel_bg']}; color: {self._theme['text']}; }}"
         )
         return group
-
     def _build_macro_group(self):
         group = QtWidgets.QGroupBox("매크로 목록 (기본 액션 + 조건)")
         layout = QtWidgets.QVBoxLayout(group)
-
         self.macro_table = QtWidgets.QTableWidget(0, 8)
         self.macro_table.setHorizontalHeaderLabels(["순번", "이름", "트리거", "모드", "활성", "차단", "범위", "설명"])
         header = self.macro_table.horizontalHeader()
@@ -13873,7 +12963,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.macro_table.verticalHeader().setVisible(False)
         self.macro_table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         layout.addWidget(self.macro_table)
-
         btn_row = QtWidgets.QHBoxLayout()
         self.add_macro_btn = QtWidgets.QPushButton("매크로 추가")
         self.edit_macro_btn = QtWidgets.QPushButton("편집")
@@ -13885,17 +12974,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         btn_row.addWidget(self.del_macro_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
-
         return group
-
     def _build_variable_group(self):
         group = QtWidgets.QGroupBox("전역 변수/프리셋 (모든 매크로에서 사용)")
         layout = QtWidgets.QVBoxLayout(group)
-
         self.variable_tabs = QtWidgets.QTabWidget()
         self.variable_tables: dict[str, QtWidgets.QTableWidget] = {}
         self._updating_variables = False
-
         def make_tab(label: str, key: str) -> QtWidgets.QWidget:
             tab = QtWidgets.QWidget()
             tab_layout = QtWidgets.QVBoxLayout(tab)
@@ -13903,37 +12988,30 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._configure_variable_table(table)
             table.itemChanged.connect(self._on_variable_item_changed)
             self.variable_tables[key] = table
-
             btn_row = QtWidgets.QHBoxLayout()
             del_btn = QtWidgets.QPushButton("삭제")
             sort_btn = QtWidgets.QPushButton("정렬")
             btn_row.addWidget(del_btn)
             btn_row.addWidget(sort_btn)
             btn_row.addStretch()
-
             def del_rows():
                 if table.selectionModel().selectedIndexes():
                     self._delete_selected_variable_pairs(table, key)
                 else:
                     self._pop_last_variable_pair(table)
-
             def sort_rows():
                 pairs = self._sort_pairs_by_name(self._variable_pairs_from_table(table))
                 self._set_variable_pairs(table, pairs)
-
             del_btn.clicked.connect(del_rows)
             sort_btn.clicked.connect(sort_rows)
-
             tab_layout.addWidget(table)
             tab_layout.addLayout(btn_row)
             return tab
-
         self.variable_tabs.addTab(make_tab("Sleep", "sleep"), "Sleep")
         self.variable_tabs.addTab(make_tab("Region", "region"), "Region")
         self.variable_tabs.addTab(make_tab("Color", "color"), "Color")
         self.variable_tabs.addTab(make_tab("Key", "key"), "Key")
         self.variable_tabs.addTab(make_tab("Value", "var"), "Value")
-
         layout.addWidget(
             QtWidgets.QLabel(
                 "이름에 영문/숫자/_ 사용, 값은 해당 타입 포맷 (예: sleep은 100~200, region은 x,y,w,h, color는 RRGGBB, key는 키 이름 또는 스캔코드, value는 자유 문자열)."
@@ -13941,7 +13019,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         )
         layout.addWidget(self.variable_tabs)
         return group
-
     def _build_log_group(self):
         group = QtWidgets.QGroupBox("로그")
         self.log_group = group
@@ -13966,7 +13043,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.log_view.setVisible(self._log_enabled)
         group.setVisible(self._log_enabled)
         return group
-
     def _connect_signals(self):
         self.start_btn.clicked.connect(self.engine.start)
         self.stop_btn.clicked.connect(self.engine.stop)
@@ -14001,21 +13077,18 @@ class MacroWindow(QtWidgets.QMainWindow):
             self.keyboard_test_btn.clicked.connect(self._run_keyboard_test_main)
         if hasattr(self, "keyboard_install_btn"):
             self.keyboard_install_btn.clicked.connect(self._run_interception_installer)
-
         self.add_macro_btn.clicked.connect(self._add_macro)
         self.edit_macro_btn.clicked.connect(self._edit_macro)
         self.clone_macro_btn.clicked.connect(self._clone_macro)
         self.del_macro_btn.clicked.connect(self._delete_macro)
         self.macro_table.doubleClicked.connect(lambda _: self._edit_macro())
         self.macro_table.customContextMenuRequested.connect(self._macro_context_menu)
-
     # 정렬/키 헬퍼 ---------------------------------------------------------
     def _name_sort_key(self, name: str):
         """
         이름을 글자 단위로 정렬 키로 변환한다.
         우선순위: 한글(0) > 영문(1) > 숫자(2) > 기타(3), 이후 동일 순서로 다음 글자를 비교한다.
         """
-
         def _bucket(ch: str) -> int:
             if ch.isascii() and ch.isalpha():
                 return 0  # 영문 우선
@@ -14024,25 +13097,20 @@ class MacroWindow(QtWidgets.QMainWindow):
             if ch.isdigit():
                 return 2  # 숫자
             return 3      # 기타 기호
-
         if not name:
             return ((3, ""),)
-
         key_parts = [(_bucket(ch), ch.casefold()) for ch in name]
         # 길이 차이로 끝까지 동일한 경우를 안정적으로 구분
         key_parts.append((4, len(name)))
         return tuple(key_parts)
-
     def _sorted_preset_names(self) -> list[str]:
         names = list(self._presets.keys())
         return sorted(
             names,
             key=lambda n: (-1, "") if n == "사용자 설정" else self._name_sort_key(n),
         )
-
     def _sort_pairs_by_name(self, pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
         return sorted(pairs, key=lambda pair: self._name_sort_key(pair[0]))
-
     # Variable helpers ---------------------------------------------------
     def _on_variable_item_changed(self, _item):
         if getattr(self, "_updating_variables", False):
@@ -14050,7 +13118,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._mark_dirty()
         self._refresh_variable_completers()
         self._ensure_trailing_blank(_item.tableWidget() if hasattr(_item, "tableWidget") else None)
-
     def _configure_variable_table(self, table: QtWidgets.QTableWidget, *, rows_per_column: int = 12):
         table.setProperty("rows_per_column", max(1, rows_per_column))
         table.setColumnCount(2)
@@ -14075,7 +13142,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             "QTableWidget#variableTable::item:focus { background: #ffe9b3; color: #000000; }"
         )
         table.setItemDelegate(_VariableSeparatorDelegate(table))
-
     def _rows_per_column(self, table: QtWidgets.QTableWidget) -> int:
         base = int(table.property("rows_per_column") or 12)
         vh = table.verticalHeader() if hasattr(table, "verticalHeader") else None
@@ -14083,7 +13149,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         view_h = table.viewport().height() if hasattr(table, "viewport") else 0
         auto = int(view_h / row_h) if view_h and row_h else base
         return max(1, auto or base or 12)
-
     def _ensure_trailing_blank(self, table: QtWidgets.QTableWidget | None):
         if table is None:
             return
@@ -14092,7 +13157,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         capacity = (table.columnCount() // 2) * rows_per_col
         if len(pairs) >= capacity:
             self._set_variable_pairs(table, pairs)
-
     def _variable_pairs_from_table(self, table: QtWidgets.QTableWidget) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
         rows = table.rowCount()
@@ -14107,7 +13171,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                     continue
                 pairs.append((name, val))
         return pairs
-
     def _set_variable_pairs(self, table: QtWidgets.QTableWidget, pairs: list[tuple[str, str]]):
         rows_per_col = self._rows_per_column(table)
         slots_needed = len(pairs) + 1  # 항상 한 칸 여유를 둔다.
@@ -14134,12 +13197,10 @@ class MacroWindow(QtWidgets.QMainWindow):
         if not prev_updating:
             self._mark_dirty()
             self._refresh_variable_completers()
-
     def _append_variable_pair(self, table: QtWidgets.QTableWidget, name: str, value: str):
         pairs = self._variable_pairs_from_table(table)
         pairs.append((name, value))
         self._set_variable_pairs(table, pairs)
-
     def _extract_variable_refs(self, obj: object) -> set[str]:
         names: set[str] = set()
         if isinstance(obj, str):
@@ -14154,7 +13215,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             for item in obj:
                 names.update(self._extract_variable_refs(item))
         return names
-
     def _find_variable_usages(self, targets: list[tuple[str, str]]) -> dict[tuple[str, str], list[str]]:
         target_set = {(cat, name.strip()) for cat, name in targets if name and str(name).strip()}
         if not target_set:
@@ -14177,7 +13237,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 if name in used_names:
                     usages[(cat, name)].append(label)
         return {k: v for k, v in usages.items() if v}
-
     def _delete_selected_variable_pairs(self, table: QtWidgets.QTableWidget, category: str | None = None) -> bool:
         indexes = table.selectionModel().selectedIndexes()
         if not indexes:
@@ -14212,14 +13271,12 @@ class MacroWindow(QtWidgets.QMainWindow):
                 pairs.pop(pidx)
         self._set_variable_pairs(table, pairs)
         return True
-
     def _pop_last_variable_pair(self, table: QtWidgets.QTableWidget):
         pairs = self._variable_pairs_from_table(table)
         if not pairs:
             return
         pairs.pop()
         self._set_variable_pairs(table, pairs)
-
     def _variable_names(self, category: str) -> List[str]:
         table = self.variable_tables.get(category)
         if not table:
@@ -14229,7 +13286,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             if name:
                 names.append(name)
         return names
-
     def _ensure_variable(self, category: str, name: str, default_value: str = "") -> bool:
         table = self.variable_tables.get(category)
         name = (name or "").strip()
@@ -14242,7 +13298,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             return True
         self._append_variable_pair(table, name, default_value)
         return True
-
     def _collect_variables(self) -> MacroVariables:
         buckets = {cat: {} for cat in ("sleep", "region", "color", "key", "var")}
         for cat, table in self.variable_tables.items():
@@ -14256,7 +13311,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                     raise ValueError(f"{cat} 변수 '{name}'가 중복되었습니다.")
                 bucket[name] = val
         return MacroVariables(**buckets)
-
     def _set_variable_fields(self, variables: MacroVariables):
         self._updating_variables = True
         try:
@@ -14269,7 +13323,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         finally:
             self._updating_variables = False
             self._refresh_variable_completers()
-
     def _refresh_variable_completers(self):
         names = {cat: self._variable_names(cat) for cat in ("region", "color", "key", "var")}
         dlg = self._pixel_test_dialog
@@ -14278,11 +13331,9 @@ class MacroWindow(QtWidgets.QMainWindow):
             _attach_variable_completer(dlg.color_edit, names.get("color", []))
         # 액션/조건 편집기에서 사용할 수 있도록 기본 변수 목록을 업데이트
         self._variable_provider = lambda category: names.get(category, [])
-
     def _build_variable_resolver(self) -> VariableResolver:
         vars = self._collect_variables()
         return VariableResolver(vars)
-
     def _compute_theme_colors(self) -> dict:
         pal = QtWidgets.QApplication.palette()
         win = pal.color(QtGui.QPalette.ColorRole.Window)
@@ -14299,7 +13350,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             "button_text": text.name(),
             "text": text.name(),
         }
-
     def _current_base_resolution(self) -> tuple[int, int]:
         default = getattr(self.profile, "base_resolution", DEFAULT_BASE_RESOLUTION) or DEFAULT_BASE_RESOLUTION
         text = ""
@@ -14311,7 +13361,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         if text.strip():
             return _parse_resolution_text(text, allow_empty=False, default=None)
         return tuple(int(v) for v in default)
-
     def _current_base_scale(self) -> float:
         default = float(getattr(self.profile, "base_scale_percent", DEFAULT_BASE_SCALE) or DEFAULT_BASE_SCALE)
         text = ""
@@ -14323,7 +13372,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         if text.strip():
             return _parse_scale_text(text, allow_empty=False, default=None)
         return float(default)
-
     def _build_profile_from_inputs(self) -> MacroProfile:
         resolver = self._build_variable_resolver()
         macros = self._collect_macros(resolver)
@@ -14361,7 +13409,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             base_scale_percent=base_scale,
             transform_matrix=getattr(self.profile, "transform_matrix", None),
         )
-
     # App state ----------------------------------------------------------
     def _load_state(self) -> dict:
         if not self._state_path.exists():
@@ -14372,19 +13419,16 @@ class MacroWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             self._append_log(f"상태 파일 로드 오류: {exc}")
             return {}
-
     def _write_state(self, state: dict):
         try:
             self._state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as exc:
             self._append_log(f"상태 파일 저장 오류: {exc}")
-
     def _update_state(self, key: str, value):
         state = dict(self._state) if isinstance(self._state, dict) else {}
         state[key] = value
         self._state = state
         self._write_state(state)
-
     def _dedupe_profile_paths(self, items) -> list[str]:
         seen = set()
         result: list[str] = []
@@ -14397,7 +13441,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             seen.add(norm)
             result.append(norm)
         return result[:MAX_RECENT_PROFILES]
-
     def _persist_profile_history(self):
         self._update_state(
             "profile_history",
@@ -14406,7 +13449,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 "favorites": self._favorite_profiles,
             },
         )
-
     def _profile_display_text(self, path: str) -> str:
         try:
             p = Path(path)
@@ -14417,7 +13459,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             return f"{name} · {parent}"
         except Exception:
             return path
-
     def _record_recent_profile(self, path: str | None):
         if not path:
             return
@@ -14429,7 +13470,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._recent_profiles = self._recent_profiles[:MAX_RECENT_PROFILES]
         self._persist_profile_history()
         self._refresh_profile_lists()
-
     def _set_favorite_path(self, path: str | None, *, favorite: bool = True):
         if not path:
             return
@@ -14445,7 +13485,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._persist_profile_history()
         self._refresh_profile_lists()
         self._refresh_profile_header()
-
     def _clear_recent_profiles(self):
         if not self._recent_profiles:
             return
@@ -14461,11 +13500,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._recent_profiles = []
         self._persist_profile_history()
         self._refresh_profile_lists()
-
     def _refresh_profile_lists(self):
         if not hasattr(self, "recent_list"):
             return
-
         def _fill_list(widget: QtWidgets.QListWidget, paths: list[str], *, highlight_current: bool):
             widget.clear()
             for path in paths:
@@ -14484,16 +13521,13 @@ class MacroWindow(QtWidgets.QMainWindow):
                     item.setFont(font)
                 widget.addItem(item)
             widget.setEnabled(bool(paths))
-
         current_norm = _normalize_profile_path(self.current_profile_path) if self.current_profile_path else None
         # 강조 색상: 밝은 테마는 짙은 주황, 어두운 테마는 선명한 녹색
         active_bg = "#ffe08a" if not self._theme.get("is_dark") else "#2faa4f"
         active_fg = "#2d1b00" if not self._theme.get("is_dark") else "#f0fff0"
-
         in_favorites = current_norm in self._favorite_profiles if current_norm else False
         highlight_recent = bool(current_norm and not in_favorites)
         highlight_fav = bool(current_norm and in_favorites)
-
         _fill_list(self.recent_list, self._recent_profiles, highlight_current=highlight_recent)
         _fill_list(self.favorite_list, self._favorite_profiles, highlight_current=highlight_fav)
         if hasattr(self, "recent_label"):
@@ -14501,7 +13535,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         if hasattr(self, "fav_label"):
             self.fav_label.setText(f"즐겨찾기 ({len(self._favorite_profiles)})")
         self._update_profile_list_buttons()
-
     def _refresh_profile_header(self):
         path = self.current_profile_path
         self._update_title()
@@ -14512,31 +13545,26 @@ class MacroWindow(QtWidgets.QMainWindow):
             else:
                 self.profile_path_label.setText("새 프로필 (미저장)")
                 self.profile_path_label.setToolTip("파일로 저장하거나 불러오면 목록에 표시됩니다.")
-
     def _selected_profile_path(self, widget: QtWidgets.QListWidget) -> str | None:
         item = widget.currentItem()
         if not item:
             return None
         path = item.data(QtCore.Qt.ItemDataRole.UserRole)
         return str(path) if path else None
-
     def _open_profile_item(self, item: QtWidgets.QListWidgetItem | None):
         if item is None:
             return
         path = item.data(QtCore.Qt.ItemDataRole.UserRole)
         if path:
             self._open_profile_path(str(path))
-
     def _load_selected_profile(self, widget: QtWidgets.QListWidget):
         path = self._selected_profile_path(widget)
         if path:
             self._open_profile_path(path)
-
     def _favorite_selected_recent(self):
         path = self._selected_profile_path(self.recent_list)
         if path:
             self._set_favorite_path(path, favorite=True)
-
     def _on_recent_selection_changed(self):
         if getattr(self, "_syncing_profile_lists", False):
             return
@@ -14546,7 +13574,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         finally:
             self._syncing_profile_lists = False
         self._update_profile_list_buttons()
-
     def _on_favorite_selection_changed(self):
         if getattr(self, "_syncing_profile_lists", False):
             return
@@ -14556,16 +13583,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         finally:
             self._syncing_profile_lists = False
         self._update_profile_list_buttons()
-
     def _remove_selected_favorite(self):
         path = self._selected_profile_path(self.favorite_list)
         if path:
             self._set_favorite_path(path, favorite=False)
-
     def _toggle_favorite_current(self):
         # 더 이상 상단 버튼에서 즐겨찾기를 토글하지 않음. 최근/즐겨찾기 리스트 버튼을 사용한다.
         pass
-
     def _update_profile_list_buttons(self):
         has_recent = bool(self.recent_list.selectedItems())
         has_fav = bool(self.favorite_list.selectedItems())
@@ -14575,7 +13599,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             btn.setEnabled(has_fav)
         if hasattr(self, "recent_clear_btn"):
             self.recent_clear_btn.setEnabled(bool(self._recent_profiles))
-
     def _open_profile_path(self, path: str):
         if not path:
             return
@@ -14589,34 +13612,26 @@ class MacroWindow(QtWidgets.QMainWindow):
         if not self._confirm_save_if_dirty():
             return
         self._load_profile_from_path(path)
-
     def _persist_screenshot_state(self, data: dict):
         self._update_state("screenshot", data)
-
     def _persist_debugger_state(self, data: dict):
         self._update_state("debugger", data)
-
     def _persist_color_calc_state(self, data: dict):
         self._color_calc_state = data or {}
         self._update_state("color_calc", self._color_calc_state)
-
     def _persist_pixel_test_state(self, data: dict):
         self._update_state("pixel_test", data)
-
     def _persist_image_viewer_state(self, data: dict):
         self._image_viewer_state = data or {}
         self._update_state("image_viewer", self._image_viewer_state)
-
     def _persist_preset_transfer_state(self, data: dict):
         state = dict(self._preset_transfer_state) if isinstance(self._preset_transfer_state, dict) else {}
         state["sample_preset"] = data or {}
         self._preset_transfer_state = state
         self._update_state("preset_transfer", state)
-
     def _screenshot_hotkeys_info(self) -> dict:
         hk = self.screenshot_manager.hotkeys
         return {"start": hk.start, "stop": hk.stop, "capture": hk.capture}
-
     def _debugger_interval_changed(self, interval_ms: int):
         ms = max(50, int(interval_ms))
         self._pixel_test_defaults["interval"] = ms
@@ -14624,7 +13639,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._pixel_test_config["interval"] = ms
         if self._pixel_test_timer.isActive():
             self._pixel_test_timer.setInterval(ms)
-
     def _debugger_tolerance_changed(self, tolerance: int):
         tol = max(0, min(255, int(tolerance)))
         self._pixel_test_defaults["tolerance"] = tol
@@ -14641,11 +13655,9 @@ class MacroWindow(QtWidgets.QMainWindow):
             self.engine.update_pixel_test(region, color, tol, expect, min_cnt)
         except Exception:
             pass
-
     def _on_debugger_closed(self):
         # 디버거를 닫을 때 테스트 루프도 안전하게 종료
         self._stop_pixel_test_loop()
-
     def _update_title(self):
         if self.current_profile_path:
             name = Path(self.current_profile_path).name
@@ -14655,14 +13667,11 @@ class MacroWindow(QtWidgets.QMainWindow):
             path_txt = name
         dirty_mark = "*" if self.dirty else ""
         self.setWindowTitle(f"{self.base_title} - {path_txt}{dirty_mark}")
-
     def _mark_dirty(self, dirty: bool = True):
         self.dirty = dirty
         self._update_title()
-
     def _persist_last_profile_path(self, path: str | None):
         self._update_state("last_profile_path", path)
-
     def _load_last_session(self) -> bool:
         data = self._state if isinstance(self._state, dict) else {}
         path = data.get("last_profile_path")
@@ -14672,7 +13681,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         if loaded:
             self._append_log(f"이전 세션에서 자동 불러오기: {path}")
         return loaded
-
     def _confirm_save_if_dirty(self) -> bool:
         if not self.dirty:
             return True
@@ -14690,7 +13698,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         if res == QtWidgets.QMessageBox.StandardButton.Yes:
             return self._save_profile()
         return True
-
     # Profile helpers -----------------------------------------------------
     def _macro_scope_text(self, macro: Macro) -> str:
         scope = getattr(macro, "scope", "global") or "global"
@@ -14710,7 +13717,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         if len(names) > 3:
             names = names[:3] + ["..."]
         return f"앱: {', '.join(names)}"
-
     def _macro_trigger_texts(self, macro: Macro) -> tuple[str, str]:
         try:
             triggers = macro.trigger_list()
@@ -14730,7 +13736,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             trigger_text = getattr(macro, "trigger_key", "") or ""
         mode_text = ", ".join(dict.fromkeys(modes)) if modes else (getattr(macro, "mode", "") or "")
         return trigger_text, mode_text
-
     def _set_macro_row(self, row: int, macro: Macro):
         scope_text = self._macro_scope_text(macro)
         trigger_text, mode_text = self._macro_trigger_texts(macro)
@@ -14748,7 +13753,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             item = QtWidgets.QTableWidgetItem(val)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, macro)
             self.macro_table.setItem(row, col, item)
-
     def _refresh_macros(self):
         self._loading_profile = True
         self.macro_table.setRowCount(0)
@@ -14756,14 +13760,12 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._append_macro_row(macro)
         self._renumber_macro_rows()
         self._loading_profile = False
-
     def _append_macro_row(self, macro: Macro):
         row = self.macro_table.rowCount()
         self.macro_table.insertRow(row)
         self._set_macro_row(row, macro)
         if not self._loading_profile:
             self._mark_dirty()
-
     def _apply_scope_to_all_macros(self, scope: str, targets: list[AppTarget]):
         scope_val = scope or "global"
         cleaned: list[AppTarget] = []
@@ -14783,11 +13785,9 @@ class MacroWindow(QtWidgets.QMainWindow):
             updated = True
         if updated and not self._loading_profile:
             self._mark_dirty()
-
     def _macro_summary(self, macro: Macro) -> str:
         cycles = f", {macro.cycle_count}회" if macro.cycle_count else ", 무한"
         return f"액션 {len(macro.actions)}{cycles}"
-
     def _macro_copy_name(self, macro: Macro | None) -> str:
         trigger_label = ""
         if macro:
@@ -14805,7 +13805,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         while f"{candidate} {suffix}" in existing:
             suffix += 1
         return f"{candidate} {suffix}"
-
     def _macro_picker_items(self, exclude: Macro | None = None) -> list[str]:
         items: list[str] = []
         for m in self._collect_macros():
@@ -14828,22 +13827,18 @@ class MacroWindow(QtWidgets.QMainWindow):
             seen.add(key)
             uniq.append(item)
         return uniq
-
     def _get_selected_row(self) -> int:
         selected = self.macro_table.selectionModel().selectedRows()
         return selected[0].row() if selected else -1
-
     def _macro_from_row(self, row: int) -> Macro:
         item = self.macro_table.item(row, 0)
         stored = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
         return stored if isinstance(stored, Macro) else None
-
     def _renumber_macro_rows(self):
         for row in range(self.macro_table.rowCount()):
             item = self.macro_table.item(row, 0)
             if item:
                 item.setText(str(row + 1))
-
     def _macro_context_menu(self, pos: QtCore.QPoint):
         index = self.macro_table.indexAt(pos)
         if index.isValid():
@@ -14862,7 +13857,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._clone_macro()
         elif action == del_act:
             self._delete_macro()
-
     def _collect_macros(self, resolver: VariableResolver | None = None) -> List[Macro]:
         macros: List[Macro] = []
         for row in range(self.macro_table.rowCount()):
@@ -14873,7 +13867,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 else:
                     macros.append(macro)
         return macros
-
     def _add_macro(self):
         resolver = None
         try:
@@ -14904,7 +13897,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 return
             self._append_macro_row(macro)
             self._renumber_macro_rows()
-
     def _edit_macro(self):
         row = self._get_selected_row()
         if row < 0:
@@ -14944,7 +13936,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._set_macro_row(row, new_macro)
             if not self._loading_profile and old_snapshot != new_snapshot:
                 self._mark_dirty()
-
     def _clone_macro(self):
         row = self._get_selected_row()
         if row < 0:
@@ -14963,7 +13954,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.macro_table.selectRow(insert_row)
         if not self._loading_profile:
             self._mark_dirty()
-
     def _delete_macro(self):
         row = self._get_selected_row()
         if row < 0:
@@ -14973,7 +13963,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._renumber_macro_rows()
         if not self._loading_profile:
             self._mark_dirty()
-
     def _apply_profile(self, *, silent: bool = False) -> bool:
         try:
             profile = self._build_profile_from_inputs()
@@ -14998,7 +13987,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         if not silent:
             self._append_log("프로필 적용 완료")
         return True
-
     def _new_profile(self):
         if not self._confirm_save_if_dirty():
             return
@@ -15024,7 +14012,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._mark_dirty(True)
         self._refresh_profile_header()
         self._append_log("새 프로필 생성")
-
     def _load_profile_from_path(self, path: str, *, show_error_dialog: bool = True, add_log: bool = True) -> bool:
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -15059,7 +14046,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         if add_log:
             self._append_log(f"프로필 불러옴: {path}")
         return True
-
     def _load_profile(self):
         if not self._confirm_save_if_dirty():
             return
@@ -15067,13 +14053,11 @@ class MacroWindow(QtWidgets.QMainWindow):
         if not path:
             return
         self._load_profile_from_path(path)
-
     def _save_profile(self):
         path = self.current_profile_path
         if not path:
             return self._save_profile_as()
         return self._write_profile(path)
-
     def _save_profile_as(self):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "다른 이름으로 저장", self.current_profile_path or "", "JSON Files (*.json)"
@@ -15082,7 +14066,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             return False
         self.current_profile_path = path
         return self._write_profile(path)
-
     def _write_profile(self, path: str) -> bool:
         try:
             profile = self._build_profile_from_inputs()
@@ -15115,7 +14098,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._refresh_profile_header()
         self._append_log(f"프로필 저장: {path}")
         return True
-
     def _refresh_resolution_fields(self, profile: MacroProfile | None = None):
         prof = profile or self.profile
         base_res = getattr(prof, "base_resolution", DEFAULT_BASE_RESOLUTION) or DEFAULT_BASE_RESOLUTION
@@ -15137,7 +14119,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 self.scale_preview.setPlainText(
                     "기준/현재 해상도와 앱 배율을 입력한 후 '프리셋 옮기기…' 버튼에서 변환을 실행하세요."
                 )
-
     def _refresh_pixel_defaults(self, profile: MacroProfile | None = None):
         prof = profile or self.profile
         self._refresh_resolution_fields(prof)
@@ -15157,7 +14138,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 "min_count": min_count,
             }
         )
-
     def _detect_app_scale(self) -> float | None:
         try:
             screen = None
@@ -15190,7 +14170,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             return round(max(candidates), 2)
         except Exception:
             return None
-
     def _detect_screen_resolution(self) -> tuple[int, int] | None:
         try:
             screen = None
@@ -15217,7 +14196,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             return (width, height)
         except Exception:
             return None
-
     def _fill_current_scale(self, *, silent: bool = False) -> float | None:
         scale = self._detect_app_scale()
         if scale is None:
@@ -15231,7 +14209,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             if not silent and prev != text:
                 self._append_log(f"현재 앱 배율 감지: {text}")
         return scale
-
     def _fill_current_resolution(self, *, silent: bool = False) -> tuple[int, int] | None:
         res = self._detect_screen_resolution()
         if not res:
@@ -15246,12 +14223,10 @@ class MacroWindow(QtWidgets.QMainWindow):
             if not silent and prev != text:
                 self._append_log(f"현재 해상도 감지: {text}")
         return res
-
     def _on_base_resolution_changed(self):
         if getattr(self, "_updating_resolution_fields", False):
             return
         self._mark_dirty()
-
     def _set_base_from_current_resolution(self):
         text = ""
         if isinstance(getattr(self, "current_res_edit", None), QtWidgets.QLineEdit):
@@ -15290,7 +14265,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
         self._mark_dirty()
-
     def _update_scale_preview(
         self,
         changes: list[tuple[str, str, str]],
@@ -15319,7 +14293,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             if len(filtered) > max_lines:
                 lines.append(f"- ...외 {len(filtered) - max_lines}건")
         self.scale_preview.setPlainText("\n".join(lines))
-
     def _scale_and_save_profile(self):
         try:
             profile = self._build_profile_from_inputs()
@@ -15364,7 +14337,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "스케일 실패", str(exc))
             return
         self._update_scale_preview(changes, scale_x, scale_y, base_res, target_res, base_scale, target_scale)
-
         base_label = _format_resolution(base_res)
         target_label = _format_resolution(target_res)
         default_dir = Path(self.current_profile_path).parent if self.current_profile_path else Path.cwd()
@@ -15387,7 +14359,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             self.engine.update_pixel_test(region, color, tol, expect, min_cnt)
         except Exception:
             pass
-
     def _update_pixel_profile(
         self,
         region: Region,
@@ -15415,7 +14386,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.engine.update_pixel_test(region, color, tolerance, expect_exists, max(1, int(min_count)))
         if mark_dirty and not self._loading_profile:
             self._mark_dirty()
-
     def _current_pixel_defaults(self) -> dict:
         region_txt = self._pixel_test_defaults.get("region_raw") or ",".join(
             str(v) for v in (self.profile.pixel_region or (0, 0, 100, 100))
@@ -15436,7 +14406,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             "min_count": min_count_val,
             "interval": interval,
         }
-
     def _tick_pixel_test(self):
         cfg = self._pixel_test_config
         if not cfg:
@@ -15455,7 +14424,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             self._append_log(f"픽셀 테스트 오류: {exc}")
             self._stop_pixel_test_loop()
-
     def _stop_pixel_test_loop(self):
         if self._pixel_test_timer.isActive():
             self._pixel_test_timer.stop()
@@ -15467,7 +14435,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                     callback()
                 except Exception:
                     pass
-
     def _start_pixel_test_loop(self, config: dict, *, source: str, on_stop=None, persist: bool = False):
         self._stop_pixel_test_loop()
         try:
@@ -15532,13 +14499,11 @@ class MacroWindow(QtWidgets.QMainWindow):
             pattern=pattern_name,
         )
         self._open_debugger()
-
     def _start_condition_pixel_test(self, config: dict, on_stop=None):
         self._open_debugger_with_config(config)
         if self.debugger:
             self.debugger.raise_()
             self.debugger.activateWindow()
-
     def _start_condition_debug_session(self, provider, *, on_stop=None):
         # 기존 세션이 있다면 정리
         self._stop_condition_debug_session()
@@ -15546,7 +14511,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._condition_debug_key_states = {}
         self._condition_debug_active = False
         self._last_condition_tree = None
-
         def eval_fn():
             try:
                 payload = provider()
@@ -15616,7 +14580,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 self._last_condition_tree = result
             node_label = label or getattr(cond_obj, "name", None) or "조건 디버그"
             return {"result": result, "label": node_label}
-
         try:
             dbg = self._ensure_debugger()
             dbg.start_condition_debug(eval_fn, label="조건 디버그", stop_cb=self._on_condition_debug_stopped)
@@ -15626,7 +14589,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             return None
         self._condition_debug_active = True
         return lambda: self._stop_condition_debug_session()
-
     def _stop_condition_debug_session(self, notify: bool = True):
         if self.debugger:
             try:
@@ -15634,10 +14596,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self._finish_condition_debug(notify=notify)
-
     def _on_condition_debug_stopped(self):
         self._finish_condition_debug(notify=True)
-
     def _finish_condition_debug(self, *, notify: bool):
         if not self._condition_debug_active:
             return
@@ -15655,7 +14615,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             self.engine.clear_debug_image_override()
         except Exception:
             pass
-
     def _capture_condition_failure(self, payload: dict):
         label = (payload or {}).get("label") or "condition"
         fail_path = (payload or {}).get("fail_path") or ""
@@ -15663,7 +14622,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         details = self._failed_pixel_details(tree, dedup_by_coord=True)
         if not details:
             return None
-
         def _pixel_pass(item: dict) -> bool:
             target = item.get("target")
             sample = item.get("sample")
@@ -15675,11 +14633,9 @@ class MacroWindow(QtWidgets.QMainWindow):
             if expect_exists:
                 return diff_val <= tol
             return diff_val > tol
-
         any_pass = any(_pixel_pass(item) for item in details)
         if any_pass:
             return None
-
         parts = []
         for item in details:
             coord = item.get("coord")
@@ -15707,13 +14663,11 @@ class MacroWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         return None
-
     def _failed_pixel_details(self, tree: dict | None, *, dedup_by_coord: bool = False) -> list[dict]:
         if not tree:
             return []
         items: list[dict] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -15721,7 +14675,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 except Exception:
                     return None
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -15760,15 +14713,12 @@ class MacroWindow(QtWidgets.QMainWindow):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return items
-
     def _collect_pixel_results(self, tree: dict | None) -> list[bool | None]:
         if not tree:
             return []
         results: list[bool | None] = []
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -15780,10 +14730,8 @@ class MacroWindow(QtWidgets.QMainWindow):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return results
-
     def _start_modal_pixel_test(self, config: dict, on_stop=None):
         cfg = dict(config)
         cfg.setdefault("interval", self._current_pixel_defaults().get("interval", 200))
@@ -15793,13 +14741,11 @@ class MacroWindow(QtWidgets.QMainWindow):
             on_stop=on_stop,
             persist=bool(cfg.get("persist")),
         )
-
     def _start_debugger_pixel_test(self, config: dict, on_stop=None):
         cfg = dict(config)
         cfg.setdefault("interval", self._current_pixel_defaults().get("interval", 200))
         cfg.setdefault("tolerance", self._current_pixel_defaults().get("tolerance", 10))
         self._start_pixel_test_loop(cfg, source="debugger", on_stop=on_stop, persist=False)
-
     # Event handling ------------------------------------------------------
     def _tick_fail_capture_hotkey(self):
         pressed = False
@@ -15816,7 +14762,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self._fail_capture_hotkey_prev = pressed
-
     def _poll_engine(self):
         self._tick_fail_capture_hotkey()
         cap_running = self.screenshot_manager.is_running
@@ -15836,7 +14781,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         if not self.engine.events.empty():
             # 백로그가 남아 있으면 이벤트 루프를 블로킹하지 않도록 다음 틱에 이어서 처리
             QtCore.QTimer.singleShot(0, self._poll_engine)
-
         for event in events:
             etype = event.get("type")
             if self.debugger:
@@ -15873,7 +14817,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 pos = event.get("pos")
                 pos_txt = f" pos={pos}" if pos else ""
                 self._append_log(f"액션: {event.get('action')} target={btn_or_key}{pos_txt}")
-
     def _update_engine_state(self, state: dict):
         running = state.get("running", False)
         active = state.get("active", False)
@@ -15885,7 +14828,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         prev = self._last_backend_state or {}
         self._last_backend_state = backend
         self._update_keyboard_summary(backend, prev)
-
     def _set_label(self, label: QtWidgets.QLabel, text: str, on: bool):
         label.setText(text)
         base = getattr(self, "_status_badge_style", "")
@@ -15901,7 +14843,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         else:
             color = "limegreen" if on else "gray"
         label.setStyleSheet(f"{base} color: {color}; font-weight: bold;")
-
     def _set_capture_status(self, running: bool):
         self._last_capture_running = bool(running)
         if hasattr(self, "capture_label"):
@@ -15913,7 +14854,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             else:
                 self.capture_label.setVisible(False)
                 self.capture_label.setText("")
-
     def _update_keyboard_summary(self, backend: dict | None, prev_backend: dict | None = None):
         backend = backend or {}
         requested = backend.get("requested_mode") or getattr(self.profile, "input_mode", "hardware")
@@ -15922,7 +14862,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         installed = bool(hardware.get("installed"))
         available = hardware.get("available")
         admin_ok = hardware.get("admin")
-
         if active == "hardware":
             if installed and (available is True or available is None) and admin_ok is not False:
                 mode_txt = "하드웨어 (정상)"
@@ -15941,12 +14880,10 @@ class MacroWindow(QtWidgets.QMainWindow):
             color = "#5fa7f7" if requested == "software" else "#d98c3b"
             if requested == "hardware":
                 mode_txt += " (폴백)"
-
         if hasattr(self, "hardware_label"):
             base = getattr(self, "_status_badge_style", "")
             self.hardware_label.setText(mode_txt)
             self.hardware_label.setStyleSheet(f"{base} color: {color}; font-weight: bold;")
-
         test_key = backend.get("keyboard_test_key") or getattr(self.profile, "keyboard_test_key", "f24")
         self.profile.input_mode = requested
         self.profile.keyboard_test_key = test_key
@@ -15956,7 +14893,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         prev_active = (prev_backend or {}).get("active_mode")
         if prev_active == "hardware" and active != "hardware":
             self._append_log("Interception 불가 또는 장치 미검출로 소프트웨어 입력으로 전환되었습니다.")
-
     def _toggle_log_enabled(self, enabled: bool):
         self._log_enabled = bool(enabled)
         if hasattr(self, "_state"):
@@ -15979,11 +14915,9 @@ class MacroWindow(QtWidgets.QMainWindow):
                 self.log_view.clear()
         if hasattr(self, "log_group") and self.log_group:
             self.log_group.setVisible(self._log_enabled)
-
     def _clear_log_view(self):
         if hasattr(self, "log_view") and self.log_view:
             self.log_view.clear()
-
     def _append_log(self, message: str, *, rich: bool = False):
         if not getattr(self, "_log_enabled", True):
             return
@@ -15993,13 +14927,11 @@ class MacroWindow(QtWidgets.QMainWindow):
             entry = html.escape(entry).replace("\n", "<br>")
         self.log_view.append(entry)
         self.log_view.moveCursor(QtGui.QTextCursor.MoveOperation.End)
-
     def _collect_pixel_samples(self, tree: dict | None, *, only_failed: bool = False, dedup_by_coord: bool = False) -> list[str]:
         if not tree:
             return []
         samples: list[str] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -16007,7 +14939,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 except Exception:
                     return None
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -16034,16 +14965,13 @@ class MacroWindow(QtWidgets.QMainWindow):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return samples
-
     def _collect_pixel_coords(self, tree: dict | None, *, only_failed: bool = False, dedup_by_coord: bool = False) -> list[tuple[int, int]]:
         if not tree:
             return []
         coords: list[tuple[int, int]] = []
         seen: set[tuple[int, int]] = set()
-
         def _norm_coord(coord):
             if isinstance(coord, (list, tuple)) and len(coord) == 2:
                 try:
@@ -16051,7 +14979,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 except Exception:
                     return None
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -16073,15 +15000,12 @@ class MacroWindow(QtWidgets.QMainWindow):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         return coords
-
     def _failed_pixel_bbox(self, tree: dict | None):
         if not tree:
             return None
         boxes: list[tuple[int, int, int, int]] = []
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return
@@ -16104,7 +15028,6 @@ class MacroWindow(QtWidgets.QMainWindow):
                 _walk(child)
             for child in node.get("on_false") or []:
                 _walk(child)
-
         _walk(tree)
         if not boxes:
             return None
@@ -16113,11 +15036,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         max_x = max(b[0] + b[2] for b in boxes)
         max_y = max(b[1] + b[3] for b in boxes)
         return (min_x, min_y, max_x - min_x, max_y - min_y)
-
     def _first_failed_pixel_image(self, tree: dict | None):
         if not tree:
             return None
-
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return None
@@ -16145,9 +15066,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 if found:
                     return found
             return None
-
         return _walk(tree)
-
     def _log_admin_status(self):
         if self.is_admin:
             self.admin_label.setText("관리자(O)")
@@ -16159,7 +15078,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             base = getattr(self, "_status_badge_style", "")
             self.admin_label.setStyleSheet(f"{base} color: red; font-weight: bold;")
             self._append_log("관리자 모드: X (관리자 권한 필요)")
-
     def closeEvent(self, event: QtGui.QCloseEvent):
         if not self._confirm_save_if_dirty():
             event.ignore()
@@ -16187,7 +15105,6 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.screenshot_manager.shutdown()
         self.engine.stop()
         return super().closeEvent(event)
-
 def _current_screenshot_state(self) -> dict:
     return {
         "interval": self.screenshot_manager.interval,
@@ -16200,13 +15117,9 @@ def _current_screenshot_state(self) -> dict:
         "hotkey_capture": self.screenshot_manager.hotkeys.capture,
         "hotkey_enabled": self.screenshot_manager.hotkeys.enabled,
     }
-
-
 def _mw_pattern_names(self) -> list[str]:
     patterns = _load_shared_patterns()
     return sorted(patterns.keys())
-
-
 def _mw_open_pattern_manager(self, parent=None):
     dlg = PixelPatternManagerDialog(
         parent or self,
@@ -16216,7 +15129,6 @@ def _mw_open_pattern_manager(self, parent=None):
     )
     # Qt parent는 호출자(widget)로 두되, 실제 패턴 저장/동기화는 항상 메인 창을 기준으로 한다.
     dlg._owner = self
-
     def _sync_patterns_from_dlg(_code: int):
         """Close 시점에도 패턴을 한 번 더 저장/동기화해 포인트 유실을 막는다.
         프로필 저장 여부와 무관하게 pattern/patterns.json 에만 기록한다.
@@ -16233,11 +15145,8 @@ def _mw_open_pattern_manager(self, parent=None):
                 self.engine._pixel_patterns = copy.deepcopy(dlg.patterns)
         except Exception:
             pass
-
     dlg.finished.connect(_sync_patterns_from_dlg)
     _run_dialog_non_modal(dlg)
-
-
 # Monkey patch helper methods onto MacroWindow without touching the large class body above.
 try:
     MacroWindow._pattern_names = _mw_pattern_names  # type: ignore[attr-defined]
@@ -16258,11 +15167,9 @@ try:
         else:
             return None
         return {"pos": (int(pos[0]), int(pos[1])), "color": color_val}
-
     MacroWindow._current_viewer_sample = _mw_current_viewer_sample  # type: ignore[attr-defined]
 except Exception:
     pass
-
 def main():
     if not _is_admin():
         _relaunch_as_admin()
@@ -16276,11 +15183,8 @@ def main():
     except Exception as exc:
         # GUI가 바로 종료될 때 콘솔에 오류를 보여 디버깅할 수 있도록 한다.
         import traceback
-
         traceback.print_exc()
         QtWidgets.QMessageBox.critical(None, "오류", str(exc))
         sys.exit(1)
-
-
 if __name__ == "__main__":
     main()
