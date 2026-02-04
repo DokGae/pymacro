@@ -3992,6 +3992,8 @@ class MacroEngine:
                 "coord": check.get("coord"),
                 "sample_coord": check.get("sample_coord"),
                 "sample_color": check.get("sample_color"),
+                "pattern_points": check.get("pattern_points"),
+                "pattern_size": check.get("pattern_size"),
             }
         elif cond.type == "all":
             active_children = [c for c in (cond.conditions or []) if getattr(c, "enabled", True)]
@@ -4232,6 +4234,8 @@ class MacroEngine:
                     "coord": check.get("coord"),
                     "sample_coord": check.get("sample_coord"),
                     "sample_color": check.get("sample_color"),
+                    "pattern_points": check.get("pattern_points"),
+                    "pattern_size": check.get("pattern_size"),
                 }
             elif cond.type in ("all", "any"):
                 active_children: List[Dict[str, Any]] = []
@@ -4442,6 +4446,10 @@ class MacroEngine:
             "sample_color": sample_color,
             "expect_exists": expect_exists,
             "pattern": getattr(pattern, "name", None),
+            "pattern_points": (
+                [(int(pt.dx), int(pt.dy)) for pt in norm_pat.points] if pattern is not None and pattern.points else None
+            ),
+            "pattern_size": (max_dx + 1, max_dy + 1) if pattern is not None and pattern.points else None,
         }
         if include_image:
             try:

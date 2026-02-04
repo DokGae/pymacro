@@ -2707,7 +2707,8 @@ class _ImageCanvas(QtWidgets.QWidget):
         self.zoomChanged.emit(self._user_zoom)
         self.imageChanged.emit()
         return True
-    def set_overlays(self, rects: list[tuple[int, int, int, int]] | None):
+    def set_overlays(self, rects: list[tuple[int, int, int, int] | tuple[int, int, int, int, object]] | None):
+        # rect: (x, y, w, h[, color])
         self._overlays = rects or []
         self.update()
     def begin_region_selection(self, callback=None) -> bool:
@@ -2901,11 +2902,22 @@ class _ImageCanvas(QtWidgets.QWidget):
         painter.drawPixmap(self._draw_rect, self._pixmap, QtCore.QRectF(self._pixmap.rect()))
         # overlays in image coordinates -> convert to widget coords
         if self._overlays and self._image and not self._draw_rect.isNull() and self._scale > 0:
-            pen = QtGui.QPen(QtGui.QColor(255, 80, 80), 2)
-            pen.setCosmetic(True)
-            painter.setPen(pen)
             painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-            for ox, oy, ow, oh in self._overlays:
+            for rect in self._overlays:
+                if len(rect) >= 5:
+                    ox, oy, ow, oh, color = rect[:5]
+                else:
+                    ox, oy, ow, oh = rect
+                    color = QtGui.QColor(255, 80, 80)
+                try:
+                    qcolor = color if isinstance(color, QtGui.QColor) else QtGui.QColor(*color) if isinstance(color, (list, tuple)) else QtGui.QColor(str(color))
+                    if not qcolor.isValid():
+                        qcolor = QtGui.QColor(255, 80, 80)
+                except Exception:
+                    qcolor = QtGui.QColor(255, 80, 80)
+                pen = QtGui.QPen(qcolor, 2)
+                pen.setCosmetic(True)
+                painter.setPen(pen)
                 wx = self._draw_rect.left() + ox * self._scale
                 wy = self._draw_rect.top() + oy * self._scale
                 painter.drawRect(QtCore.QRectF(wx, wy, ow * self._scale, oh * self._scale))
@@ -7304,6 +7316,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         stop_test_cb=None,
         fail_capture_cb=None,
         focus_viewer_cb=None,
+        get_viewer_cb=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("디버거 (항상 위)")
@@ -7332,6 +7345,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         self._condition_label = "조건 디버그"
         self._fail_capture_cb = fail_capture_cb
         self._focus_viewer_cb = focus_viewer_cb
+        self._get_viewer_cb = get_viewer_cb
         self._fail_capture_enabled = False
         self._fail_capture_cooldown = 1.0
         self._last_condition_result: bool | None = None
@@ -7345,7 +7359,12 @@ class DebuggerDialog(QtWidgets.QDialog):
         self._compare_color_override: tuple[int, int, int] | None = None
         self._section_controls: dict[str, QtWidgets.QToolButton] = {}
         self._use_viewer_image: bool = False
+        self._selection_highlight: bool = False
+        self._log_visible: bool = True
+        self._viewer_shortcuts: list[QtGui.QShortcut] = []
+        self._selected_item_path: list[str] | None = None
         self._build_ui()
+        self._install_viewer_shortcuts()
         self._restore_state(state or {})
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
@@ -7389,12 +7408,19 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.condition_fail_label.setFrameShape(QtWidgets.QFrame.Shape.Panel)
         self.condition_fail_label.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
         self.condition_fail_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self.highlight_btn = QtWidgets.QToolButton()
+        self.highlight_btn.setText("선택 노드 표시")
+        self.highlight_btn.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.highlight_btn.setCheckable(True)
+        self.highlight_btn.setChecked(False)
+        self.highlight_btn.toggled.connect(self._on_highlight_toggle)
         self.condition_stop_btn = QtWidgets.QPushButton("조건 디버그 중지")
         self.condition_stop_btn.setEnabled(False)
         self.condition_stop_btn.clicked.connect(self._on_condition_stop_clicked)
         cond_header.addWidget(self.condition_state_label)
         cond_header.addWidget(self.condition_fail_label, 1)
         cond_header.addStretch()
+        cond_header.addWidget(self.highlight_btn)
         cond_header.addWidget(self.condition_stop_btn)
         cond_layout.addLayout(cond_header)
         capture_row = QtWidgets.QHBoxLayout()
@@ -7454,6 +7480,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.condition_tree.setColumnWidth(0, 260)
         self.condition_tree.setColumnWidth(1, 100)
         self.condition_tree.header().setStretchLastSection(True)
+        self.condition_tree.itemSelectionChanged.connect(self._on_condition_selection_changed)
         cond_layout.addWidget(self.condition_tree, 1)
         layout.addWidget(self._make_section("조건 디버그", cond_group, "section_condition", default_open=True))
         self.pixel_status = QtWidgets.QLabel("픽셀 테스트: -")
@@ -7508,13 +7535,32 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.var_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         var_group_layout.addWidget(self.var_table)
         layout.addWidget(self._make_section("실시간 변수", var_group, "section_vars", default_open=True))
-        layout.addWidget(QtWidgets.QLabel("최근 로그/이벤트"))
+        log_head = QtWidgets.QHBoxLayout()
+        log_head.addWidget(QtWidgets.QLabel("최근 로그/이벤트"))
+        self.log_visible_chk = QtWidgets.QCheckBox("로그 표시")
+        self.log_visible_chk.setChecked(True)
+        self.log_visible_chk.toggled.connect(self._set_log_visible)
+        log_head.addStretch()
+        log_head.addWidget(self.log_visible_chk)
+        layout.addLayout(log_head)
         self.log_view = QtWidgets.QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setAcceptRichText(True)
         self.log_view.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
         layout.addWidget(self.log_view, 1)
         self.resize(900, 600)
+    def _install_viewer_shortcuts(self):
+        shortcuts = {
+            "Ctrl+Left": QtCore.Qt.Key.Key_Left,
+            "Ctrl+Right": QtCore.Qt.Key.Key_Right,
+            "Ctrl+Up": QtCore.Qt.Key.Key_Up,
+            "Ctrl+Down": QtCore.Qt.Key.Key_Down,
+        }
+        for seq, key in shortcuts.items():
+            sc = QtGui.QShortcut(QtGui.QKeySequence(seq), self)
+            sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(lambda key=key: self._forward_viewer_key(key, QtCore.Qt.KeyboardModifier.ControlModifier))
+            self._viewer_shortcuts.append(sc)
     def show_and_raise(self):
         self.show()
         self.raise_()
@@ -7565,6 +7611,15 @@ class DebuggerDialog(QtWidgets.QDialog):
             self.tol_spin.setValue(self._tolerance)
         except Exception:
             pass
+        self._selection_highlight = bool(state.get("highlight_selection", False))
+        try:
+            self.highlight_btn.setChecked(self._selection_highlight)
+        except Exception:
+            pass
+        try:
+            self._set_log_visible(bool(state.get("log_visible", True)))
+        except Exception:
+            pass
         if isinstance(state.get("test_region"), str):
             self.region_input.setText(state.get("test_region"))
         if isinstance(state.get("test_color"), str):
@@ -7601,9 +7656,13 @@ class DebuggerDialog(QtWidgets.QDialog):
             "fail_capture_limit": self._fail_capture_limit,
             "use_viewer_image": bool(self.viewer_image_chk.isChecked()) if hasattr(self, "viewer_image_chk") else False,
             "sections": {k: btn.isChecked() for k, btn in self._section_controls.items()},
+            "highlight_selection": bool(getattr(self, "highlight_btn", None).isChecked()) if hasattr(self, "highlight_btn") else False,
+            "log_visible": bool(self._log_visible),
         }
     def closeEvent(self, event: QtGui.QCloseEvent):
         self.stop_condition_debug()
+        # 창을 닫을 때 뷰어에 남은 오버레이를 정리
+        self._clear_viewer_overlay()
         if callable(self._close_cb):
             try:
                 self._close_cb()
@@ -7668,6 +7727,10 @@ class DebuggerDialog(QtWidgets.QDialog):
         self._log_buffer.append((entry, rich))
         if len(self._log_buffer) > self._max_logs:
             self._log_buffer = self._log_buffer[-self._max_logs :]
+        if not self._log_visible:
+            return
+        self._refresh_log_view()
+    def _refresh_log_view(self):
         def _to_html(item: tuple[str, bool]) -> str:
             content, is_rich = item
             return content if is_rich else html.escape(content).replace("\n", "<br>")
@@ -7683,6 +7746,16 @@ class DebuggerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         QtCore.QTimer.singleShot(0, lambda: self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum()))
+    def _set_log_visible(self, visible: bool):
+        self._log_visible = bool(visible)
+        self.log_view.setVisible(self._log_visible)
+        if self._log_visible:
+            self._refresh_log_view()
+        if callable(self._save_state_cb):
+            try:
+                self._save_state_cb(self._collect_state())
+            except Exception:
+                pass
     def _collect_pixel_samples(self, tree: dict | None, *, only_failed: bool = False, dedup_by_coord: bool = False) -> list[str]:
         if not tree:
             return []
@@ -8360,7 +8433,16 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.stop_condition_debug()
     def _on_use_viewer_toggled(self, checked: bool):
         self._use_viewer_image = bool(checked)
-        # 디버그 중이면 바로 갱신
+        # 디버거 사용 중이면 뷰어와 오버레이 상태를 즉시 동기화
+        if not self._use_viewer_image:
+            self._clear_viewer_overlay()
+        elif self._selection_highlight:
+            self._apply_selection_overlay()
+        if callable(self._save_state_cb):
+            try:
+                self._save_state_cb(self._collect_state())
+            except Exception:
+                pass
         if self._condition_timer.isActive():
             self._tick_condition_debug()
     def _tick_condition_debug(self):
@@ -8416,9 +8498,16 @@ class DebuggerDialog(QtWidgets.QDialog):
         if root_item:
             self.condition_tree.addTopLevelItem(root_item)
             self.condition_tree.expandAll()
+        restored = self._restore_selection_path()
+        if not restored and self._selection_highlight and not self.condition_tree.selectedItems():
+            first = self._first_pixel_item(only_true=True)
+            if first:
+                self._set_tree_selection(first, keep_focus=True)
         fail_path = self._find_first_failure_path(tree, [])
         fail_text = " > ".join(fail_path) if fail_path else "-"
         self._update_condition_status(tree.get("result"), fail_text=fail_text, label=label)
+        if self._selection_highlight:
+            self._apply_selection_overlay()
     def _set_condition_pending(self, label: str | None = None):
         """조건 디버그 영역을 '참 대기중' 상태로 초기화."""
         self._last_condition_tree = None
@@ -8578,6 +8667,195 @@ class DebuggerDialog(QtWidgets.QDialog):
                 self._render_condition_tree(tree, label=self._condition_label, compare_color=None)
             except Exception:
                 pass
+    def _get_viewer(self):
+        return self._get_viewer_cb() if callable(self._get_viewer_cb) else None
+    def _clear_viewer_overlay(self):
+        viewer = self._get_viewer()
+        if viewer and hasattr(viewer, "canvas"):
+            try:
+                viewer.canvas.set_overlays([])
+            except Exception:
+                pass
+    def _apply_selection_overlay(self):
+        if not self._use_viewer_image:
+            return
+        viewer = self._get_viewer()
+        if viewer is None or not hasattr(viewer, "canvas"):
+            return
+        qimg = getattr(viewer.canvas, "_image", None)
+        if qimg is None or qimg.isNull():
+            return
+        rects: list[tuple[int, int, int, int, object]] = []
+        items = self.condition_tree.selectedItems()
+        if not items:
+            fallback = self._first_pixel_item(only_true=True)
+            if fallback:
+                if self._selection_highlight:
+                    self._set_tree_selection(fallback, keep_focus=True)
+                items = [fallback]
+        for item in items:
+            node = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if not isinstance(node, dict):
+                continue
+            if node.get("type") != "pixel":
+                continue
+            detail = (node.get("detail") or {}).get("pixel") or {}
+            # 전체 영역은 초록색으로 표시
+            region = detail.get("region")
+            if isinstance(region, (list, tuple)) and len(region) == 4:
+                try:
+                    rx, ry, rw, rh = (int(region[0]), int(region[1]), int(region[2]), int(region[3]))
+                    rects.append((rx, ry, rw, rh, QtGui.QColor(0, 200, 0)))
+                except Exception:
+                    pass
+            coord = detail.get("coord")
+            if not isinstance(coord, (list, tuple)) or len(coord) != 2:
+                continue
+            try:
+                bx, by = int(coord[0]), int(coord[1])
+            except Exception:
+                continue
+            pts = detail.get("pattern_points") or []
+            size = detail.get("pattern_size")
+            max_dx = max((int(p[0]) for p in pts), default=0)
+            max_dy = max((int(p[1]) for p in pts), default=0)
+            if not pts and isinstance(size, (list, tuple)) and len(size) == 2:
+                try:
+                    max_dx = int(size[0]) - 1
+                    max_dy = int(size[1]) - 1
+                except Exception:
+                    pass
+            # 발견(참)일 때만 붉은색 테두리
+            if node.get("result"):
+                rects.append((bx, by, max_dx + 1, max_dy + 1, QtGui.QColor(255, 80, 80)))
+                for dx, dy in pts:
+                    rects.append((bx + int(dx), by + int(dy), 1, 1, QtGui.QColor(255, 80, 80)))
+        try:
+            viewer.canvas.set_overlays(rects)
+            viewer.canvas.update()
+        except Exception:
+            pass
+    def _on_highlight_toggle(self, checked: bool):
+        self._selection_highlight = bool(checked)
+        if checked:
+            if not self.condition_tree.selectedItems():
+                first = self._first_pixel_item(only_true=True)
+                if first:
+                    self._set_tree_selection(first, keep_focus=True)
+            self._apply_selection_overlay()
+        else:
+            self._clear_viewer_overlay()
+        if callable(self._save_state_cb):
+            try:
+                self._save_state_cb(self._collect_state())
+            except Exception:
+                pass
+    def _on_condition_selection_changed(self):
+        items = self.condition_tree.selectedItems()
+        if items:
+            self._selected_item_path = self._current_selection_path()
+        if self._selection_highlight:
+            self._apply_selection_overlay()
+    def _forward_viewer_key(self, key: int, modifiers: QtCore.Qt.KeyboardModifier = QtCore.Qt.KeyboardModifier.NoModifier):
+        viewer = self._get_viewer()
+        if viewer is None and callable(self._focus_viewer_cb):
+            try:
+                self._focus_viewer_cb()
+            except Exception:
+                pass
+            viewer = self._get_viewer()
+        if viewer is None:
+            return
+        # 우선 실제 키 이벤트를 전달해 viewer의 기본 처리 로직을 이용
+        try:
+            evt = QtGui.QKeyEvent(QtCore.QEvent.Type.KeyPress, key, modifiers)
+            QtWidgets.QApplication.sendEvent(viewer, evt)
+        except Exception:
+            pass
+        # 필요한 경우 포커스와 창 활성화도 함께 시도
+        try:
+            viewer.raise_()
+            viewer.activateWindow()
+        except Exception:
+            pass
+    def _first_pixel_item(self, *, only_true: bool = True) -> QtWidgets.QTreeWidgetItem | None:
+        def match(item: QtWidgets.QTreeWidgetItem) -> bool:
+            node = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if not isinstance(node, dict):
+                return False
+            if node.get("type") != "pixel":
+                return False
+            if only_true and not node.get("result"):
+                return False
+            return True
+        def walk(item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QTreeWidgetItem | None:
+            if match(item):
+                return item
+            for i in range(item.childCount()):
+                found = walk(item.child(i))
+                if found:
+                    return found
+            return None
+        for i in range(self.condition_tree.topLevelItemCount()):
+            found = walk(self.condition_tree.topLevelItem(i))
+            if found:
+                return found
+        return None
+    def _current_selection_path(self) -> list[str] | None:
+        items = self.condition_tree.selectedItems()
+        if not items:
+            return None
+        item = items[0]
+        path: list[str] = []
+        while item:
+            path.append(item.text(0))
+            item = item.parent()
+        return list(reversed(path))
+    def _restore_selection_path(self) -> bool:
+        if not self._selected_item_path:
+            return False
+        target = self._find_item_by_path(self._selected_item_path)
+        if target:
+            return self._set_tree_selection(target, keep_focus=True)
+        return False
+    def _find_item_by_path(self, path: list[str]) -> QtWidgets.QTreeWidgetItem | None:
+        if not path:
+            return None
+        def walk(item: QtWidgets.QTreeWidgetItem, depth: int) -> QtWidgets.QTreeWidgetItem | None:
+            if item.text(0) != path[depth]:
+                return None
+            if depth == len(path) - 1:
+                return item
+            for i in range(item.childCount()):
+                found = walk(item.child(i), depth + 1)
+                if found:
+                    return found
+            return None
+        for i in range(self.condition_tree.topLevelItemCount()):
+            top = self.condition_tree.topLevelItem(i)
+            found = walk(top, 0)
+            if found:
+                return found
+        return None
+    def _set_tree_selection(self, item: QtWidgets.QTreeWidgetItem | None, *, keep_focus: bool = False) -> bool:
+        if item is None:
+            return False
+        prev_focus = QtWidgets.QApplication.focusWidget() if keep_focus else None
+        blocker = QtCore.QSignalBlocker(self.condition_tree)
+        try:
+            self.condition_tree.setCurrentItem(item)
+            item.setSelected(True)
+        except Exception:
+            return False
+        finally:
+            del blocker
+        self._selected_item_path = self._current_selection_path()
+        if keep_focus and prev_focus and prev_focus not in (self.condition_tree, self.condition_tree.viewport()):
+            try:
+                prev_focus.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
+            except Exception:
+                pass
+        return True
     def _build_condition_item(self, node: dict, *, compare_color: tuple[int, int, int] | None = None) -> QtWidgets.QTreeWidgetItem:
         cond = node.get("cond")
         cond_type = node.get("type") or getattr(cond, "type", "")
@@ -8631,6 +8909,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         if tooltip_parts:
             item.setToolTip(2, "\n".join(tooltip_parts))
         self._apply_condition_color(item, node.get("detail") or {}, result_bool)
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, node)
         for child in node.get("children") or []:
             item.addChild(self._build_condition_item(child, compare_color=compare_color))
         if node.get("on_true"):
@@ -12166,7 +12445,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.base_title = "Interception Macro GUI"
         self.dirty: bool = False
         self._loading_profile = False
-        self._state_path = Path.home() / ".interception_macro_gui.json"
+        base_dir = Path(__file__).resolve().parent
+        self._config_dir = base_dir / "config"
+        try:
+            self._config_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        self._state_path = self._config_dir / "global_state.json"
         self._state: dict = self._load_state()
         self._debugger_state = self._state.get("debugger", {}) if isinstance(self._state, dict) else {}
         self._image_viewer_state = self._state.get("image_viewer", {}) if isinstance(self._state, dict) else {}
@@ -12472,6 +12757,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 stop_test_cb=self._stop_pixel_test_loop,
                 fail_capture_cb=self._capture_condition_failure,
                 focus_viewer_cb=self._focus_image_viewer,
+                get_viewer_cb=lambda: self._image_viewer_dialog,
             )
             # 디버거에서 복원된 주기를 현재 기본값에도 반영
             try:
@@ -13421,6 +13707,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             return {}
     def _write_state(self, state: dict):
         try:
+            if not self._state_path.parent.exists():
+                self._state_path.parent.mkdir(parents=True, exist_ok=True)
             self._state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as exc:
             self._append_log(f"상태 파일 저장 오류: {exc}")

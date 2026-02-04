@@ -1,0 +1,87 @@
+{
+  "name": "무적힐러3",
+  "tolerance": 0,
+  "description": null,
+  "points": [
+    {
+      "dx": 7,
+      "dy": 28,
+      "color": [
+        0,
+        102,
+        165
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 7,
+      "dy": 24,
+      "color": [
+        23,
+        22,
+        23
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 13,
+      "dy": 20,
+      "color": [
+        89,
+        172,
+        169
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 2,
+      "dy": 20,
+      "color": [
+        65,
+        173,
+        166
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 7,
+      "dy": 19,
+      "color": [
+        44,
+        47,
+        48
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 14,
+      "dy": 23,
+      "color": [
+        38,
+        147,
+        136
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 0,
+      "dy": 24,
+      "color": [
+        17,
+        150,
+        130
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 7,
+      "dy": 0,
+      "color": [
+        50,
+        162,
+        151
+      ],
+      "tolerance": null
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "name": "파란색사람버프",
+  "tolerance": 0,
+  "description": null,
+  "points": [
+    {
+      "dx": 0,
+      "dy": 0,
+      "color": [
+        0,
+        147,
+        239
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 37,
+      "dy": 0,
+      "color": [
+        0,
+        147,
+        239
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 5,
+      "dy": 0,
+      "color": [
+        0,
+        147,
+        239
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 28,
+      "dy": 0,
+      "color": [
+        0,
+        147,
+        239
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 19,
+      "dy": 0,
+      "color": [
+        0,
+        147,
+        239
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 22,
+      "dy": 0,
+      "color": [
+        0,
+        147,
+        239
+      ],
+      "tolerance": null
+    },
+    {
+      "dx": 14,
+      "dy": 0,
+      "color": [
+        0,
+        147,
+        239
+      ],
+      "tolerance": null
+    }
+  ]
+}
