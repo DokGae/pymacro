@@ -1,49 +1,59 @@
 {
-  "last_profile_path": "D:/Ion/macro/setting/내정령성완성.json",
+  "last_profile_path": "D:\\Ion\\macro\\setting\\내정령성완성.json",
   "profile_history": {
     "recent": [
-      "D:\\Ion\\macro\\setting\\내정령성완성.json"
+      "D:\\Ion\\macro\\setting\\내정령성완성.json",
+      "D:\\Ion\\macro\\setting\\내궁성완성.json",
+      "D:\\Ion\\macro\\setting\\내검성완성.json",
+      "D:\\Ion\\macro\\setting\\내마도성완성.json"
     ],
     "favorites": [
-      "D:\\Ion\\macro\\setting\\내정령성완성.json"
+      "D:\\Ion\\macro\\setting\\내정령성완성.json",
+      "D:\\Ion\\macro\\setting\\내궁성완성.json",
+      "D:\\Ion\\macro\\setting\\내검성완성.json",
+      "D:\\Ion\\macro\\setting\\내마도성완성.json"
     ]
   },
   "debugger": {
     "geometry": [
-      916,
-      189,
+      288,
+      342,
       900,
       706
     ],
-    "visible": false,
+    "visible": true,
     "interval": 200,
     "tolerance": 10,
-    "test_region": "0,0,100,100",
-    "test_color": "ff0000",
+    "test_region": "2069,1416,1,1",
+    "test_color": "ffffff",
     "test_expect": true,
     "fail_capture_enabled": false,
     "fail_capture_cooldown": 1.0,
     "fail_capture_confirmations": 1,
     "fail_capture_limit": null,
-    "use_viewer_image": false,
+    "use_viewer_image": true,
     "sections": {
       "section_condition": true,
       "section_pixel": false,
       "section_vars": false
     },
-    "highlight_selection": false,
+    "highlight_selection": true,
     "log_visible": false
   },
   "screenshot": {
     "interval": 0.01,
-    "format": "jpeg",
+    "format": "png",
     "jpeg_quality": 80,
-    "png_compress_level": 6,
+    "png_compress_level": 0,
     "queue_size": 120,
     "hotkey_start": null,
     "hotkey_stop": null,
-    "hotkey_capture": null,
-    "hotkey_enabled": false
+    "hotkey_capture": "f10",
+    "hotkey_enabled": true
   },
-  "log_enabled": false
+  "log_enabled": false,
+  "image_viewer": {
+    "last_dir": "D:\\Ion\\macro\\screenshot",
+    "auto_refresh": false
+  }
 }

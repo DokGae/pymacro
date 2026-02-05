@@ -2500,13 +2500,12 @@ class ConditionDialog(QtWidgets.QDialog):
             if cond is self.root_condition:
                 self.root_condition = None
                 continue
-            info = self._find_container_info(item)
+            info = self._find_container_info(cond)
             if not info:
                 continue
-            container, attr, idx = info
-            seq = getattr(container, attr)
-            if 0 <= idx < len(seq):
-                seq.pop(idx)
+            lst, idx, _parent = info
+            if 0 <= idx < len(lst):
+                lst.pop(idx)
 
         self._refresh_condition_tree()
     def _validate_group_children(self, cond: Condition):
@@ -12966,6 +12965,11 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.favorite_list.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
         self.favorite_list.setMaximumHeight(120)
         self.favorite_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.favorite_list.setDragEnabled(True)
+        self.favorite_list.setAcceptDrops(True)
+        self.favorite_list.setDropIndicatorShown(True)
+        self.favorite_list.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+        self.favorite_list.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
         fav_col.addWidget(self.favorite_list)
         rec_col = QtWidgets.QVBoxLayout()
         rec_col.setContentsMargins(0, 0, 0, 0)
@@ -13352,6 +13356,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.favorite_list.itemDoubleClicked.connect(self._open_profile_item)
         self.recent_list.itemSelectionChanged.connect(self._on_recent_selection_changed)
         self.favorite_list.itemSelectionChanged.connect(self._on_favorite_selection_changed)
+        fav_model = self.favorite_list.model()
+        if fav_model:
+            fav_model.rowsMoved.connect(self._on_favorite_rows_moved)
         if hasattr(self, "detect_res_btn"):
             self.detect_res_btn.clicked.connect(lambda: self._fill_current_resolution(silent=False))
         if hasattr(self, "detect_scale_btn"):
@@ -13780,6 +13787,33 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._persist_profile_history()
         self._refresh_profile_lists()
         self._refresh_profile_header()
+    def _sync_favorite_order_from_list(self):
+        """현재 즐겨찾기 리스트 순서를 내부 상태에 반영한다."""
+        if not hasattr(self, "favorite_list"):
+            return
+        paths: list[str] = []
+        for idx in range(self.favorite_list.count()):
+            item = self.favorite_list.item(idx)
+            if not item:
+                continue
+            raw = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            norm = _normalize_profile_path(str(raw)) if raw else None
+            if norm:
+                paths.append(norm)
+        self._favorite_profiles = self._dedupe_profile_paths(paths)
+        self._persist_profile_history()
+        if hasattr(self, "fav_label"):
+            self.fav_label.setText(f"즐겨찾기 ({len(self._favorite_profiles)})")
+        self._update_profile_list_buttons()
+    def _on_favorite_rows_moved(
+        self,
+        _parent: QtCore.QModelIndex,
+        _start: int,
+        _end: int,
+        _dest_parent: QtCore.QModelIndex,
+        _dest_row: int,
+    ):
+        self._sync_favorite_order_from_list()
     def _clear_recent_profiles(self):
         if not self._recent_profiles:
             return
