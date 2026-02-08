@@ -3755,7 +3755,27 @@ class MacroEngine:
             except Exception:
                 macro = None
             enabled = macro and getattr(macro, "enabled", True)
+
+            # Only revive held inputs if the macro would actually resume now.
+            should_resume = False
             if enabled:
+                try:
+                    triggers = self._macro_triggers(macro)
+                except Exception:
+                    triggers = []
+                for trig in triggers:
+                    mode = getattr(trig, "mode", "hold")
+                    if mode == "hold":
+                        pressed, _ = self._trigger_state(trig.key, disallow_extra_modifiers=True)
+                        if pressed:
+                            should_resume = True
+                            break
+                    elif mode == "toggle":
+                        if self._toggle_states.get(idx, False):
+                            should_resume = True
+                            break
+
+            if enabled and should_resume:
                 release_keys = set(held.get("release_keys", set()))
                 release_mouse = set(held.get("release_mouse", set()))
                 for key in release_keys:
@@ -3769,6 +3789,7 @@ class MacroEngine:
                     except Exception:
                         pass
             else:
+                # If the trigger is no longer active, make sure nothing stays held.
                 all_keys = set(held.get("release_keys", set())) | set(held.get("keep_keys", set()))
                 all_mouse = set(held.get("release_mouse", set())) | set(held.get("keep_mouse", set()))
                 self._release_hold_inputs({"keys": all_keys, "mouse": all_mouse})
@@ -3994,6 +4015,7 @@ class MacroEngine:
                 "sample_color": check.get("sample_color"),
                 "pattern_points": check.get("pattern_points"),
                 "pattern_size": check.get("pattern_size"),
+                "matched_coords": check.get("matched_coords"),
             }
         elif cond.type == "all":
             active_children = [c for c in (cond.conditions or []) if getattr(c, "enabled", True)]
@@ -4385,6 +4407,7 @@ class MacroEngine:
         sample_color: Optional[Tuple[int, int, int]] = None
         match_count = 0
         min_count = max(1, int(min_count))
+        matched_coords: list[Tuple[int, int]] = []
 
         if pattern is not None and pattern.points:
             norm_pat = pattern.normalized()
@@ -4404,8 +4427,12 @@ class MacroEngine:
                 match_count = int(mask_all.sum()) if mask_all is not None else 0
                 found = match_count > 0
                 if found:
-                    py, px = np.argwhere(mask_all)[0]
-                    coord = (x + int(px), y + int(py))
+                    coords = np.argwhere(mask_all)
+                    if coords.size > 0:
+                        py, px = coords[0]
+                        coord = (x + int(px), y + int(py))
+                        max_take = min(len(coords), min_count)
+                        matched_coords = [(x + int(px), y + int(py)) for py, px in coords[:max_take]]
             sample_coord = coord or (x + max(0, w // 2), y + max(0, h // 2))
             try:
                 sy = int(sample_coord[1] - y)
@@ -4421,8 +4448,12 @@ class MacroEngine:
             match_count = int(mask.sum())
             found = match_count > 0
             if found:
-                py, px = np.argwhere(mask)[0]
-                coord = (x + int(px), y + int(py))
+                coords = np.argwhere(mask)
+                if coords.size > 0:
+                    py, px = coords[0]
+                    coord = (x + int(px), y + int(py))
+                    max_take = min(len(coords), min_count)
+                    matched_coords = [(x + int(px), y + int(py)) for py, px in coords[:max_take]]
             sample_coord = coord or (x + max(0, w // 2), y + max(0, h // 2))
             try:
                 sy = int(sample_coord[1] - y)
@@ -4450,6 +4481,7 @@ class MacroEngine:
                 [(int(pt.dx), int(pt.dy)) for pt in norm_pat.points] if pattern is not None and pattern.points else None
             ),
             "pattern_size": (max_dx + 1, max_dy + 1) if pattern is not None and pattern.points else None,
+            "matched_coords": matched_coords,
         }
         if include_image:
             try:

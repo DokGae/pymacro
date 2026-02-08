@@ -8733,9 +8733,16 @@ class DebuggerDialog(QtWidgets.QDialog):
                     pass
             # 발견(참)일 때만 붉은색 테두리
             if node.get("result"):
-                rects.append((bx, by, max_dx + 1, max_dy + 1, QtGui.QColor(255, 80, 80)))
+                highlight_color = QtGui.QColor(255, 215, 0)
+                rects.append((bx, by, max_dx + 1, max_dy + 1, highlight_color))
                 for dx, dy in pts:
-                    rects.append((bx + int(dx), by + int(dy), 1, 1, QtGui.QColor(255, 80, 80)))
+                    rects.append((bx + int(dx), by + int(dy), 1, 1, highlight_color))
+                match_coords = detail.get("matched_coords") or []
+                for mx, my in match_coords:
+                    try:
+                        rects.append((int(mx), int(my), 1, 1, highlight_color))
+                    except Exception:
+                        continue
         try:
             viewer.canvas.set_overlays(rects)
             viewer.canvas.update()

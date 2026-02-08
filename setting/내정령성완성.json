@@ -6806,6 +6806,25 @@
                     "timer_value": null,
                     "timer_operator": "ge",
                     "enabled": true
+                  },
+                  {
+                    "type": "pixel",
+                    "name": "고대정령",
+                    "key": null,
+                    "key_mode": null,
+                    "var_name": null,
+                    "var_value_raw": null,
+                    "var_operator": "eq",
+                    "region": "2084,1251,1,1",
+                    "color": "7f6600",
+                    "pixel_pattern": null,
+                    "tolerance": 10,
+                    "pixel_min_count": 1,
+                    "pixel_exists": false,
+                    "timer_index": null,
+                    "timer_value": null,
+                    "timer_operator": "ge",
+                    "enabled": true
                   }
                 ]
               }
@@ -7828,6 +7847,25 @@
                     "timer_value": null,
                     "timer_operator": "ge",
                     "enabled": true
+                  },
+                  {
+                    "type": "pixel",
+                    "name": "고대정령",
+                    "key": null,
+                    "key_mode": null,
+                    "var_name": null,
+                    "var_value_raw": null,
+                    "var_operator": "eq",
+                    "region": "2084,1251,1,1",
+                    "color": "7f6600",
+                    "pixel_pattern": null,
+                    "tolerance": 10,
+                    "pixel_min_count": 1,
+                    "pixel_exists": false,
+                    "timer_index": null,
+                    "timer_value": null,
+                    "timer_operator": "ge",
+                    "enabled": true
                   }
                 ]
               }
@@ -8040,6 +8078,25 @@
                     "timer_value": null,
                     "timer_operator": "ge",
                     "enabled": true
+                  },
+                  {
+                    "type": "pixel",
+                    "name": "고대정령",
+                    "key": null,
+                    "key_mode": null,
+                    "var_name": null,
+                    "var_value_raw": null,
+                    "var_operator": "eq",
+                    "region": "2084,1251,1,1",
+                    "color": "7f6600",
+                    "pixel_pattern": null,
+                    "tolerance": 10,
+                    "pixel_min_count": 1,
+                    "pixel_exists": false,
+                    "timer_index": null,
+                    "timer_value": null,
+                    "timer_operator": "ge",
+                    "enabled": true
                   }
                 ]
               }
@@ -8244,6 +8301,25 @@
                     "var_operator": "eq",
                     "region": "1888,51,1,1",
                     "color": "fdfdfd",
+                    "pixel_pattern": null,
+                    "tolerance": 10,
+                    "pixel_min_count": 1,
+                    "pixel_exists": false,
+                    "timer_index": null,
+                    "timer_value": null,
+                    "timer_operator": "ge",
+                    "enabled": true
+                  },
+                  {
+                    "type": "pixel",
+                    "name": "고대정령",
+                    "key": null,
+                    "key_mode": null,
+                    "var_name": null,
+                    "var_value_raw": null,
+                    "var_operator": "eq",
+                    "region": "2084,1251,1,1",
+                    "color": "7f6600",
                     "pixel_pattern": null,
                     "tolerance": 10,
                     "pixel_min_count": 1,

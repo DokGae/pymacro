@@ -1,7 +1,8 @@
 {
-  "last_profile_path": "D:\\Ion\\macro\\setting\\내정령성완성.json",
+  "last_profile_path": "D:\\Ion\\macro\\setting\\내치유성완성.json",
   "profile_history": {
     "recent": [
+      "D:\\Ion\\macro\\setting\\내치유성완성.json",
       "D:\\Ion\\macro\\setting\\내정령성완성.json",
       "D:\\Ion\\macro\\setting\\내궁성완성.json",
       "D:\\Ion\\macro\\setting\\내검성완성.json",
@@ -16,16 +17,16 @@
   },
   "debugger": {
     "geometry": [
-      288,
-      342,
+      328,
+      206,
       900,
       706
     ],
-    "visible": true,
+    "visible": false,
     "interval": 200,
     "tolerance": 10,
-    "test_region": "2069,1416,1,1",
-    "test_color": "ffffff",
+    "test_region": "1682,4,77,15",
+    "test_color": "bb2327",
     "test_expect": true,
     "fail_capture_enabled": false,
     "fail_capture_cooldown": 1.0,
