@@ -6,6 +6,7 @@ import io
 import itertools
 import math
 import json
+import shutil
 import queue
 import re
 import sys
@@ -246,6 +247,104 @@ ACTION_TYPE_OPTIONS = [
     ("대기 (sleep)", "sleep"),
     ("타이머 설정", "timer"),
 ]
+_VK_TO_MACRO_KEY: dict[int, str] = {
+    8: "backspace",
+    9: "tab",
+    13: "enter",
+    16: "shift",
+    17: "ctrl",
+    18: "alt",
+    19: "pause",
+    20: "capslock",
+    27: "esc",
+    32: "space",
+    33: "pageup",
+    34: "pagedown",
+    35: "end",
+    36: "home",
+    37: "left",
+    38: "up",
+    39: "right",
+    40: "down",
+    45: "insert",
+    46: "delete",
+    91: "win",
+    92: "win",
+    93: "apps",
+    144: "numlock",
+    145: "scrolllock",
+    186: ";",
+    187: "=",
+    188: ",",
+    189: "-",
+    190: ".",
+    191: "/",
+    192: "`",
+    219: "[",
+    220: "\\",
+    221: "]",
+    222: "'",
+}
+def _vk_to_macro_key(vk: int) -> str | None:
+    try:
+        code = int(vk)
+    except Exception:
+        return None
+    key: str | None = None
+    if 65 <= code <= 90:
+        key = chr(code).lower()
+    elif 48 <= code <= 57:
+        key = chr(code)
+    elif 112 <= code <= 135:
+        key = f"f{code - 111}"
+    elif 96 <= code <= 105:
+        # 넘패드 숫자는 매크로에서 일반 숫자 키로 취급해도 동일하게 동작한다.
+        key = str(code - 96)
+    elif code in (106, 107, 109, 110, 111):
+        key = {106: "*", 107: "+", 109: "-", 110: ".", 111: "/"}[code]
+    else:
+        key = _VK_TO_MACRO_KEY.get(code)
+    if not key:
+        return None
+    try:
+        kbutil.vk_from_key(key)
+    except Exception:
+        return None
+    return key
+def _macro_key_from_stroke(stroke) -> str | None:
+    if stroke is None:
+        return None
+    try:
+        sc = int(getattr(stroke, "code", 0))
+    except Exception:
+        return None
+    if sc <= 0:
+        return None
+    try:
+        vk = int(map_virtual_key(sc, MapVk.ScToVk) or 0)
+    except Exception:
+        vk = 0
+    if vk <= 0:
+        return None
+    return _vk_to_macro_key(vk)
+def _stroke_key_label(stroke, key_name: str | None = None) -> str:
+    try:
+        sc = int(getattr(stroke, "code", 0))
+    except Exception:
+        sc = 0
+    try:
+        vk = int(map_virtual_key(sc, MapVk.ScToVk) or 0)
+    except Exception:
+        vk = 0
+    label = key_name or ""
+    parts: list[str] = []
+    if label:
+        parts.append(label)
+    if vk > 0:
+        parts.append(f"VK {vk}")
+    if sc > 0:
+        parts.append(f"SC {sc}")
+    return " / ".join(parts) if parts else "알 수 없는 키"
 def _parse_delay_text(text: str) -> tuple[int, bool, int, int]:
     """`40` -> (40, False, 40, 40), `40-80` -> (40, True, 40, 80)."""
     raw = str(text or "").lower().replace("ms", "")
@@ -1700,7 +1799,7 @@ class ConditionTreeWidget(QtWidgets.QTreeWidget):
         if event.source() is self and event.dropAction() == QtCore.Qt.DropAction.MoveAction and len(selected) > 1:
             pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
             target = self.itemAt(pos)
-            indicator = event.dropIndicatorPosition()
+            indicator = self.dropIndicatorPosition()
 
             # 선택 항목 내부나 자식으로 드롭하려면 무시
             if target and any(target is it or self._is_descendant(target, it) for it in selected):
@@ -3066,6 +3165,110 @@ class _ImageCanvas(QtWidgets.QWidget):
     def resizeEvent(self, event: QtGui.QResizeEvent):
         self._update_draw_rect()
         super().resizeEvent(event)
+class _ImageFilterProxyModel(QtCore.QSortFilterProxyModel):
+    def __init__(self, *, allow_exts: tuple[str, ...], parent=None):
+        super().__init__(parent)
+        self._allow_exts = tuple(e.lower() for e in allow_exts)
+    def headerData(self, section: int, orientation: QtCore.Qt.Orientation, role: int = QtCore.Qt.ItemDataRole.DisplayRole):
+        if role == QtCore.Qt.ItemDataRole.DisplayRole and orientation == QtCore.Qt.Orientation.Horizontal:
+            if section == 2:
+                return "형식"
+        return super().headerData(section, orientation, role)
+    def data(self, index: QtCore.QModelIndex, role: int = QtCore.Qt.ItemDataRole.DisplayRole):
+        if role == QtCore.Qt.ItemDataRole.DisplayRole and index.column() == 2:
+            try:
+                src_idx = self.mapToSource(index)
+                name = self.sourceModel().fileName(src_idx)
+                ext = Path(name).suffix.upper().lstrip(".")
+                return ext or "파일"
+            except Exception:
+                pass
+        return super().data(index, role)
+    def filterAcceptsRow(self, source_row: int, source_parent: QtCore.QModelIndex) -> bool:
+        model = self.sourceModel()
+        if model is None:
+            return False
+        idx = model.index(source_row, 0, source_parent)
+        if not idx.isValid():
+            return False
+        if getattr(model, "isDir", lambda x: False)(idx):
+            return True
+        name = getattr(model, "fileName", lambda x: "")(idx).lower()
+        return any(name.endswith(ext) for ext in self._allow_exts)
+class _FileTreeView(QtWidgets.QTreeView):
+    dropRequested = QtCore.pyqtSignal(list, Path, QtCore.Qt.DropAction)
+    ctrlArrow = QtCore.pyqtSignal(int)
+    deleteRequested = QtCore.pyqtSignal()
+    refreshRequested = QtCore.pyqtSignal()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._root_path = Path.cwd()
+        self._path_resolver = None
+        self.setUniformRowHeights(True)
+        self.setHeaderHidden(False)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragDrop)
+        self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+        self.setIndentation(16)
+        self.setExpandsOnDoubleClick(True)
+    def set_root_path(self, root: Path):
+        self._root_path = Path(root)
+    def set_path_resolver(self, fn: Callable[[QtCore.QModelIndex], Path | None]):
+        self._path_resolver = fn
+    def keyPressEvent(self, event: QtGui.QKeyEvent):
+        key = event.key()
+        modifiers = event.modifiers()
+        if key in (QtCore.Qt.Key.Key_Left, QtCore.Qt.Key.Key_Right) and (
+            modifiers & QtCore.Qt.KeyboardModifier.ControlModifier
+        ):
+            delta = -1 if key == QtCore.Qt.Key.Key_Left else 1
+            self.ctrlArrow.emit(delta)
+            event.accept()
+            return
+        if key == QtCore.Qt.Key.Key_Delete:
+            self.deleteRequested.emit()
+            event.accept()
+            return
+        if key == QtCore.Qt.Key.Key_F5:
+            self.refreshRequested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+    def dropEvent(self, event: QtGui.QDropEvent):
+        if not event.mimeData().hasUrls():
+            return super().dropEvent(event)
+        idx = self.indexAt(event.position().toPoint()) if hasattr(event, "position") else self.indexAt(event.pos())
+        target_path = self._resolve_path(idx)
+        urls = event.mimeData().urls()
+        paths = [Path(u.toLocalFile()) for u in urls if u.isLocalFile()]
+        if not paths:
+            event.ignore()
+            return
+        copy_action = bool(event.keyboardModifiers() & QtCore.Qt.KeyboardModifier.ControlModifier)
+        action = QtCore.Qt.DropAction.CopyAction if copy_action else QtCore.Qt.DropAction.MoveAction
+        self.dropRequested.emit(paths, target_path, action)
+        event.acceptProposedAction()
+    def _resolve_path(self, idx: QtCore.QModelIndex) -> Path:
+        if idx and idx.isValid() and callable(self._path_resolver):
+            p = self._path_resolver(idx)
+        else:
+            p = None
+        if p is None:
+            return self._root_path
+        return p if p.is_dir() else p.parent
 class ImageViewerDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -3095,101 +3298,180 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._screenshot_hotkeys_provider = screenshot_hotkeys_provider
         self._capture_manager = capture_manager
         self._capture_listener = None
-        self._current_folder = Path(start_dir)
+        state = state or {}
+        self._root_dir = self._validate_dir(Path(state.get("root_dir", start_dir)))
+        self._current_folder = self._validate_dir(Path(state.get("last_dir", self._root_dir)))
         self._image_files: list[Path] = []
         self._current_index = -1
         self._last_sample = None
         self._focused_on_viewer = True
         self._status_prefix = ""
         self._pending_state: dict | None = None
-        self._auto_refresh_enabled = bool((state or {}).get("auto_refresh"))
+        self._block_tree_selection = False
+        self._auto_refresh_enabled = bool(state.get("auto_refresh"))
         self._debug_frame_cache_path: Path | None = None
         self._debug_frame_cache_mtime: float | None = None
         self._debug_frame_cache_frame: np.ndarray | None = None
+        self._favorites = state.get("favorites") if isinstance(state, dict) else {}
+        if not isinstance(self._favorites, dict):
+            self._favorites = {}
+        if not self._favorites:
+            self._favorites = {"기본": []}
+        self._current_fav_group = state.get("fav_group") if isinstance(state, dict) else None
+        if not self._current_fav_group or self._current_fav_group not in self._favorites:
+            self._current_fav_group = next(iter(self._favorites))
+        self._last_file_in_state = state.get("last_file") if isinstance(state, dict) else None
+        self._sort_column = int(state.get("sort_col", 3)) if isinstance(state, dict) else 3
+        self._sort_order = (
+            QtCore.Qt.SortOrder.DescendingOrder
+            if state.get("sort_order", "desc") == "desc"
+            else QtCore.Qt.SortOrder.AscendingOrder
+            if isinstance(state, dict)
+            else QtCore.Qt.SortOrder.DescendingOrder
+        )
         self._build_ui()
-        self.set_start_dir(start_dir, refresh=True)
+        self.set_start_dir(self._current_folder, refresh=True)
         self._attach_capture_listener()
         self._notify_condition_window()
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
-        def _make_section(title: str, content: QtWidgets.QWidget, state_key: str, *, default_open: bool = True) -> QtWidgets.QWidget:
-            btn = QtWidgets.QToolButton()
-            btn.setText(title)
-            btn.setCheckable(True)
-            btn.setChecked(default_open)
-            btn.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            btn.setArrowType(QtCore.Qt.ArrowType.DownArrow if default_open else QtCore.Qt.ArrowType.RightArrow)
-            container = QtWidgets.QWidget()
-            v = QtWidgets.QVBoxLayout(container)
-            v.setContentsMargins(0, 0, 0, 0)
-            v.addWidget(content)
-            def _toggle(opened: bool):
-                container.setVisible(opened)
-                btn.setArrowType(QtCore.Qt.ArrowType.DownArrow if opened else QtCore.Qt.ArrowType.RightArrow)
-                self._section_controls[state_key] = btn
-                if self._save_state_cb:
-                    try:
-                        self._save_state_cb(self._collect_state())
-                    except Exception:
-                        pass
-            btn.toggled.connect(_toggle)
-            _toggle(default_open)
-            wrap = QtWidgets.QWidget()
-            wrap_layout = QtWidgets.QVBoxLayout(wrap)
-            wrap_layout.setContentsMargins(0, 0, 0, 0)
-            wrap_layout.addWidget(btn)
-            wrap_layout.addWidget(container)
-            self._section_controls[state_key] = btn
-            return wrap
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
         top = QtWidgets.QHBoxLayout()
-        self.folder_btn = QtWidgets.QPushButton("폴더 선택")
-        self.path_label = QtWidgets.QLabel("")
-        self.path_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.image_combo = QtWidgets.QComboBox()
-        self.open_folder_btn = QtWidgets.QPushButton("폴더 열기")
-        self.delete_btn = QtWidgets.QPushButton("전체 삭제")
-        self.delete_current_btn = QtWidgets.QPushButton("현재 삭제")
+        self.root_btn = QtWidgets.QPushButton("루트 변경")
+        self.open_folder_btn = QtWidgets.QPushButton("탐색기에서 열기")
         self.refresh_btn = QtWidgets.QPushButton("새로고침")
+        self.delete_btn = QtWidgets.QPushButton("선택 삭제")
+        self.delete_all_btn = QtWidgets.QPushButton("폴더 비우기")
         self.auto_refresh_chk = QtWidgets.QCheckBox("단일 캡처 후 새로고침")
         self.region_select_btn = QtWidgets.QPushButton("범위 선택")
         self.screenshot_btn = QtWidgets.QPushButton("스크린샷")
         self.close_btn = QtWidgets.QPushButton("종료")
-        top.addWidget(self.folder_btn)
-        top.addWidget(self.image_combo, 1)
+        top.addWidget(self.root_btn)
         top.addWidget(self.open_folder_btn)
-        top.addWidget(self.delete_btn)
-        top.addWidget(self.delete_current_btn)
         top.addWidget(self.refresh_btn)
+        top.addWidget(self.delete_btn)
+        top.addWidget(self.delete_all_btn)
         top.addWidget(self.auto_refresh_chk)
+        top.addStretch(1)
         top.addWidget(self.region_select_btn)
         top.addWidget(self.screenshot_btn)
         top.addWidget(self.close_btn)
         layout.addLayout(top)
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        layout.addWidget(splitter, 1)
+        # 좌측: 즐겨찾기 + 파일 트리
+        sidebar = QtWidgets.QWidget()
+        side_layout = QtWidgets.QVBoxLayout(sidebar)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(6)
+        root_row = QtWidgets.QHBoxLayout()
+        root_row.setContentsMargins(0, 0, 0, 0)
+        root_row.setSpacing(6)
+        root_row.addWidget(QtWidgets.QLabel("루트"))
+        self.root_label = QtWidgets.QLabel(str(self._root_dir))
+        self.root_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        root_row.addWidget(self.root_label, 1)
+        side_layout.addLayout(root_row)
+        fav_box = QtWidgets.QGroupBox("즐겨찾기")
+        fav_layout = QtWidgets.QVBoxLayout(fav_box)
+        fav_layout.setContentsMargins(6, 6, 6, 6)
+        fav_layout.setSpacing(6)
+        fav_btns = QtWidgets.QHBoxLayout()
+        fav_btns.setSpacing(4)
+        self.add_group_btn = QtWidgets.QPushButton("그룹 추가")
+        self.remove_group_btn = QtWidgets.QPushButton("그룹 삭제")
+        self.add_fav_btn = QtWidgets.QPushButton("현재 추가")
+        self.remove_fav_btn = QtWidgets.QPushButton("삭제")
+        fav_btns.addWidget(self.add_group_btn)
+        fav_btns.addWidget(self.remove_group_btn)
+        fav_btns.addWidget(self.add_fav_btn)
+        fav_btns.addWidget(self.remove_fav_btn)
+        fav_layout.addLayout(fav_btns)
+        self.fav_tree = QtWidgets.QTreeWidget()
+        self.fav_tree.setHeaderHidden(True)
+        self.fav_tree.setIndentation(14)
+        self.fav_tree.setUniformRowHeights(True)
+        self.fav_tree.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        fav_layout.addWidget(self.fav_tree, 1)
+        side_layout.addWidget(fav_box)
+        self.file_tree = _FileTreeView()
+        side_layout.addWidget(self.file_tree, 1)
+        splitter.addWidget(sidebar)
+        # 우측: 뷰어
+        right = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(6)
+        self.path_label = QtWidgets.QLabel("")
+        self.path_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         self.hud_label = QtWidgets.QLabel("")
         self.hud_label.setStyleSheet("color: #d9e7ff; background: rgba(30,40,60,0.6); padding: 4px;")
         self.path_label.setStyleSheet("color: #9fb2cc;")
-        layout.addWidget(self.path_label)
-        layout.addWidget(self.hud_label)
+        right_layout.addWidget(self.path_label)
+        right_layout.addWidget(self.hud_label)
         self.canvas = _ImageCanvas()
         self.canvas.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-        layout.addWidget(self.canvas, 1)
+        right_layout.addWidget(self.canvas, 1)
         self.status_label = QtWidgets.QLabel("스크린샷 폴더 이미지를 선택하세요.")
         self.status_label.setStyleSheet("color: #b5c2d6;")
-        layout.addWidget(self.status_label)
-        self.folder_btn.clicked.connect(self._choose_folder)
-        self.image_combo.currentIndexChanged.connect(self._on_image_changed)
+        right_layout.addWidget(self.status_label)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([320, 900])
+        # 파일 모델/트리 연결
+        self._fs_model = QtGui.QFileSystemModel(self)
+        self._fs_model.setReadOnly(False)
+        self._fs_model.setNameFilterDisables(False)
+        self._fs_model.setFilter(
+            QtCore.QDir.Filter.AllDirs | QtCore.QDir.Filter.NoDotAndDotDot | QtCore.QDir.Filter.Files
+        )
+        self._fs_model.setHeaderData(0, QtCore.Qt.Orientation.Horizontal, "이름")
+        self._fs_model.setHeaderData(1, QtCore.Qt.Orientation.Horizontal, "크기")
+        self._fs_model.setHeaderData(2, QtCore.Qt.Orientation.Horizontal, "형식")
+        self._fs_model.setHeaderData(3, QtCore.Qt.Orientation.Horizontal, "수정 시각")
+        self._proxy_model = _ImageFilterProxyModel(allow_exts=(".png", ".jpg", ".jpeg", ".bmp"), parent=self)
+        self._proxy_model.setSourceModel(self._fs_model)
+        self.file_tree.setModel(self._proxy_model)
+        self.file_tree.set_path_resolver(self._path_from_index)
+        self.file_tree.set_root_path(self._root_dir)
+        header = self.file_tree.header()
+        header.setSectionsClickable(True)
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.file_tree.hideColumn(1)  # 크기 숨김
+        self.file_tree.setSortingEnabled(True)
+        # 시그널 연결
+        self.root_btn.clicked.connect(self._choose_root)
+        self.open_folder_btn.clicked.connect(self._open_current_folder)
+        self.refresh_btn.clicked.connect(self._refresh_folder)
+        self.delete_btn.clicked.connect(self._delete_selection)
+        self.delete_all_btn.clicked.connect(self._delete_all_in_folder)
+        self.auto_refresh_chk.setChecked(self._auto_refresh_enabled)
+        self.auto_refresh_chk.toggled.connect(self._persist_state)
+        self.region_select_btn.clicked.connect(self._start_region_selection)
+        self.screenshot_btn.clicked.connect(self._open_screenshot)
         self.close_btn.clicked.connect(self.close)
         self.canvas.sampleChanged.connect(self._on_sample_changed)
         self.canvas.zoomChanged.connect(self._on_zoom_changed)
-        self.screenshot_btn.clicked.connect(self._open_screenshot)
-        self.region_select_btn.clicked.connect(self._start_region_selection)
-        self.open_folder_btn.clicked.connect(self._open_current_folder)
-        self.delete_btn.clicked.connect(self._delete_all_in_folder)
-        self.delete_current_btn.clicked.connect(self._delete_current_file)
-        self.refresh_btn.clicked.connect(self._refresh_folder)
-        self.auto_refresh_chk.setChecked(self._auto_refresh_enabled)
-        self.auto_refresh_chk.toggled.connect(self._remember_folder)
+        self.add_group_btn.clicked.connect(self._add_favorite_group)
+        self.remove_group_btn.clicked.connect(self._remove_favorite_group)
+        self.add_fav_btn.clicked.connect(self._add_current_to_favorites)
+        self.remove_fav_btn.clicked.connect(self._remove_selected_favorite)
+        self.fav_tree.itemDoubleClicked.connect(self._on_favorite_double_clicked)
+        self.file_tree.dropRequested.connect(self._handle_drop)
+        self.file_tree.ctrlArrow.connect(self._on_tree_ctrl_arrow)
+        self.file_tree.deleteRequested.connect(self._delete_selection)
+        self.file_tree.refreshRequested.connect(self._refresh_folder)
+        self.file_tree.doubleClicked.connect(self._on_tree_double_clicked)
+        self.file_tree.selectionModel().selectionChanged.connect(self._on_tree_selection_changed)
+        header.sortIndicatorChanged.connect(self._on_sort_indicator_changed)
+        self._set_tree_root(self._root_dir)
+        self._apply_sort()
+        self._refresh_favorites_tree()
         if not callable(self._open_screenshot_dialog):
             self.screenshot_btn.setEnabled(False)
         self._update_hud_text()
@@ -3199,24 +3481,465 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._start_region_selection,
             context=QtCore.Qt.ShortcutContext.ApplicationShortcut,
         )
-    def set_start_dir(self, path: Path, *, refresh: bool = False):
-        new_dir = Path(path)
-        if not new_dir.exists():
-            new_dir = SCREENSHOT_DIR
-        if refresh or new_dir != self._current_folder:
-            self._current_folder = new_dir
-            self._load_folder(new_dir)
-            self._remember_folder()
-    def _remember_folder(self):
+    def _validate_dir(self, path: Path) -> Path:
+        try:
+            p = Path(path)
+        except Exception:
+            p = SCREENSHOT_DIR
+        if p.is_file():
+            p = p.parent
+        if not p.exists():
+            p = SCREENSHOT_DIR
+        return p
+    def _is_under_root(self, path: Path) -> bool:
+        try:
+            return Path(path).resolve().is_relative_to(self._root_dir.resolve())
+        except Exception:
+            try:
+                return str(Path(path).resolve()).lower().startswith(str(self._root_dir.resolve()).lower())
+            except Exception:
+                return False
+    def _is_image_file(self, path: Path) -> bool:
+        return path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
+    def _set_tree_root(self, path: Path):
+        root = self._validate_dir(path)
+        self._root_dir = root
+        self.root_label.setText(str(root))
+        try:
+            src_root = self._fs_model.setRootPath(str(root))
+            proxy_root = self._proxy_model.mapFromSource(src_root)
+            self.file_tree.set_root_path(root)
+            self.file_tree.setRootIndex(proxy_root)
+        except Exception:
+            pass
+        self._apply_sort()
+    def _path_from_index(self, proxy_idx: QtCore.QModelIndex) -> Path | None:
+        if not proxy_idx or not proxy_idx.isValid():
+            return None
+        try:
+            src_idx = self._proxy_model.mapToSource(proxy_idx)
+            return Path(self._fs_model.filePath(src_idx))
+        except Exception:
+            return None
+    def _index_for_path(self, path: Path) -> QtCore.QModelIndex:
+        try:
+            src_idx = self._fs_model.index(str(path))
+            if not src_idx.isValid():
+                return QtCore.QModelIndex()
+            return self._proxy_model.mapFromSource(src_idx)
+        except Exception:
+            return QtCore.QModelIndex()
+    def _select_tree_path(self, path: Path):
+        idx = self._index_for_path(path)
+        if not idx.isValid() or not self.file_tree.selectionModel():
+            return
+        self._block_tree_selection = True
+        try:
+            sel = QtCore.QItemSelection(idx, idx)
+            self.file_tree.selectionModel().select(
+                sel,
+                QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+                | QtCore.QItemSelectionModel.SelectionFlag.Rows,
+            )
+            self.file_tree.selectionModel().setCurrentIndex(
+                idx,
+                QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+                | QtCore.QItemSelectionModel.SelectionFlag.Rows,
+            )
+            self.file_tree.scrollTo(idx, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
+        except Exception:
+            pass
+        self._block_tree_selection = False
+    def _set_current_folder(self, folder: Path, *, refresh: bool = False, auto_select_first: bool = False):
+        folder = self._validate_dir(folder)
+        need_refresh = refresh or folder != self._current_folder
+        self._current_folder = folder
+        self._update_path_label()
+        self._load_folder(folder, auto_select_first=auto_select_first or need_refresh)
+        self._select_tree_path(folder)
+        self._persist_state()
+    def _select_file(self, path: Path):
+        if not path or not path.exists() or not self._is_image_file(path):
+            return
+        parent = path.parent
+        if parent != self._current_folder:
+            self._set_current_folder(parent, refresh=True)
+        try:
+            idx = self._image_files.index(path)
+        except ValueError:
+            self._load_folder(parent, auto_select_first=False)
+            try:
+                idx = self._image_files.index(path)
+            except ValueError:
+                return
+        self._select_index(idx)
+    def _current_file(self) -> Path | None:
+        if 0 <= self._current_index < len(self._image_files):
+            return self._image_files[self._current_index]
+        return None
+    def _persist_state(self):
         data = {
             "last_dir": str(self._current_folder),
+            "root_dir": str(self._root_dir),
             "auto_refresh": bool(self.auto_refresh_chk.isChecked()),
+            "favorites": self._favorites,
+            "fav_group": self._current_fav_group,
+            "last_file": str(self._current_file()) if self._current_file() else None,
+            "sort_col": self._sort_column,
+            "sort_order": "desc" if self._sort_order == QtCore.Qt.SortOrder.DescendingOrder else "asc",
         }
         if callable(self._save_state):
             try:
                 self._save_state(data)
             except Exception:
                 pass
+    def _update_path_label(self):
+        if self._current_folder == self._root_dir:
+            self.path_label.hide()
+        else:
+            self.path_label.setText(str(self._current_folder))
+            self.path_label.show()
+    def _remember_folder(self):
+        self._persist_state()
+    def _collect_state(self):
+        return {
+            "last_dir": str(self._current_folder),
+            "root_dir": str(self._root_dir),
+            "auto_refresh": bool(self.auto_refresh_chk.isChecked()),
+            "favorites": self._favorites,
+            "fav_group": self._current_fav_group,
+            "last_file": str(self._current_file()) if self._current_file() else None,
+        }
+    def set_start_dir(self, path: Path, *, refresh: bool = False):
+        new_dir = self._validate_dir(path)
+        if not self._is_under_root(new_dir):
+            self._set_tree_root(new_dir)
+        self._set_current_folder(new_dir, refresh=refresh, auto_select_first=True)
+        if self._last_file_in_state:
+            try:
+                remembered = Path(self._last_file_in_state)
+                if remembered.exists() and self._is_image_file(remembered):
+                    self._select_file(remembered)
+            except Exception:
+                pass
+            self._last_file_in_state = None
+    def _on_tree_selection_changed(self, selected: QtCore.QItemSelection, deselected: QtCore.QItemSelection):
+        if self._block_tree_selection:
+            return
+        try:
+            idxs = self.file_tree.selectionModel().selectedRows()
+        except Exception:
+            idxs = []
+        if not idxs:
+            return
+        path = self._path_from_index(idxs[0])
+        if not path:
+            return
+        if path.is_dir():
+            self._set_current_folder(path, refresh=True, auto_select_first=False)
+            return
+        if self._is_image_file(path):
+            self._select_file(path)
+        else:
+            self._set_current_folder(path.parent, refresh=False, auto_select_first=False)
+    def _on_tree_double_clicked(self, idx: QtCore.QModelIndex):
+        path = self._path_from_index(idx)
+        if not path:
+            return
+        if path.is_dir():
+            if self.file_tree.isExpanded(idx):
+                self.file_tree.collapse(idx)
+            else:
+                self.file_tree.expand(idx)
+            self._set_current_folder(path, refresh=False, auto_select_first=False)
+            return
+        if self._is_image_file(path):
+            self._select_file(path)
+    def _next_available_path(self, path: Path) -> Path:
+        if not path.exists():
+            return path
+        stem, suffix = path.stem, path.suffix
+        parent = path.parent
+        for i in range(1, 1000):
+            candidate = parent / f"{stem} ({i}){suffix}"
+            if not candidate.exists():
+                return candidate
+        return path
+    def _handle_drop(self, sources: list[Path], target_dir: Path, action: QtCore.Qt.DropAction):
+        target_dir = self._validate_dir(target_dir)
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        copy = action == QtCore.Qt.DropAction.CopyAction
+        moved = copied = skipped = 0
+        errors: list[str] = []
+        for src in sources:
+            try:
+                src_path = Path(src)
+            except Exception:
+                skipped += 1
+                continue
+            if not src_path.exists():
+                skipped += 1
+                continue
+            if target_dir == src_path or target_dir in src_path.parents:
+                skipped += 1
+                continue
+            dest = self._next_available_path(target_dir / src_path.name)
+            try:
+                if copy:
+                    if src_path.is_dir():
+                        shutil.copytree(src_path, dest)
+                    else:
+                        shutil.copy2(src_path, dest)
+                    copied += 1
+                else:
+                    shutil.move(str(src_path), str(dest))
+                    moved += 1
+            except Exception as exc:
+                errors.append(f"{src_path.name}: {exc}")
+        self._set_current_folder(target_dir, refresh=True)
+        parts = []
+        if moved:
+            parts.append(f"이동 {moved}개")
+        if copied:
+            parts.append(f"복사 {copied}개")
+        if skipped:
+            parts.append(f"건너뜀 {skipped}개")
+        if parts:
+            self.status_label.setText(" / ".join(parts))
+        if errors:
+            QtWidgets.QMessageBox.warning(self, "이동/복사 실패", "\n".join(errors[:5]))
+    def _delete_selection(self):
+        paths: list[Path] = []
+        try:
+            sel = self.file_tree.selectionModel().selectedRows()
+            for idx in sel:
+                p = self._path_from_index(idx)
+                if p and p not in paths:
+                    paths.append(p)
+        except Exception:
+            paths = []
+        if not paths and self._current_file():
+            self._delete_current_file()
+            return
+        if not paths:
+            QtWidgets.QMessageBox.information(self, "삭제 대상 없음", "삭제할 항목이 없습니다.")
+            return
+        files = sum(1 for p in paths if p.is_file())
+        folders = sum(1 for p in paths if p.is_dir())
+        msg = []
+        if folders:
+            msg.append(f"폴더 {folders}개")
+        if files:
+            msg.append(f"파일 {files}개")
+        res = QtWidgets.QMessageBox.question(
+            self,
+            "선택 삭제",
+            f"{', '.join(msg)}를 삭제할까요?",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if res != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        removed = 0
+        failed: list[str] = []
+        for p in paths:
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p)
+                else:
+                    p.unlink()
+                removed += 1
+            except Exception as exc:
+                failed.append(f"{p.name}: {exc}")
+        self._refresh_folder()
+        self.status_label.setText(f"삭제 완료: {removed}건")
+        if failed:
+            QtWidgets.QMessageBox.warning(self, "삭제 실패", "\n".join(failed[:5]))
+    def _refresh_favorites_tree(self):
+        if not hasattr(self, "fav_tree"):
+            return
+        self.fav_tree.blockSignals(True)
+        self.fav_tree.clear()
+        for group, items in self._favorites.items():
+            g_item = QtWidgets.QTreeWidgetItem([group])
+            g_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, {"type": "group", "name": group})
+            for path_str in items:
+                path = Path(path_str)
+                label = path.name or str(path)
+                child = QtWidgets.QTreeWidgetItem([label])
+                child.setToolTip(0, str(path))
+                child.setData(
+                    0,
+                    QtCore.Qt.ItemDataRole.UserRole,
+                    {"type": "fav", "group": group, "path": str(path)},
+                )
+                g_item.addChild(child)
+            g_item.setExpanded(group == self._current_fav_group)
+            self.fav_tree.addTopLevelItem(g_item)
+            if group == self._current_fav_group:
+                self.fav_tree.setCurrentItem(g_item)
+        self.fav_tree.blockSignals(False)
+    def _add_favorite_group(self):
+        name, ok = QtWidgets.QInputDialog.getText(self, "즐겨찾기 그룹 추가", "그룹 이름을 입력하세요.")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if name in self._favorites:
+            QtWidgets.QMessageBox.information(self, "중복", "이미 존재하는 그룹입니다.")
+            return
+        self._favorites[name] = []
+        self._current_fav_group = name
+        self._refresh_favorites_tree()
+        self._persist_state()
+    def _remove_favorite_group(self):
+        item = self.fav_tree.currentItem()
+        data = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item else None
+        group = data.get("name") if isinstance(data, dict) and data.get("type") == "group" else None
+        if not group:
+            QtWidgets.QMessageBox.information(self, "선택 없음", "삭제할 그룹을 선택하세요.")
+            return
+        if len(self._favorites) <= 1:
+            QtWidgets.QMessageBox.information(self, "삭제 불가", "최소 한 개의 그룹이 필요합니다.")
+            return
+        res = QtWidgets.QMessageBox.question(
+            self,
+            "그룹 삭제",
+            f"'{group}' 그룹과 포함된 즐겨찾기를 삭제할까요?",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if res != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self._favorites.pop(group, None)
+        self._current_fav_group = next(iter(self._favorites))
+        self._refresh_favorites_tree()
+        self._persist_state()
+    def _rename_current_file(self):
+        target = self._current_file()
+        if not target or not target.exists():
+            QtWidgets.QMessageBox.information(self, "이름 변경", "선택된 이미지가 없습니다.")
+            return
+        base_name = target.name
+        new_name, ok = QtWidgets.QInputDialog.getText(self, "이름 변경", "새 파일 이름을 입력하세요.", text=base_name)
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            QtWidgets.QMessageBox.information(self, "이름 변경", "파일 이름이 비어 있습니다.")
+            return
+        if "." not in new_name:
+            new_name += target.suffix
+        new_path = target.parent / new_name
+        if new_path == target:
+            return
+        if new_path.exists():
+            QtWidgets.QMessageBox.warning(self, "이름 변경", "동일한 이름의 파일이 이미 있습니다.")
+            return
+        try:
+            target.rename(new_path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "이름 변경 실패", str(exc))
+            return
+        self._set_current_folder(new_path.parent, refresh=True, auto_select_first=False)
+        self._select_file(new_path)
+        self.status_label.setText(f"이름 변경: {base_name} → {new_path.name}")
+    def _add_current_to_favorites(self):
+        target = self._current_file() or self._current_folder
+        if not target:
+            QtWidgets.QMessageBox.information(self, "추가할 항목 없음", "현재 선택된 파일이나 폴더가 없습니다.")
+            return
+        group = self._current_fav_group or next(iter(self._favorites))
+        favs = self._favorites.setdefault(group, [])
+        path_str = str(target)
+        if path_str not in favs:
+            favs.append(path_str)
+            self._refresh_favorites_tree()
+            self._persist_state()
+            self.status_label.setText(f"즐겨찾기 추가: {target}")
+        else:
+            self.status_label.setText("이미 즐겨찾기에 있습니다.")
+    def _remove_selected_favorite(self):
+        item = self.fav_tree.currentItem()
+        data = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item else None
+        if not isinstance(data, dict) or data.get("type") != "fav":
+            QtWidgets.QMessageBox.information(self, "선택 없음", "삭제할 즐겨찾기를 선택하세요.")
+            return
+        group = data.get("group")
+        path_str = data.get("path")
+        favs = self._favorites.get(group, [])
+        if path_str in favs:
+            favs.remove(path_str)
+        self._refresh_favorites_tree()
+        self._persist_state()
+    def _on_favorite_double_clicked(self, item: QtWidgets.QTreeWidgetItem, column: int):
+        data = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item else None
+        if not isinstance(data, dict):
+            return
+        if data.get("type") == "group":
+            self._current_fav_group = data.get("name") or self._current_fav_group
+            self._persist_state()
+            return
+        if data.get("type") == "fav":
+            path = Path(data.get("path"))
+            if not path.exists():
+                QtWidgets.QMessageBox.information(self, "경로 없음", f"{path} 가 존재하지 않습니다.")
+                return
+            if path.is_dir():
+                if not self._is_under_root(path):
+                    self._set_tree_root(path)
+                self._set_current_folder(path, refresh=True, auto_select_first=True)
+                return
+            if self._is_image_file(path):
+                parent = path.parent
+                if not self._is_under_root(parent):
+                    self._set_tree_root(parent)
+                self._select_file(path)
+    def _on_tree_ctrl_arrow(self, delta: int):
+        """Ctrl+좌/우: 트리에서 현재 선택 기준 다음/이전 이미지로 이동."""
+        sel_model = self.file_tree.selectionModel()
+        idx = sel_model.currentIndex() if sel_model else QtCore.QModelIndex()
+        if (not idx.isValid()) and self._current_file():
+            idx = self._index_for_path(self._current_file())
+        if not idx.isValid():
+            # 더 이상 기준이 없으면 이미지 리스트 기준으로만 이동
+            self._select_index(max(0, min(len(self._image_files) - 1, self._current_index + delta)))
+            return
+        next_idx = self._next_image_index(idx, delta)
+        if next_idx.isValid():
+            path = self._path_from_index(next_idx)
+            if path:
+                self._select_file(path)
+                return
+        # 못 찾으면 현 폴더 내 리스트 기준 이동
+        self._select_index(max(0, min(len(self._image_files) - 1, self._current_index + delta)))
+    def _next_image_index(self, start_idx: QtCore.QModelIndex, delta: int) -> QtCore.QModelIndex:
+        model = self.file_tree.model()
+        if not model or not start_idx.isValid() or delta == 0:
+            return QtCore.QModelIndex()
+        parent = start_idx.parent()
+        rows = model.rowCount(parent)
+        row = start_idx.row() + delta
+        while 0 <= row < rows:
+            idx = model.index(row, 0, parent)
+            path = self._path_from_index(idx)
+            if path and path.is_file() and self._is_image_file(path):
+                return idx
+            row += delta
+        return QtCore.QModelIndex()
+    def _apply_sort(self):
+        try:
+            self._proxy_model.sort(self._sort_column, self._sort_order)
+            self.file_tree.header().setSortIndicator(self._sort_column, self._sort_order)
+        except Exception:
+            pass
+    def _on_sort_indicator_changed(self, section: int, order: QtCore.Qt.SortOrder):
+        self._sort_column = section
+        self._sort_order = order
+        self._apply_sort()
+        self._persist_state()
     def _emit_debug_image_changed(self):
         try:
             if self._condition_window and hasattr(self._condition_window, "notify_viewer_image_changed"):
@@ -3284,14 +4007,17 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._capture_listener = _listener
         except Exception:
             self._capture_listener = None
-    def _choose_folder(self):
-        path = QtWidgets.QFileDialog.getExistingDirectory(self, "스크린샷 폴더 선택", str(self._current_folder))
+    def _choose_root(self):
+        path = QtWidgets.QFileDialog.getExistingDirectory(self, "루트 선택", str(self._root_dir))
         if not path:
             return
-        self._current_folder = Path(path)
-        self._load_folder(self._current_folder)
-        self._remember_folder()
-    def _load_folder(self, folder: Path):
+        root = self._validate_dir(path)
+        self._set_tree_root(root)
+        self._set_current_folder(root, refresh=True, auto_select_first=True)
+    def _choose_folder(self):
+        # 호환용: 기존 호출이 있다면 루트 선택으로 동작
+        self._choose_root()
+    def _load_folder(self, folder: Path, *, auto_select_first: bool = False):
         try:
             files = []
             if folder.exists():
@@ -3302,26 +4028,26 @@ class ImageViewerDialog(QtWidgets.QDialog):
                 files = []
         except Exception:
             files = []
+        prev_path = self._current_file()
         self._image_files = files
         self._debug_frame_cache_path = None
         self._debug_frame_cache_mtime = None
         self._debug_frame_cache_frame = None
-        self.image_combo.blockSignals(True)
-        self.image_combo.clear()
-        for f in files:
-            self.image_combo.addItem(f.name, f)
-        self.image_combo.blockSignals(False)
         self.path_label.setText(str(folder))
         if files:
-            self._select_index(0)
+            try:
+                if prev_path and prev_path in files:
+                    self._select_index(files.index(prev_path), update_tree=False)
+                elif auto_select_first or self._current_index >= len(files) or self._current_index < 0:
+                    self._select_index(0, update_tree=False)
+            except Exception:
+                pass
         else:
             self._current_index = -1
             self.canvas.clear_image()
             self._status_prefix = "이미지를 찾을 수 없습니다. (png/jpg/jpeg/bmp)"
             self._render_status()
-    def _on_image_changed(self, idx: int):
-        self._select_index(idx)
-    def _select_index(self, idx: int):
+    def _select_index(self, idx: int, *, update_tree: bool = True):
         self._pending_state = self._capture_view_state()
         if not self._image_files:
             self._current_index = -1
@@ -3331,10 +4057,9 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._debug_frame_cache_frame = None
         idx = max(0, min(len(self._image_files) - 1, idx))
         self._current_index = idx
-        self.image_combo.blockSignals(True)
-        self.image_combo.setCurrentIndex(idx)
-        self.image_combo.blockSignals(False)
         path = self._image_files[idx]
+        if update_tree:
+            self._select_tree_path(path)
         ok = self.canvas.set_image(path)
         if ok:
             img = self.canvas._image
@@ -3344,6 +4069,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._restore_view_state()
             self._notify_condition_window()
             self._emit_debug_image_changed()
+            self._persist_state()
         else:
             self._status_prefix = "이미지를 열 수 없습니다."
             self._render_status()
@@ -3415,7 +4141,10 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._refresh_folder()
             return
         if key == QtCore.Qt.Key.Key_Delete:
-            self._delete_current_file()
+            self._delete_selection()
+            return
+        if ctrl and key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
+            self._rename_current_file()
             return
         if key in (
             QtCore.Qt.Key.Key_Left,
@@ -3623,10 +4352,10 @@ class ImageViewerDialog(QtWidgets.QDialog):
                 removed += 1
             except Exception:
                 pass
-        self._load_folder(folder)
+        self._set_current_folder(folder, refresh=True, auto_select_first=False)
         self.status_label.setText(f"삭제 완료: {removed}개 삭제")
     def _refresh_folder(self):
-        self._load_folder(self._current_folder)
+        self._set_current_folder(self._current_folder, refresh=True, auto_select_first=False)
     def _open_current_folder(self):
         folder = Path(self._current_folder)
         if not folder.exists():
@@ -3654,7 +4383,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "삭제 실패", str(exc))
             return
         next_idx = min(self._current_index, len(self._image_files) - 2)
-        self._load_folder(self._current_folder)
+        self._set_current_folder(self._current_folder, refresh=True, auto_select_first=False)
         if self._image_files:
             self._select_index(max(0, next_idx))
         else:
@@ -3672,8 +4401,9 @@ class ImageViewerDialog(QtWidgets.QDialog):
         hk_stop = hk.get("stop") or "-"
         hk_cap = hk.get("capture") or "-"
         self.hud_label.setText(
-            f"핫키: 좌클릭 드래그 이동, Alt+휠/± 확대, 0 리셋, F1 좌표 복사, Ctrl+F1 범위 복사, F2 색상 복사(우클릭 가능), "
-            f"F5 새로고침, Delete 현재 삭제, ←/→ 이미지 이동, ESC 닫기 | 스크린샷: 시작={hk_start}, 정지={hk_stop}, 단일={hk_cap}"
+            f"핫키: 좌클릭 드래그 이동, Alt+휠/± 확대, 0 리셋, F1 좌표 복사, Ctrl+F1 범위 복사, F2 색상 복사(우클릭), "
+            f"F5 새로고침, Delete 선택 삭제, Ctrl+←/→ 이미지 이동, ESC 닫기 | 트리: 더블클릭 열기/접기, 드래그앤드롭 이동(CTRL=복사) "
+            f"| 스크린샷: 시작={hk_start}, 정지={hk_stop}, 단일={hk_cap}"
         )
     def _open_screenshot(self):
         if callable(self._open_screenshot_dialog):
@@ -5909,6 +6639,7 @@ class MacroDialog(QtWidgets.QDialog):
         btns = QtWidgets.QHBoxLayout()
         self.add_btn = QtWidgets.QPushButton("액션 추가")
         self.add_child_btn = QtWidgets.QPushButton("자식 액션 추가")
+        self.keyboard_record_btn = QtWidgets.QPushButton("키보드 녹화")
         self.edit_btn = QtWidgets.QPushButton("편집")
         self.copy_btn = QtWidgets.QPushButton("복사")
         self.paste_btn = QtWidgets.QPushButton("붙여넣기")
@@ -5919,6 +6650,7 @@ class MacroDialog(QtWidgets.QDialog):
         self.collapse_all_btn = QtWidgets.QPushButton("전체 접기")
         btns.addWidget(self.add_btn)
         btns.addWidget(self.add_child_btn)
+        btns.addWidget(self.keyboard_record_btn)
         btns.addWidget(self.edit_btn)
         btns.addWidget(self.copy_btn)
         btns.addWidget(self.paste_btn)
@@ -5985,6 +6717,7 @@ class MacroDialog(QtWidgets.QDialog):
         self.interaction_btn.clicked.connect(self._open_interaction_dialog)
         self.add_btn.clicked.connect(self._add_action)
         self.add_child_btn.clicked.connect(lambda: self._add_action(as_child=True))
+        self.keyboard_record_btn.clicked.connect(self._record_keyboard_actions)
         self.edit_btn.clicked.connect(self._edit_action)
         self.copy_btn.clicked.connect(self._copy_action)
         self.paste_btn.clicked.connect(self._paste_action)
@@ -6399,6 +7132,41 @@ class MacroDialog(QtWidgets.QDialog):
         moved, reason, _ = target_tree.move_selected_within_parent(offset)
         if not moved and reason:
             QtWidgets.QToolTip.showText(btn.mapToGlobal(btn.rect().center()), reason, btn, btn.rect(), 1200)
+    def _record_keyboard_actions(self):
+        dlg = KeyboardRecordDialog(self)
+        if _run_dialog_non_modal(dlg):
+            recorded = dlg.recorded_actions()
+            if not recorded:
+                QtWidgets.QMessageBox.information(self, "녹화 없음", "추가할 키보드 녹화 액션이 없습니다.")
+                return
+            ts_text = time.strftime("%H:%M:%S")
+            group_act = Action(
+                type="group",
+                name=f"키보드 녹화 {ts_text}",
+                description=f"키보드 이벤트 {len(recorded)}개",
+                group_mode="all",
+                actions=recorded,
+            )
+            target = self._selected_item(self.action_tree)
+            if target:
+                new_item = self.action_tree._insert_after(group_act, target)
+                parent = target.parent()
+            else:
+                new_item = self.action_tree._append_action_item(group_act, None)
+                parent = None
+            if parent:
+                self.action_tree.expandItem(parent)
+            if new_item:
+                self.action_tree.expandItem(new_item)
+                self.action_tree.setCurrentItem(new_item)
+            self.action_tree.renumber()
+            skipped = dlg.skipped_unknown_count()
+            if skipped > 0:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "일부 키 제외",
+                    f"미지원 키 이벤트 {skipped}개는 제외하고 그룹에 추가했습니다.",
+                )
     def _add_action(self, *, as_child: bool = False, tree: ActionTreeWidget | None = None):
         target_tree = tree or self.action_tree
         dlg = ActionEditDialog(
@@ -9731,10 +10499,10 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             cur_row = self.list_widget.currentRow()
             self._current_name = self.list_widget.item(cur_row, 0).text() if cur_row >= 0 else None
         if self._current_name and self._current_name in self.patterns:
-            return self._sanitize_pattern(self.patterns[self._current_name])
+            return copy.deepcopy(self._sanitize_pattern(self.patterns[self._current_name]))
         pat = PixelPattern(name="pattern1", points=[], tolerance=0)
         pat = self._sanitize_pattern(pat)
-        self.patterns[pat.name] = pat
+        self.patterns[pat.name] = copy.deepcopy(pat)
         self._current_name = pat.name
         # 리스트가 비어 있을 때 최초 패턴을 UI에도 반영해 사용자가 바로 볼 수 있게 한다.
         if self.list_widget.rowCount() == 0:
@@ -9750,7 +10518,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         old_name = name_hint or self._current_name
         if not old_name:
             return
-        pat = self.patterns.get(old_name) or self._current_pattern()
+        pat = copy.deepcopy(self.patterns.get(old_name) or self._current_pattern())
         new_name = pat.name  # 이름/설명은 목록 더블클릭 모달에서만 변경
         if new_name != old_name and new_name in self.patterns:
             # 이름 충돌 시 접미사 부여
@@ -9784,7 +10552,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
             new_points.append(PixelPatternPoint(dx=dx, dy=dy, color=color, tolerance=None))
         if new_points:
             pat.points = new_points
-        pat = pat.normalized()
+        pat = copy.deepcopy(pat.normalized())
         self.patterns.pop(old_name, None)
         self.patterns[pat.name] = pat
         # 리스트 항목 텍스트 갱신
@@ -9845,7 +10613,7 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         if name not in self.patterns:
             self.patterns[name] = PixelPattern(name=name, points=[], tolerance=0)
         self._current_name = name
-        pat = self._sanitize_pattern(self.patterns[name])
+        pat = copy.deepcopy(self._sanitize_pattern(self.patterns[name]))
         self.name_edit.setText(pat.name)
         self.desc_edit.setText(pat.description or "")
         self.tol_spin.setValue(0)
@@ -11282,6 +12050,238 @@ class PresetTransferDialog(QtWidgets.QDialog):
             self._save_from_samples()
         else:
             self._save_from_scale()
+class KeyboardRecordDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("키보드 녹화")
+        self.setModal(False)
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.resize(760, 460)
+        self._queue: queue.Queue = queue.Queue()
+        self._stop_event = threading.Event()
+        self._listener_thread: threading.Thread | None = None
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self._drain_queue)
+        self._events: list[dict[str, Any]] = []
+        self._prev_event_ts: float | None = None
+        self._recordable_event_count: int = 0
+        self._skipped_unknown_count: int = 0
+        self._status_prefix: str = "녹화 준비"
+        self._build_ui()
+        self._timer.start()
+        self._start_listener()
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        self.status_label = QtWidgets.QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        hint = QtWidgets.QLabel(
+            "다운/업 입력을 그대로 기록합니다. 적용 시 액션은 sleep + down/up 형태로 생성됩니다."
+        )
+        hint.setStyleSheet("color: #666;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        ctrl_row = QtWidgets.QHBoxLayout()
+        self.toggle_btn = QtWidgets.QPushButton("녹화 중지")
+        self.clear_btn = QtWidgets.QPushButton("초기화")
+        ctrl_row.addWidget(self.toggle_btn)
+        ctrl_row.addWidget(self.clear_btn)
+        ctrl_row.addStretch()
+        layout.addLayout(ctrl_row)
+        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["시간", "키", "이벤트", "이전과 간격(ms)", "상세"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        layout.addWidget(self.table, stretch=1)
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch()
+        self.apply_btn = QtWidgets.QPushButton("기록 적용")
+        self.cancel_btn = QtWidgets.QPushButton("취소")
+        btn_row.addWidget(self.apply_btn)
+        btn_row.addWidget(self.cancel_btn)
+        layout.addLayout(btn_row)
+        self.toggle_btn.clicked.connect(self._toggle_listener)
+        self.clear_btn.clicked.connect(self._clear_events)
+        self.apply_btn.clicked.connect(self._accept_if_valid)
+        self.cancel_btn.clicked.connect(self.reject)
+        self._refresh_status()
+    def _refresh_status(self, prefix: str | None = None):
+        if prefix is not None:
+            self._status_prefix = prefix
+        txt = f"{self._status_prefix}: 총 {len(self._events)}개, 적용 가능 {self._recordable_event_count}개"
+        if self._skipped_unknown_count > 0:
+            txt += f", 미지원 {self._skipped_unknown_count}개 제외"
+        self.status_label.setText(txt)
+    def _toggle_listener(self):
+        if self._listener_thread and self._listener_thread.is_alive():
+            self._stop_listener()
+        else:
+            self._start_listener()
+    def _start_listener(self):
+        if self._listener_thread and self._listener_thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._listener_thread = threading.Thread(target=self._listen_loop, name="KeyboardRecordListener", daemon=True)
+        self._listener_thread.start()
+        self.toggle_btn.setText("녹화 중지")
+        self._refresh_status("녹화 중")
+    def _stop_listener(self, *, message: str | None = None):
+        self._stop_event.set()
+        t = self._listener_thread
+        if t and t.is_alive():
+            t.join(timeout=1.0)
+        self._listener_thread = None
+        self.toggle_btn.setText("녹화 시작")
+        self._refresh_status(message or "중지됨")
+    def _listen_loop(self):
+        try:
+            inter = Interception()
+            inter.set_keyboard_filter(KeyFilter.All)
+        except Exception as exc:
+            self._queue.put({"type": "error", "message": str(exc)})
+            return
+        down_states = {getattr(KeyState, "Down", None), getattr(KeyState, "E0Down", None), getattr(KeyState, "E1Down", None)}
+        up_states = {getattr(KeyState, "Up", None), getattr(KeyState, "E0Up", None), getattr(KeyState, "E1Up", None)}
+        while not self._stop_event.is_set():
+            device = inter.wait_receive(200)
+            if not device:
+                continue
+            try:
+                if getattr(device, "is_keyboard", False):
+                    stroke = getattr(device, "stroke", None)
+                    if stroke is not None:
+                        try:
+                            state = KeyState(stroke.state)
+                        except Exception:
+                            state = None
+                        if state in down_states or state in up_states:
+                            action = "down" if state in down_states else "up"
+                            key_name = _macro_key_from_stroke(stroke)
+                            self._queue.put(
+                                {
+                                    "type": "event",
+                                    "event": {
+                                        "ts": time.time(),
+                                        "action": action,
+                                        "key": key_name,
+                                        "label": _stroke_key_label(stroke, key_name),
+                                    },
+                                }
+                            )
+            except Exception as exc:
+                self._queue.put({"type": "error", "message": str(exc)})
+                break
+            try:
+                device.send()
+            except Exception:
+                pass
+    def _drain_queue(self):
+        dirty = False
+        while True:
+            try:
+                msg = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            mtype = msg.get("type")
+            if mtype == "error":
+                self._stop_listener(message=f"오류: {msg.get('message')}")
+                continue
+            if mtype != "event":
+                continue
+            event = msg.get("event")
+            if not isinstance(event, dict):
+                continue
+            self._append_event_row(event)
+            dirty = True
+        if dirty:
+            self.table.resizeRowsToContents()
+            self._refresh_status()
+    def _append_event_row(self, event: dict[str, Any]):
+        self._events.append(event)
+        ts = float(event.get("ts", time.time()))
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        base = time.strftime("%H:%M:%S", time.localtime(ts))
+        ms = int((ts - int(ts)) * 1000)
+        ts_txt = f"{base}.{ms:03d}"
+        gap_txt = "-"
+        if self._prev_event_ts is not None:
+            gap_ms = max(0.0, (ts - self._prev_event_ts) * 1000.0)
+            gap_txt = f"{gap_ms:.1f}"
+        self._prev_event_ts = ts
+        action = event.get("action")
+        action_txt = "down" if action == "down" else "up"
+        key_name = event.get("key")
+        if key_name:
+            self._recordable_event_count += 1
+        else:
+            self._skipped_unknown_count += 1
+        key_txt = str(key_name) if key_name else "(미지원 키)"
+        detail_txt = str(event.get("label") or "")
+        self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(ts_txt))
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(key_txt))
+        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(action_txt))
+        self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(gap_txt))
+        self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(detail_txt))
+        if not key_name:
+            warn_brush = QtGui.QBrush(QtGui.QColor("#b44"))
+            for col in range(self.table.columnCount()):
+                cell = self.table.item(row, col)
+                if cell:
+                    cell.setForeground(warn_brush)
+    def _clear_events(self):
+        self._events = []
+        self._prev_event_ts = None
+        self._recordable_event_count = 0
+        self._skipped_unknown_count = 0
+        self.table.setRowCount(0)
+        self._refresh_status()
+    def recorded_actions(self) -> list[Action]:
+        actions: list[Action] = []
+        prev_ts: float | None = None
+        for event in self._events:
+            action_type = event.get("action")
+            key_name = event.get("key")
+            if action_type not in ("down", "up") or not key_name:
+                continue
+            ts = float(event.get("ts", 0.0) or 0.0)
+            if prev_ts is not None:
+                sleep_ms = int(round(max(0.0, (ts - prev_ts) * 1000.0)))
+                if sleep_ms > 0:
+                    actions.append(Action(type="sleep", sleep_ms=sleep_ms))
+            actions.append(Action(type=action_type, key=key_name, key_raw=key_name))
+            prev_ts = ts
+        return actions
+    def skipped_unknown_count(self) -> int:
+        return int(self._skipped_unknown_count)
+    def _accept_if_valid(self):
+        actions = self.recorded_actions()
+        if not actions:
+            QtWidgets.QMessageBox.information(self, "녹화 없음", "적용 가능한 키보드 이벤트가 없습니다.")
+            return
+        if self._skipped_unknown_count > 0:
+            res = QtWidgets.QMessageBox.question(
+                self,
+                "일부 키 제외",
+                f"미지원 키 이벤트 {self._skipped_unknown_count}개는 제외됩니다. 계속할까요?",
+            )
+            if res != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        self.accept()
+    def closeEvent(self, event):
+        try:
+            self._stop_listener()
+        finally:
+            super().closeEvent(event)
 class InputTimingTestDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, on_apply_keyboard=None, on_apply_mouse=None):
         super().__init__(parent)
@@ -12556,7 +13556,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.poll_timer.setInterval(100)
         self.poll_timer.timeout.connect(self._poll_engine)
         self.poll_timer.start()
-        self._status_hint = "Home=활성, Insert=일시정지, End=종료, 기능 메뉴=디버거/픽셀 테스트"
+        self._status_hint = "Home=활성, Pause=일시정지, End=종료, 기능 메뉴=디버거/픽셀 테스트"
         self.statusBar().showMessage(self._status_hint)
         self._set_capture_status(self.screenshot_manager.is_running)
     def _show_apply_feedback(self, ok: bool):

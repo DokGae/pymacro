@@ -38,11 +38,22 @@ _default_mouse_device = _mouse_devices[0] if _mouse_devices else None
 
 KeyLike = Union[str, int, Vk]
 _named_vk = {
+    "backspace": Vk.Back,
+    "bs": Vk.Back,
+    "delete": Vk.Delete,
+    "del": Vk.Delete,
     "esc": Vk.Escape,
     "escape": Vk.Escape,
     "caps": Vk.Capital,
     "capslock": Vk.Capital,
+    "numlock": Vk.NumLock,
+    "scrolllock": Vk.Scroll,
+    "apps": Vk.Apps,
+    "app": Vk.Apps,
     "home": Vk.Home,
+    "pause": Vk.Pause,
+    "break": Vk.Pause,
+    "pausebreak": Vk.Pause,
     "insert": Vk.Insert,
     "ins": Vk.Insert,
     "end": Vk.End,
@@ -265,10 +276,10 @@ def vk_from_key(key: KeyLike) -> int:
     if isinstance(key, str):
         low = key.lower()
         low = _modifier_aliases.get(low, low)
-        if len(key) == 1:
-            return ord(key.upper())
         if low in _named_vk:
             return int(_named_vk[low])
+        if len(key) == 1:
+            return ord(key.upper())
     raise TypeError("key must be Vk, int(vk), 1-char string (예: 'r'), or 'esc'.")
 
 

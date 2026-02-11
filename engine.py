@@ -2390,7 +2390,7 @@ class MacroRunner:
 class MacroEngine:
     """
     트리거 키를 누르는 동안 기본 액션을 반복 실행하고 조건별로 참/거짓 액션을 추가로 실행하는 엔진.
-    글로벌 키: Home(활성), Insert(일시정지 토글), End(종료), PageUp(픽셀 테스트)
+    글로벌 키: Home(활성), Pause(일시정지 토글), End(종료), PageUp(픽셀 테스트)
     """
 
     def __init__(self, profile: Optional[MacroProfile] = None, *, tick: float = 0.02):
@@ -3463,10 +3463,10 @@ class MacroEngine:
             self.paused = False
             self._emit_log("Home: 활성화")
             self._emit_state()
-        if self._edge("insert", disallow_extra_modifiers=True):
+        if self._edge("pause", disallow_extra_modifiers=True):
             if self.active:
                 self.paused = not self.paused
-                self._emit_log(f"Insert: {'일시정지' if self.paused else '재개'}")
+                self._emit_log(f"Pause: {'일시정지' if self.paused else '재개'}")
                 if self.paused:
                     self._pause_all_macros()
                 else:

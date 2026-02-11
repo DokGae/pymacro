@@ -1,14 +1,16 @@
 {
-  "last_profile_path": "D:\\Ion\\macro\\setting\\내치유성완성.json",
+  "last_profile_path": "D:\\Ion\\macro\\setting\\내궁성완성.json",
   "profile_history": {
     "recent": [
-      "D:\\Ion\\macro\\setting\\내치유성완성.json",
-      "D:\\Ion\\macro\\setting\\내정령성완성.json",
       "D:\\Ion\\macro\\setting\\내궁성완성.json",
       "D:\\Ion\\macro\\setting\\내검성완성.json",
-      "D:\\Ion\\macro\\setting\\내마도성완성.json"
+      "D:\\Ion\\macro\\setting\\내마도성완성.json",
+      "D:\\Ion\\macro\\setting\\내정령성완성.json",
+      "D:\\Ion\\macro\\setting\\내호법성완성.json",
+      "D:\\Ion\\macro\\setting\\내치유성완성.json"
     ],
     "favorites": [
+      "D:\\Ion\\macro\\setting\\내호법성완성.json",
       "D:\\Ion\\macro\\setting\\내정령성완성.json",
       "D:\\Ion\\macro\\setting\\내궁성완성.json",
       "D:\\Ion\\macro\\setting\\내검성완성.json",
@@ -17,10 +19,10 @@
   },
   "debugger": {
     "geometry": [
-      328,
-      206,
+      431,
+      111,
       900,
-      706
+      697
     ],
     "visible": false,
     "interval": 200,
@@ -55,6 +57,17 @@
   "log_enabled": false,
   "image_viewer": {
     "last_dir": "D:\\Ion\\macro\\screenshot",
-    "auto_refresh": false
+    "root_dir": "D:\\Ion\\macro\\screenshot",
+    "auto_refresh": false,
+    "favorites": {
+      "기본": [
+        "D:\\Ion\\macro\\screenshot\\000030_20260204_225907_966733.png",
+        "D:\\Ion\\macro\\screenshot\\000087_20260209_001655_738791.png"
+      ]
+    },
+    "fav_group": "기본",
+    "last_file": "D:\\Ion\\macro\\screenshot\\000001_20260211_115946_684783.png",
+    "sort_col": 3,
+    "sort_order": "desc"
   }
 }
