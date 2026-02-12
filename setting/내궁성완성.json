@@ -2353,6 +2353,34 @@
           "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
         }
       ]
+    },
+    {
+      "trigger_key": "z",
+      "mode": "hold",
+      "hold_press_seconds": null,
+      "triggers": [
+        {
+          "key": "z",
+          "mode": "hold",
+          "hold_press_seconds": null
+        }
+      ],
+      "name": null,
+      "description": null,
+      "suppress_trigger": false,
+      "enabled": false,
+      "cycle_count": null,
+      "actions": [],
+      "stop_actions": [],
+      "stop_others_on_trigger": false,
+      "suspend_others_while_running": false,
+      "interaction_outgoing_mode": "none",
+      "interaction_targets": [],
+      "interaction_exclude_targets": [],
+      "interaction_incoming_allow": [],
+      "interaction_incoming_block": [],
+      "scope": "global",
+      "app_targets": []
     }
   ],
   "pixel_region": "0,0,100,100",

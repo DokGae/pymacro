@@ -345,6 +345,21 @@ def _stroke_key_label(stroke, key_name: str | None = None) -> str:
     if sc > 0:
         parts.append(f"SC {sc}")
     return " / ".join(parts) if parts else "알 수 없는 키"
+class _WinPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+def _current_cursor_pos() -> tuple[int, int] | None:
+    try:
+        user32 = ctypes.windll.user32
+    except Exception:
+        return None
+    try:
+        pt = _WinPoint()
+        ok = bool(user32.GetCursorPos(ctypes.byref(pt)))
+        if not ok:
+            return None
+        return int(pt.x), int(pt.y)
+    except Exception:
+        return None
 def _parse_delay_text(text: str) -> tuple[int, bool, int, int]:
     """`40` -> (40, False, 40, 40), `40-80` -> (40, True, 40, 80)."""
     raw = str(text or "").lower().replace("ms", "")
@@ -6640,6 +6655,7 @@ class MacroDialog(QtWidgets.QDialog):
         self.add_btn = QtWidgets.QPushButton("액션 추가")
         self.add_child_btn = QtWidgets.QPushButton("자식 액션 추가")
         self.keyboard_record_btn = QtWidgets.QPushButton("키보드 녹화")
+        self.mouse_record_btn = QtWidgets.QPushButton("마우스 녹화")
         self.edit_btn = QtWidgets.QPushButton("편집")
         self.copy_btn = QtWidgets.QPushButton("복사")
         self.paste_btn = QtWidgets.QPushButton("붙여넣기")
@@ -6651,6 +6667,7 @@ class MacroDialog(QtWidgets.QDialog):
         btns.addWidget(self.add_btn)
         btns.addWidget(self.add_child_btn)
         btns.addWidget(self.keyboard_record_btn)
+        btns.addWidget(self.mouse_record_btn)
         btns.addWidget(self.edit_btn)
         btns.addWidget(self.copy_btn)
         btns.addWidget(self.paste_btn)
@@ -6718,6 +6735,7 @@ class MacroDialog(QtWidgets.QDialog):
         self.add_btn.clicked.connect(self._add_action)
         self.add_child_btn.clicked.connect(lambda: self._add_action(as_child=True))
         self.keyboard_record_btn.clicked.connect(self._record_keyboard_actions)
+        self.mouse_record_btn.clicked.connect(self._record_mouse_actions)
         self.edit_btn.clicked.connect(self._edit_action)
         self.copy_btn.clicked.connect(self._copy_action)
         self.paste_btn.clicked.connect(self._paste_action)
@@ -7166,6 +7184,41 @@ class MacroDialog(QtWidgets.QDialog):
                     self,
                     "일부 키 제외",
                     f"미지원 키 이벤트 {skipped}개는 제외하고 그룹에 추가했습니다.",
+                )
+    def _record_mouse_actions(self):
+        dlg = MouseRecordDialog(self)
+        if _run_dialog_non_modal(dlg):
+            recorded = dlg.recorded_actions()
+            if not recorded:
+                QtWidgets.QMessageBox.information(self, "녹화 없음", "추가할 마우스 녹화 액션이 없습니다.")
+                return
+            ts_text = time.strftime("%H:%M:%S")
+            group_act = Action(
+                type="group",
+                name=f"마우스 녹화 {ts_text}",
+                description=f"마우스 이벤트 {len(recorded)}개",
+                group_mode="all",
+                actions=recorded,
+            )
+            target = self._selected_item(self.action_tree)
+            if target:
+                new_item = self.action_tree._insert_after(group_act, target)
+                parent = target.parent()
+            else:
+                new_item = self.action_tree._append_action_item(group_act, None)
+                parent = None
+            if parent:
+                self.action_tree.expandItem(parent)
+            if new_item:
+                self.action_tree.expandItem(new_item)
+                self.action_tree.setCurrentItem(new_item)
+            self.action_tree.renumber()
+            skipped = dlg.skipped_unknown_count()
+            if skipped > 0:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "일부 이벤트 제외",
+                    f"미지원 마우스 이벤트 {skipped}개는 제외하고 그룹에 추가했습니다.",
                 )
     def _add_action(self, *, as_child: bool = False, tree: ActionTreeWidget | None = None):
         target_tree = tree or self.action_tree
@@ -7840,9 +7893,9 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self.interval_spin.setValue(self.manager.interval)
         form.addRow("캡처 주기(초)", self.interval_spin)
         self.start_hotkey_edit = QtWidgets.QLineEdit(self.manager.hotkeys.start or "")
-        self.start_hotkey_edit.setPlaceholderText("예: f9")
+        self.start_hotkey_edit.setPlaceholderText("예: pgup")
         self.stop_hotkey_edit = QtWidgets.QLineEdit(self.manager.hotkeys.stop or "")
-        self.stop_hotkey_edit.setPlaceholderText("예: f10")
+        self.stop_hotkey_edit.setPlaceholderText("예: pgdown")
         self.capture_hotkey_edit = QtWidgets.QLineEdit(self.manager.hotkeys.capture or "")
         self.capture_hotkey_edit.setPlaceholderText("예: f11 (한 장 캡처)")
         form.addRow("시작 단축키", self.start_hotkey_edit)
@@ -7877,7 +7930,7 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self.output_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         form.addRow("저장 위치", self.output_label)
         layout.addLayout(form)
-        layout.addWidget(QtWidgets.QLabel("단축키는 단일 키 이름(f9, home 등)만 지원합니다."))
+        layout.addWidget(QtWidgets.QLabel("단축키는 단일 키 이름(pgup, home 등)만 지원합니다."))
         self.status_label = QtWidgets.QLabel(self._status_text())
         layout.addWidget(self.status_label)
         btn_row = QtWidgets.QHBoxLayout()
@@ -12067,10 +12120,10 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
         self._prev_event_ts: float | None = None
         self._recordable_event_count: int = 0
         self._skipped_unknown_count: int = 0
+        self._accepted_actions: list[Action] | None = None
         self._status_prefix: str = "녹화 준비"
         self._build_ui()
         self._timer.start()
-        self._start_listener()
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         self.status_label = QtWidgets.QLabel("")
@@ -12083,7 +12136,7 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
         ctrl_row = QtWidgets.QHBoxLayout()
-        self.toggle_btn = QtWidgets.QPushButton("녹화 중지")
+        self.toggle_btn = QtWidgets.QPushButton("녹화 시작")
         self.clear_btn = QtWidgets.QPushButton("초기화")
         ctrl_row.addWidget(self.toggle_btn)
         ctrl_row.addWidget(self.clear_btn)
@@ -12203,9 +12256,11 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
             self._append_event_row(event)
             dirty = True
         if dirty:
-            self.table.resizeRowsToContents()
+            if self.table.rowCount() <= 500:
+                self.table.resizeRowsToContents()
             self._refresh_status()
     def _append_event_row(self, event: dict[str, Any]):
+        self._accepted_actions = None
         self._events.append(event)
         ts = float(event.get("ts", time.time()))
         row = self.table.rowCount()
@@ -12239,6 +12294,7 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
                 if cell:
                     cell.setForeground(warn_brush)
     def _clear_events(self):
+        self._accepted_actions = None
         self._events = []
         self._prev_event_ts = None
         self._recordable_event_count = 0
@@ -12246,9 +12302,11 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
         self.table.setRowCount(0)
         self._refresh_status()
     def recorded_actions(self) -> list[Action]:
+        if self._accepted_actions is not None:
+            return list(self._accepted_actions)
         actions: list[Action] = []
         prev_ts: float | None = None
-        for event in self._events:
+        for event in list(self._events):
             action_type = event.get("action")
             key_name = event.get("key")
             if action_type not in ("down", "up") or not key_name:
@@ -12264,6 +12322,9 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
     def skipped_unknown_count(self) -> int:
         return int(self._skipped_unknown_count)
     def _accept_if_valid(self):
+        if self._listener_thread and self._listener_thread.is_alive():
+            self._stop_listener(message="중지됨")
+            self._drain_queue()
         actions = self.recorded_actions()
         if not actions:
             QtWidgets.QMessageBox.information(self, "녹화 없음", "적용 가능한 키보드 이벤트가 없습니다.")
@@ -12276,9 +12337,435 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
             )
             if res != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
+        self._accepted_actions = list(actions)
         self.accept()
+    def done(self, result: int):
+        self._stop_listener()
+        super().done(result)
     def closeEvent(self, event):
         try:
+            self._stop_listener()
+        finally:
+            super().closeEvent(event)
+class MouseRecordDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("마우스 녹화")
+        self.setModal(False)
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.resize(820, 500)
+        self._queue: queue.Queue = queue.Queue()
+        self._stop_event = threading.Event()
+        self._listener_thread: threading.Thread | None = None
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self._drain_queue)
+        self._events: list[dict[str, Any]] = []
+        self._prev_event_ts: float | None = None
+        self._recordable_event_count: int = 0
+        self._skipped_unknown_count: int = 0
+        self._dropped_overflow_count: int = 0
+        self._last_move_event_ts: float | None = None
+        self._max_events: int = 6000
+        self._move_sample_ms: int = 15
+        self._accepted_actions: list[Action] | None = None
+        self._status_prefix: str = "녹화 준비"
+        self._hotkey_start: str = "pgup"
+        self._hotkey_stop: str = "pgdown"
+        self._hotkey_start_prev = False
+        self._hotkey_stop_prev = False
+        self._build_ui()
+        self._timer.start()
+        self._hotkey_timer = QtCore.QTimer(self)
+        self._hotkey_timer.setInterval(35)
+        self._hotkey_timer.timeout.connect(self._poll_hotkeys)
+        self._hotkey_timer.start()
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        self.status_label = QtWidgets.QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        hint = QtWidgets.QLabel(
+            "마우스 이동/누름/떼기를 그대로 기록합니다. 적용 시 액션은 sleep + mouse_move/down/up 형태로 생성됩니다."
+        )
+        hint.setStyleSheet("color: #666;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        hotkey_hint = QtWidgets.QLabel("단축키: PgUp=녹화 시작, PgDown=녹화 중지")
+        hotkey_hint.setStyleSheet("color: #666;")
+        layout.addWidget(hotkey_hint)
+        ctrl_row = QtWidgets.QHBoxLayout()
+        self.toggle_btn = QtWidgets.QPushButton("녹화 시작")
+        self.clear_btn = QtWidgets.QPushButton("초기화")
+        ctrl_row.addWidget(self.toggle_btn)
+        ctrl_row.addWidget(self.clear_btn)
+        ctrl_row.addStretch()
+        layout.addLayout(ctrl_row)
+        self.table = QtWidgets.QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["시간", "이벤트", "버튼", "좌표", "이전과 간격(ms)", "상세"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        layout.addWidget(self.table, stretch=1)
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch()
+        self.apply_btn = QtWidgets.QPushButton("기록 적용")
+        self.cancel_btn = QtWidgets.QPushButton("취소")
+        btn_row.addWidget(self.apply_btn)
+        btn_row.addWidget(self.cancel_btn)
+        layout.addLayout(btn_row)
+        self.toggle_btn.clicked.connect(self._toggle_listener)
+        self.clear_btn.clicked.connect(self._clear_events)
+        self.apply_btn.clicked.connect(self._accept_if_valid)
+        self.cancel_btn.clicked.connect(self.reject)
+        self._refresh_status()
+    def _refresh_status(self, prefix: str | None = None):
+        if prefix is not None:
+            self._status_prefix = prefix
+        txt = f"{self._status_prefix}: 총 {len(self._events)}개, 적용 가능 {self._recordable_event_count}개"
+        if self._skipped_unknown_count > 0:
+            txt += f", 미지원 {self._skipped_unknown_count}개 제외"
+        if self._dropped_overflow_count > 0:
+            txt += f", 초과 {self._dropped_overflow_count}개 생략(최대 {self._max_events}개)"
+        self.status_label.setText(txt)
+    def _toggle_listener(self):
+        if self._listener_thread and self._listener_thread.is_alive():
+            self._stop_listener()
+        else:
+            self._start_listener()
+    def _start_listener(self):
+        if self._listener_thread and self._listener_thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._listener_thread = threading.Thread(target=self._listen_loop, name="MouseRecordListener", daemon=True)
+        self._listener_thread.start()
+        self.toggle_btn.setText("녹화 중지")
+        self._refresh_status("녹화 중")
+    def _stop_listener(self, *, message: str | None = None):
+        self._stop_event.set()
+        t = self._listener_thread
+        if t and t.is_alive():
+            t.join(timeout=1.0)
+        self._listener_thread = None
+        self.toggle_btn.setText("녹화 시작")
+        self._refresh_status(message or "중지됨")
+    def _safe_pressed(self, key_name: str) -> bool:
+        try:
+            return bool(get_keystate(key_name, async_=True))
+        except TypeError:
+            try:
+                return bool(get_keystate(key_name))
+            except Exception:
+                return False
+        except Exception:
+            return False
+    def _poll_hotkeys(self):
+        start_pressed = self._safe_pressed(self._hotkey_start)
+        stop_pressed = self._safe_pressed(self._hotkey_stop)
+        running = bool(self._listener_thread and self._listener_thread.is_alive())
+        if stop_pressed and not self._hotkey_stop_prev and running:
+            self._stop_listener(message="중지됨 (PgDown)")
+            running = False
+        if start_pressed and not self._hotkey_start_prev and not running:
+            self._start_listener()
+        self._hotkey_start_prev = start_pressed
+        self._hotkey_stop_prev = stop_pressed
+    def _parse_mouse_event(self, stroke) -> dict[str, Any] | None:
+        ms = MouseState if "MouseState" in globals() else None
+        if stroke is None or ms is None:
+            return None
+        try:
+            state_raw = int(getattr(stroke, "state", 0))
+        except Exception:
+            return {
+                "action": None,
+                "button": None,
+                "supported": False,
+                "label": f"state={getattr(stroke, 'state', '-')}",
+            }
+        mappings = [
+            (getattr(ms, "LeftButtonDown", None), "mouse_down", "mouse1", "left down"),
+            (getattr(ms, "LeftButtonUp", None), "mouse_up", "mouse1", "left up"),
+            (getattr(ms, "RightButtonDown", None), "mouse_down", "mouse2", "right down"),
+            (getattr(ms, "RightButtonUp", None), "mouse_up", "mouse2", "right up"),
+            (getattr(ms, "MiddleButtonDown", None), "mouse_down", "mouse3", "middle down"),
+            (getattr(ms, "MuddleButtonDown", None), "mouse_down", "mouse3", "middle down"),
+            (getattr(ms, "MiddleButtonUp", None), "mouse_up", "mouse3", "middle up"),
+            (getattr(ms, "XButton1Down", None), "mouse_down", "mouse4", "x1 down"),
+            (getattr(ms, "XButton1Up", None), "mouse_up", "mouse4", "x1 up"),
+            (getattr(ms, "XButton2Down", None), "mouse_down", "mouse5", "x2 down"),
+            (getattr(ms, "XButton2Up", None), "mouse_up", "mouse5", "x2 up"),
+        ]
+        for target_state, action, button, label in mappings:
+            if target_state is None:
+                continue
+            try:
+                target_bits = int(target_state)
+            except Exception:
+                continue
+            if target_bits != 0 and (state_raw & target_bits) == target_bits:
+                return {"action": action, "button": button, "supported": True, "label": label}
+        move_state = getattr(ms, "Move", None)
+        if move_state is not None:
+            try:
+                move_bits = int(move_state)
+            except Exception:
+                move_bits = 0
+            if state_raw == move_bits or state_raw == 0x1000:
+                return {"action": "mouse_move", "button": None, "supported": True, "label": "move"}
+        wheel_bits = 0
+        for wheel_state in (getattr(ms, "VerticalWheel", None), getattr(ms, "HorizontalWheel", None)):
+            if wheel_state is None:
+                continue
+            try:
+                wheel_bits |= int(wheel_state)
+            except Exception:
+                continue
+        if wheel_bits and (state_raw & wheel_bits):
+            return {"action": None, "button": None, "supported": False, "label": "wheel"}
+        if state_raw == 0:
+            return {"action": "mouse_move", "button": None, "supported": True, "label": "move"}
+        return {"action": None, "button": None, "supported": False, "label": f"state={state_raw}"}
+    def _evict_oldest_move_event(self) -> bool:
+        for idx, old_event in enumerate(list(self._events)):
+            if str(old_event.get("action") or "") != "mouse_move":
+                continue
+            supported = bool(old_event.get("supported"))
+            if supported:
+                self._recordable_event_count = max(0, self._recordable_event_count - 1)
+            else:
+                self._skipped_unknown_count = max(0, self._skipped_unknown_count - 1)
+            del self._events[idx]
+            if 0 <= idx < self.table.rowCount():
+                self.table.removeRow(idx)
+            return True
+        return False
+    def _listen_loop(self):
+        try:
+            inter = Interception()
+            inter.set_mouse_filter(MouseFilter.All)
+        except Exception as exc:
+            self._queue.put({"type": "error", "message": str(exc)})
+            return
+        while not self._stop_event.is_set():
+            device = inter.wait_receive(200)
+            if not device:
+                continue
+            try:
+                if getattr(device, "is_mouse", False):
+                    stroke = getattr(device, "stroke", None)
+                    event = self._parse_mouse_event(stroke)
+                    if event:
+                        pos = _current_cursor_pos()
+                        event["ts"] = time.time()
+                        event["x"] = pos[0] if pos else None
+                        event["y"] = pos[1] if pos else None
+                        if event.get("action") == "mouse_move" and pos is None:
+                            event["supported"] = False
+                            event["label"] = f"{event.get('label') or 'move'} (좌표 없음)"
+                        self._queue.put({"type": "event", "event": event})
+            except Exception as exc:
+                self._queue.put({"type": "error", "message": str(exc)})
+                break
+            try:
+                device.send()
+            except Exception:
+                pass
+    def _drain_queue(self):
+        dirty = False
+        while True:
+            try:
+                msg = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            mtype = msg.get("type")
+            if mtype == "error":
+                self._stop_listener(message=f"오류: {msg.get('message')}")
+                continue
+            if mtype != "event":
+                continue
+            event = msg.get("event")
+            if not isinstance(event, dict):
+                continue
+            self._append_event_row(event)
+            dirty = True
+        if dirty:
+            if self.table.rowCount() <= 500:
+                self.table.resizeRowsToContents()
+            self._refresh_status()
+    def _append_event_row(self, event: dict[str, Any]):
+        ts = float(event.get("ts", time.time()))
+        action = str(event.get("action") or "")
+        if action == "mouse_move":
+            if self._last_move_event_ts is not None:
+                gap_ms = (ts - self._last_move_event_ts) * 1000.0
+                if gap_ms < float(self._move_sample_ms):
+                    return
+            self._last_move_event_ts = ts
+            if (
+                bool(event.get("supported"))
+                and self._events
+                and str(self._events[-1].get("action") or "") == "mouse_move"
+                and bool(self._events[-1].get("supported"))
+                and self.table.rowCount() > 0
+            ):
+                self._accepted_actions = None
+                self._events[-1] = event
+                row = self.table.rowCount() - 1
+                base = time.strftime("%H:%M:%S", time.localtime(ts))
+                ms = int((ts - int(ts)) * 1000)
+                ts_txt = f"{base}.{ms:03d}"
+                x = event.get("x")
+                y = event.get("y")
+                pos_txt = f"{x},{y}" if isinstance(x, int) and isinstance(y, int) else "-"
+                detail_txt = str(event.get("label") or "")
+                self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(ts_txt))
+                self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(pos_txt))
+                self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(detail_txt))
+                self._prev_event_ts = ts
+                return
+        if len(self._events) >= int(self._max_events):
+            if action == "mouse_move":
+                self._dropped_overflow_count += 1
+                return
+            if not self._evict_oldest_move_event():
+                self._dropped_overflow_count += 1
+                return
+        self._accepted_actions = None
+        self._events.append(event)
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        base = time.strftime("%H:%M:%S", time.localtime(ts))
+        ms = int((ts - int(ts)) * 1000)
+        ts_txt = f"{base}.{ms:03d}"
+        gap_txt = "-"
+        if self._prev_event_ts is not None:
+            gap_ms = max(0.0, (ts - self._prev_event_ts) * 1000.0)
+            gap_txt = f"{gap_ms:.1f}"
+        self._prev_event_ts = ts
+        action = str(event.get("action") or "")
+        event_txt = {"mouse_down": "down", "mouse_up": "up", "mouse_move": "move"}.get(action, "-")
+        button_txt = str(event.get("button") or "-")
+        x = event.get("x")
+        y = event.get("y")
+        pos_txt = f"{x},{y}" if isinstance(x, int) and isinstance(y, int) else "-"
+        detail_txt = str(event.get("label") or "")
+        supported = bool(event.get("supported"))
+        if supported:
+            self._recordable_event_count += 1
+        else:
+            self._skipped_unknown_count += 1
+        self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(ts_txt))
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(event_txt))
+        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(button_txt))
+        self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(pos_txt))
+        self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(gap_txt))
+        self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(detail_txt))
+        if not supported:
+            warn_brush = QtGui.QBrush(QtGui.QColor("#b44"))
+            for col in range(self.table.columnCount()):
+                cell = self.table.item(row, col)
+                if cell:
+                    cell.setForeground(warn_brush)
+    def _clear_events(self):
+        self._accepted_actions = None
+        self._events = []
+        self._prev_event_ts = None
+        self._last_move_event_ts = None
+        self._recordable_event_count = 0
+        self._skipped_unknown_count = 0
+        self._dropped_overflow_count = 0
+        self.table.setRowCount(0)
+        self._refresh_status()
+    def recorded_actions(self) -> list[Action]:
+        if self._accepted_actions is not None:
+            return list(self._accepted_actions)
+        compressed: list[dict[str, Any]] = []
+        for event in list(self._events):
+            if not bool(event.get("supported")):
+                continue
+            action_type = str(event.get("action") or "")
+            if action_type not in ("mouse_move", "mouse_down", "mouse_up"):
+                continue
+            if action_type == "mouse_move" and compressed and str(compressed[-1].get("action") or "") == "mouse_move":
+                compressed[-1] = event
+            else:
+                compressed.append(event)
+        actions: list[Action] = []
+        prev_ts: float | None = None
+        for event in compressed:
+            action_type = str(event.get("action") or "")
+            ts = float(event.get("ts", 0.0) or 0.0)
+            if prev_ts is not None:
+                sleep_ms = int(round(max(0.0, (ts - prev_ts) * 1000.0)))
+                if sleep_ms > 0:
+                    actions.append(Action(type="sleep", sleep_ms=sleep_ms))
+            x = event.get("x")
+            y = event.get("y")
+            if action_type == "mouse_move":
+                if not isinstance(x, int) or not isinstance(y, int):
+                    continue
+                raw = f"{x},{y}"
+                actions.append(Action(type="mouse_move", mouse_pos=(x, y), mouse_pos_raw=raw))
+            else:
+                btn = str(event.get("button") or "mouse1")
+                act = Action(type=action_type, mouse_button=btn)
+                if isinstance(x, int) and isinstance(y, int):
+                    raw = f"{x},{y}"
+                    act.mouse_pos = (x, y)
+                    act.mouse_pos_raw = raw
+                actions.append(act)
+            prev_ts = ts
+        return actions
+    def skipped_unknown_count(self) -> int:
+        return int(self._skipped_unknown_count)
+    def _accept_if_valid(self):
+        if self._listener_thread and self._listener_thread.is_alive():
+            self._stop_listener(message="중지됨")
+            self._drain_queue()
+        actions = self.recorded_actions()
+        if not actions:
+            QtWidgets.QMessageBox.information(self, "녹화 없음", "적용 가능한 마우스 이벤트가 없습니다.")
+            return
+        if self._dropped_overflow_count > 0:
+            res = QtWidgets.QMessageBox.question(
+                self,
+                "일부 이벤트 생략",
+                f"이벤트가 많아 {self._dropped_overflow_count}개를 생략했습니다(최대 {self._max_events}개 유지). 계속할까요?",
+            )
+            if res != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        if self._skipped_unknown_count > 0:
+            res = QtWidgets.QMessageBox.question(
+                self,
+                "일부 이벤트 제외",
+                f"미지원 마우스 이벤트 {self._skipped_unknown_count}개는 제외됩니다. 계속할까요?",
+            )
+            if res != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        self._accepted_actions = list(actions)
+        self.accept()
+    def done(self, result: int):
+        try:
+            self._hotkey_timer.stop()
+        except Exception:
+            pass
+        self._stop_listener()
+        super().done(result)
+    def closeEvent(self, event):
+        try:
+            try:
+                self._hotkey_timer.stop()
+            except Exception:
+                pass
             self._stop_listener()
         finally:
             super().closeEvent(event)
@@ -13519,11 +14006,14 @@ class MacroWindow(QtWidgets.QMainWindow):
             max_queue_size=screenshot_state.get("queue_size", MAX_QUEUE_SIZE),
         )
         self._theme = self._compute_theme_colors()
+        hotkey_start = screenshot_state.get("hotkey_start") or "pgup"
+        hotkey_stop = screenshot_state.get("hotkey_stop") or "pgdown"
+        hotkey_capture = screenshot_state.get("hotkey_capture")
         self.screenshot_manager.configure_hotkeys(
-            screenshot_state.get("hotkey_start"),
-            screenshot_state.get("hotkey_stop"),
-            screenshot_state.get("hotkey_capture"),
-            enabled=bool(screenshot_state.get("hotkey_enabled")),
+            hotkey_start,
+            hotkey_stop,
+            hotkey_capture,
+            enabled=bool(screenshot_state.get("hotkey_enabled", True)),
         )
         self._screenshot_dialog: ScreenshotDialog | None = None
         self.setWindowTitle(self.base_title)

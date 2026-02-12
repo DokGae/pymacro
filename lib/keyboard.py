@@ -60,6 +60,7 @@ _named_vk = {
     "pageup": Vk.PageUp,
     "pgup": Vk.PageUp,
     "pagedown": Vk.PageDown,
+    "pgdown": Vk.PageDown,
     "pgdn": Vk.PageDown,
     "space": Vk.Space,
     "tab": Vk.Tab,
