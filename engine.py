@@ -43,6 +43,7 @@ ActionType = Literal[
     "mouse_up",
     "mouse_move",
     "sleep",
+    "sound_alert",
     "macro_stop",
     "if",
     "label",
@@ -58,7 +59,7 @@ ActionType = Literal[
 ]
 GroupMode = Literal["all", "first_true", "first_true_continue", "first_true_return", "while", "repeat_n"]
 StepType = Literal["press", "down", "up", "sleep", "if", "loop_while"]  # legacy 호환용
-MacroMode = Literal["hold", "toggle"]
+MacroMode = Literal["hold", "toggle", "once"]
 VarCategory = Literal["sleep", "region", "color", "key", "var"]
 DEFAULT_BASE_RESOLUTION: tuple[int, int] = (1920, 1080)
 DEFAULT_BASE_SCALE: float = 100.0
@@ -72,6 +73,38 @@ _TRIGGER_MOD_KEYS = set(_TRIGGER_MOD_ALIASES.keys())
 
 PATTERN_DIR = Path(__file__).parent / "pattern"
 PATTERN_FILE = PATTERN_DIR / "patterns.json"
+
+
+def _play_alert_sound() -> bool:
+    """Play a short system alert sound. Returns True when playback call succeeds."""
+    # Windows system notification sound (best-effort).
+    try:
+        user32 = ctypes.windll.user32
+        if int(user32.MessageBeep(0x00000040)):
+            return True
+    except Exception:
+        pass
+    # Terminal bell fallback.
+    try:
+        sys.stdout.write("\a")
+        sys.stdout.flush()
+        return True
+    except Exception:
+        return False
+
+
+def _normalize_macro_mode(mode_raw: Any, *, default: str = "hold") -> str:
+    text = str(mode_raw or "").strip().lower()
+    if text in ("hold", "toggle", "once"):
+        return text
+    if text in ("1회", "1회실행", "1회 실행", "single", "single_run", "single-run", "one", "oneshot", "one-shot"):
+        return "once"
+    if text == "토글":
+        return "toggle"
+    if text == "홀드":
+        return "hold"
+    fallback = str(default or "hold").strip().lower()
+    return fallback if fallback in ("hold", "toggle", "once") else "hold"
 
 
 def _load_shared_patterns() -> Dict[str, PixelPattern]:
@@ -1025,19 +1058,20 @@ class MacroTrigger:
                 self.hold_press_seconds = max(0.0, float(self.hold_press_seconds))
         except Exception:
             self.hold_press_seconds = None
-        self.mode = self.mode if self.mode in ("hold", "toggle") else "hold"
+        self.mode = _normalize_macro_mode(self.mode, default="hold")
 
     @classmethod
     def from_any(cls, raw: Any, *, default_mode: str = "hold", default_hold: Optional[float] = None) -> Optional["MacroTrigger"]:
         if raw is None:
             return None
+        default_mode_norm = _normalize_macro_mode(default_mode, default="hold")
         if isinstance(raw, cls):
             return cls(key=raw.key, mode=raw.mode, hold_press_seconds=raw.hold_press_seconds)
         if isinstance(raw, str):
-            return cls(key=raw, mode=default_mode, hold_press_seconds=default_hold)
+            return cls(key=raw, mode=default_mode_norm, hold_press_seconds=default_hold)
         if isinstance(raw, dict):
             key = raw.get("key") or raw.get("trigger_key") or ""
-            mode = raw.get("mode", default_mode)
+            mode = _normalize_macro_mode(raw.get("mode", default_mode_norm), default=default_mode_norm)
             hold = raw.get("hold_press_seconds", raw.get("hold_threshold", default_hold))
             return cls(key=key, mode=mode, hold_press_seconds=hold)
         return None
@@ -1125,15 +1159,15 @@ class Macro:
                 hold_press_seconds = max(0.0, float(hold_press_seconds))
         except Exception:
             hold_press_seconds = None
+        primary_mode = _normalize_macro_mode(data.get("mode", "hold"), default="hold")
         triggers_raw = data.get("triggers", [])
         triggers: List[MacroTrigger] = []
         if isinstance(triggers_raw, list):
             for item in triggers_raw:
-                trig = MacroTrigger.from_any(item, default_mode=data.get("mode", "hold"), default_hold=hold_press_seconds)
+                trig = MacroTrigger.from_any(item, default_mode=primary_mode, default_hold=hold_press_seconds)
                 if trig and trig.key:
                     triggers.append(trig)
         primary_key = normalize_trigger_key(str(data.get("trigger_key") or data.get("key") or ""))
-        primary_mode = data.get("mode", "hold")
         if not triggers:
             triggers.append(MacroTrigger(key=primary_key, mode=primary_mode, hold_press_seconds=hold_press_seconds))
         primary_trigger = triggers[0]
@@ -1172,7 +1206,7 @@ class Macro:
         self.triggers = normalized
         primary = self.triggers[0]
         self.trigger_key = normalize_trigger_key(primary.key)
-        self.mode = primary.mode if primary.mode in ("hold", "toggle") else "hold"
+        self.mode = _normalize_macro_mode(primary.mode, default="hold")
         try:
             if primary.hold_press_seconds in (None, "", False):
                 self.hold_press_seconds = None
@@ -2050,6 +2084,13 @@ class MacroRunner:
                 self._sleep_with_condition_poll(sleep_ms, allow_condition=False)
             return end_result(status="sleep", duration=sleep_ms)
 
+        if action.type == "sound_alert":
+            played = _play_alert_sound()
+            if not played:
+                self.engine._emit_log("소리 알림 재생 실패")
+            self.engine._emit_event({"type": "action", "action": "sound_alert", "played": played})
+            return end_result(status="sound" if played else "sound_failed", played=played)
+
         def _resolve_repeat_val(act: Action) -> int:
             if getattr(act, "repeat_range", None):
                 try:
@@ -2414,6 +2455,8 @@ class MacroEngine:
         self._hold_raw_state: Dict[tuple[int, int], bool] = {}
         self._active_hold_triggers: Set[tuple[int, int]] = set()
         self._toggle_states: Dict[int, bool] = {}
+        # once 트리거를 toggle처럼 래치해 1사이클 종료까지 유지한다.
+        self._once_latched_indices: Set[int] = set()
         self._recent_sends: Dict[str, float] = {}
         self._guard_macro_idx: Optional[int] = None
         self._suspended_toggle_indices: Set[int] = set()
@@ -2953,7 +2996,7 @@ class MacroEngine:
         macro.triggers = triggers
         primary = triggers[0]
         macro.trigger_key = primary.key
-        macro.mode = primary.mode
+        macro.mode = _normalize_macro_mode(primary.mode, default="hold")
         try:
             macro.hold_press_seconds = None if primary.hold_press_seconds in (None, "", False) else max(0.0, float(primary.hold_press_seconds))
         except Exception:
@@ -3524,14 +3567,17 @@ class MacroEngine:
                 active_holds: Set[tuple[int, int]] = {k for k in self._active_hold_triggers if k[0] == idx}
                 hold_raw_prev: Dict[int, bool] = {}
                 hold_key_sets: Dict[int, Set[str]] = {}
+                once_requested = False
                 for trig_idx, trig in enumerate(triggers):
-                    if trig.mode != "hold":
+                    trig_mode = _normalize_macro_mode(getattr(trig, "mode", "hold"), default="hold")
+                    if trig_mode != "hold":
                         continue
                     hold_raw_prev[trig_idx] = self._hold_raw_state.get((idx, trig_idx), False)
                     hold_key_sets[trig_idx] = set(parse_trigger_keys(trig.key))
 
                 for trig_idx, trig in enumerate(triggers):
-                    if trig.mode == "hold":
+                    trig_mode = _normalize_macro_mode(getattr(trig, "mode", "hold"), default="hold")
+                    if trig_mode == "hold":
                         is_active = self._update_hold_trigger(idx, trig_idx, macro, trig)
                         if is_active:
                             active_holds.add((idx, trig_idx))
@@ -3544,7 +3590,7 @@ class MacroEngine:
                             active_holds.discard((idx, trig_idx))
                     else:
                         # 이미 이전 루프부터 홀드가 유지 중이면 토글을 무시하지만,
-                        # 이번 루프에 처음 홀드가 잡힌 순간(예: Ctrl을 먼저 누르고 mouse4를 눌러 토글 의도)에는 허용한다.
+                        # 이번 루프에 처음 홀드가 잡힌 순간(예: Ctrl을 먼저 누르고 mouse4를 눌러 토글/1회 의도)에는 허용한다.
                         toggle_keys = set(parse_trigger_keys(trig.key))
                         hold_was_down_prev = any(
                             hold_raw_prev.get(h_idx, False)
@@ -3560,12 +3606,18 @@ class MacroEngine:
                             for h_idx in hold_key_sets
                         )
                         if (active_holds and was_active_hold) or hold_was_down_prev or hold_was_down_cur:
-                            # 홀드가 잡혀 있으면 토글 트리거는 무시해 오동작을 막는다.
+                            # 홀드가 잡혀 있으면 토글/1회 트리거는 무시해 오동작을 막는다.
                             continue
                         ignore_window = self._edge_block_window if runner is not None else 0.0
                         if self._edge(trig.key, ignore_recent_sec=ignore_window, disallow_extra_modifiers=True):
-                            toggle_on = not toggle_on
-                            self._toggle_states[idx] = toggle_on
+                            if trig_mode == "once":
+                                once_requested = True
+                                self._once_latched_indices.add(idx)
+                                toggle_on = True
+                                self._toggle_states[idx] = True
+                            else:
+                                toggle_on = not toggle_on
+                                self._toggle_states[idx] = toggle_on
 
                 self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != idx} | active_holds
                 self._toggle_states[idx] = toggle_on
@@ -3578,33 +3630,46 @@ class MacroEngine:
                     else:
                         self._hold_exhausted_indices.discard(idx)
 
-                should_run = toggle_on or bool(active_holds)
+                should_run = toggle_on or bool(active_holds) or once_requested
                 if hold_blocked:
                     should_run = False
 
                 if should_run and runner is None:
                     self._apply_macro_interaction(idx)
-                    runner = MacroRunner(macro, self, idx)
+                    run_macro = macro
+                    if once_requested or idx in self._once_latched_indices:
+                        # 1회 실행은 내부적으로 toggle+cycle_count=1과 같은 경로로 실행한다.
+                        run_macro = copy.deepcopy(macro)
+                        run_macro.cycle_count = 1
+                    runner = MacroRunner(run_macro, self, idx)
                     self._macro_runners[idx] = runner
                     runner.start()
                 elif not should_run and runner is not None:
-                    self._toggle_states[idx] = False
-                    if runner.should_finish_first_cycle():
-                        if not runner.first_cycle_done():
-                            runner.request_stop_after_cycle()
-                        elif runner.is_stop_after_cycle_requested():
-                            pass
+                    # 1회 실행(또는 첫 사이클 완료 대기)로 stop-after-cycle 요청된 러너는
+                    # 입력 상태와 무관하게 사이클 종료 시점까지 자연 종료시킨다.
+                    if runner.is_stop_after_cycle_requested():
+                        pass
+                    else:
+                        self._toggle_states[idx] = False
+                        if runner.should_finish_first_cycle():
+                            if not runner.first_cycle_done():
+                                runner.request_stop_after_cycle()
+                            elif runner.is_stop_after_cycle_requested():
+                                pass
+                            else:
+                                runner.stop()
+                                self._macro_runners.pop(idx, None)
+                                self._once_latched_indices.discard(idx)
                         else:
                             runner.stop()
                             self._macro_runners.pop(idx, None)
-                    else:
-                        runner.stop()
-                        self._macro_runners.pop(idx, None)
+                            self._once_latched_indices.discard(idx)
 
                 runner = self._macro_runners.get(idx)
                 if runner is not None and not runner.is_alive():
                     self._macro_runners.pop(idx, None)
                     self._toggle_states[idx] = False
+                    self._once_latched_indices.discard(idx)
                     if macro.mode == "hold" and getattr(macro, "cycle_count", None) not in (None, 0):
                         self._hold_exhausted_indices.add(idx)
 
@@ -3692,6 +3757,7 @@ class MacroEngine:
         self._hold_blocked_by_extra_mods.clear()
         self._active_hold_triggers.clear()
         self._toggle_states.clear()
+        self._once_latched_indices.clear()
         self._guard_macro_idx = None
         self._suspended_toggle_indices.clear()
         self._suspended_toggle_states.clear()
@@ -3764,7 +3830,7 @@ class MacroEngine:
                 except Exception:
                     triggers = []
                 for trig in triggers:
-                    mode = getattr(trig, "mode", "hold")
+                    mode = _normalize_macro_mode(getattr(trig, "mode", "hold"), default="hold")
                     if mode == "hold":
                         pressed, _ = self._trigger_state(trig.key, disallow_extra_modifiers=True)
                         if pressed:
@@ -3858,6 +3924,7 @@ class MacroEngine:
             self._hold_blocked_by_extra_mods.pop(key, None)
         self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != macro_idx}
         self._toggle_states.pop(macro_idx, None)
+        self._once_latched_indices.discard(macro_idx)
         if macro_idx not in self._suspended_toggle_indices:
             self._suspended_toggle_cycles.pop(macro_idx, None)
             self._suspended_toggle_states.pop(macro_idx, None)

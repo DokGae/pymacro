@@ -237,9 +237,11 @@ class ScreenCaptureManager:
     def _hotkey_loop(self):
         # 폴링 기반이므로 너무 짧게 잡지 않는다.
         poll_interval = 0.01
-        last_start = False
-        last_stop = False
-        last_capture = False
+        # 리스너 시작 시점에 이미 눌려 있던 키로 오동작(즉시 시작/정지)하지 않도록
+        # 초기 상태를 먼저 읽어 기준값으로 둔다.
+        last_start = self._safe_pressed(self.hotkeys.start) if (self.hotkeys.start and get_keystate) else False
+        last_stop = self._safe_pressed(self.hotkeys.stop) if (self.hotkeys.stop and get_keystate) else False
+        last_capture = self._safe_pressed(self.hotkeys.capture) if (self.hotkeys.capture and get_keystate) else False
         while not self._hotkey_stop.is_set():
             if self.hotkeys.start and get_keystate:
                 pressed = self._safe_pressed(self.hotkeys.start)

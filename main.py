@@ -236,6 +236,29 @@ DEFAULT_PROFILE = MacroProfile(
     pixel_tolerance=0,
 )
 HEX_CHARS = set("0123456789abcdefABCDEF")
+_RECORDER_RESERVED_KEYS = {"pgup", "pageup", "pgdown", "pagedown"}
+
+
+def _normalize_hotkey_name(raw: Any) -> str | None:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return None
+    if text == "pageup":
+        return "pgup"
+    if text == "pagedown":
+        return "pgdown"
+    return text
+
+
+def _sanitize_screenshot_hotkey(raw: Any, *, allow_reserved: bool = True) -> str | None:
+    key = _normalize_hotkey_name(raw)
+    if not key:
+        return None
+    if not allow_reserved and key in _RECORDER_RESERVED_KEYS:
+        return None
+    return key
+
+
 ACTION_TYPE_OPTIONS = [
     ("탭 (누르고 떼기)", "press"),
     ("누르기 유지 (down)", "down"),
@@ -245,6 +268,7 @@ ACTION_TYPE_OPTIONS = [
     ("마우스 떼기 (up)", "mouse_up"),
     ("마우스 이동", "mouse_move"),
     ("대기 (sleep)", "sleep"),
+    ("소리 알림", "sound_alert"),
     ("타이머 설정", "timer"),
 ]
 _VK_TO_MACRO_KEY: dict[int, str] = {
@@ -5195,6 +5219,8 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             return f"{region_text} -> {act.pixel_target or ''}".strip() + suffix
         if act.type == "macro_stop":
             return "현재 매크로 중지" + suffix
+        if act.type == "sound_alert":
+            return "시스템 알림음" + suffix
         if act.type == "group":
             mode = act.group_mode or "all"
             if mode == "repeat_n":
@@ -5690,6 +5716,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("마우스 떼기 (up)", "mouse_up"),
             ("마우스 이동", "mouse_move"),
             ("대기 (sleep)", "sleep"),
+            ("소리 알림", "sound_alert"),
             ("현재 매크로 중지 (macro_stop)", "macro_stop"),
             ("변수 설정 (set_var)", "set_var"),
             ("타이머 설정 (timer)", "timer"),
@@ -5725,6 +5752,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.mouse_button_combo.addItem(label, val)
         self.mouse_pos_edit = QtWidgets.QLineEdit()
         self.mouse_pos_edit.setPlaceholderText("x,y (비우면 현재 위치)")
+        self.mouse_pos_edit.setToolTip("F1: 현재 마우스 좌표 입력")
         self.sleep_edit = QtWidgets.QLineEdit("0")
         self.label_edit = QtWidgets.QLineEdit()
         self.goto_combo = QtWidgets.QComboBox()
@@ -5857,6 +5885,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.key_edit.textEdited.connect(self._update_trigger_warning)
         self.mouse_button_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self.type_combo.currentIndexChanged.connect(self._update_trigger_warning)
+        self.capture_mouse_pos_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F1"), self)
+        self.capture_mouse_pos_shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.capture_mouse_pos_shortcut.activated.connect(self._capture_mouse_position)
         self._toggle_override_enabled()
         if action:
             self._load(action)
@@ -5867,6 +5898,20 @@ class ActionEditDialog(QtWidgets.QDialog):
         super().showEvent(event)
         if self._current_type() == "goto":
             self._refresh_goto_targets()
+    def _capture_mouse_position(self):
+        mouse_types = {"mouse_click", "mouse_down", "mouse_up", "mouse_move"}
+        if self._current_type() not in mouse_types:
+            return
+        pos = _current_cursor_pos()
+        if pos is None:
+            qpos = QtGui.QCursor.pos()
+            pos = (int(qpos.x()), int(qpos.y()))
+        x, y = pos
+        txt = f"{x},{y}"
+        self.mouse_pos_edit.setText(txt)
+        self.mouse_pos_edit.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        self.mouse_pos_edit.selectAll()
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"마우스 좌표 입력: {txt}", self, QtCore.QRect(), 1500)
     def _set_field_visible(self, widget: QtWidgets.QWidget, visible: bool):
         label = self._form_layout.labelForField(widget) if hasattr(self, "_form_layout") else None
         if label:
@@ -6539,7 +6584,9 @@ class MacroDialog(QtWidgets.QDialog):
         self.trigger_main_edit.setPlaceholderText("주 키 (예: w, f1, mouse1)")
         self.trigger_main_edit.setClearButtonEnabled(True)
         self.trigger_mode_combo = QtWidgets.QComboBox()
-        self.trigger_mode_combo.addItems(["hold", "toggle"])
+        self.trigger_mode_combo.addItem("hold", "hold")
+        self.trigger_mode_combo.addItem("toggle", "toggle")
+        self.trigger_mode_combo.addItem("1회 실행", "once")
         self.trigger_hold_spin = QtWidgets.QDoubleSpinBox()
         self.trigger_hold_spin.setRange(0.0, 60.0)
         self.trigger_hold_spin.setDecimals(2)
@@ -6854,8 +6901,32 @@ class MacroDialog(QtWidgets.QDialog):
             self.trigger_edit.setText(normalize_trigger_key(text))
         finally:
             self._updating_trigger_builder = False
+    def _current_trigger_mode(self) -> str:
+        mode_data = self.trigger_mode_combo.currentData()
+        if isinstance(mode_data, str):
+            mode = mode_data.strip().lower()
+            if mode in ("hold", "toggle", "once"):
+                return mode
+        mode_text = (self.trigger_mode_combo.currentText() or "hold").strip().lower()
+        if mode_text in ("1회", "1회 실행", "1회실행", "once", "single", "oneshot", "one-shot"):
+            return "once"
+        if mode_text in ("hold", "toggle", "once"):
+            return mode_text
+        return "hold"
+    def _set_trigger_mode(self, mode: str):
+        normalized = str(mode or "hold").strip().lower()
+        if normalized in ("1회", "1회 실행", "1회실행", "single", "oneshot", "one-shot"):
+            normalized = "once"
+        if normalized not in ("hold", "toggle", "once"):
+            normalized = "hold"
+        idx = self.trigger_mode_combo.findData(normalized)
+        if idx < 0:
+            idx = self.trigger_mode_combo.findText(normalized)
+        if idx < 0:
+            idx = 0
+        self.trigger_mode_combo.setCurrentIndex(idx)
     def _sync_trigger_hold_visibility(self):
-        is_hold = (self.trigger_mode_combo.currentText() or "hold").lower() == "hold"
+        is_hold = self._current_trigger_mode() == "hold"
         self.trigger_hold_spin.setVisible(is_hold)
     def _format_hold_value(self, hold: float | None) -> str:
         if hold in (None, "", False):
@@ -6890,7 +6961,9 @@ class MacroDialog(QtWidgets.QDialog):
         if row >= self.trigger_table.rowCount():
             self.trigger_table.insertRow(row)
         key_item = QtWidgets.QTableWidgetItem(key)
-        mode_item = QtWidgets.QTableWidgetItem(mode)
+        mode_key = str(mode or "hold").strip().lower()
+        mode_text = "1회 실행" if mode_key == "once" else mode_key
+        mode_item = QtWidgets.QTableWidgetItem(mode_text)
         hold_item = QtWidgets.QTableWidgetItem(self._format_hold_value(hold))
         hold_item.setData(QtCore.Qt.ItemDataRole.UserRole, hold)
         self.trigger_table.setItem(row, 0, key_item)
@@ -6914,7 +6987,11 @@ class MacroDialog(QtWidgets.QDialog):
             mode_item = self.trigger_table.item(row, 1)
             hold_item = self.trigger_table.item(row, 2)
             key = normalize_trigger_key(key_item.text().strip() if key_item else "")
-            mode = (mode_item.text() if mode_item else "hold") or "hold"
+            mode = ((mode_item.text() if mode_item else "hold") or "hold").strip().lower()
+            if mode in ("1회", "1회 실행", "1회실행", "single", "oneshot", "one-shot"):
+                mode = "once"
+            if mode not in ("hold", "toggle", "once"):
+                mode = "hold"
             hold_val = hold_item.data(QtCore.Qt.ItemDataRole.UserRole) if hold_item else None
             try:
                 hold = float(hold_val) if hold_val not in (None, "", False) else None
@@ -6950,7 +7027,7 @@ class MacroDialog(QtWidgets.QDialog):
             self.trigger_edit.setText(key_item.text())
             self._sync_builder_from_trigger_text()
         if mode_item:
-            self.trigger_mode_combo.setCurrentText(mode_item.text())
+            self._set_trigger_mode(mode_item.text())
         hold_val = hold_item.data(QtCore.Qt.ItemDataRole.UserRole) if hold_item else None
         try:
             self.trigger_hold_spin.setValue(float(hold_val) if hold_val not in (None, "", False) else 0.0)
@@ -6989,7 +7066,7 @@ class MacroDialog(QtWidgets.QDialog):
         if not key:
             QtWidgets.QMessageBox.information(self, "입력 없음", "추가할 트리거 키를 입력하세요.")
             return
-        mode = self.trigger_mode_combo.currentText() or "hold"
+        mode = self._current_trigger_mode()
         hold_val = None
         if mode == "hold":
             try:
@@ -7769,14 +7846,14 @@ class MacroDialog(QtWidgets.QDialog):
         if triggers:
             primary = triggers[0]
             self.trigger_edit.setText(primary.key)
-            self.trigger_mode_combo.setCurrentText(primary.mode)
+            self._set_trigger_mode(primary.mode)
             try:
                 self.trigger_hold_spin.setValue(max(0.0, float(primary.hold_press_seconds or 0.0)))
             except Exception:
                 self.trigger_hold_spin.setValue(0.0)
         else:
             self.trigger_edit.clear()
-            self.trigger_mode_combo.setCurrentText("hold")
+            self._set_trigger_mode("hold")
             self.trigger_hold_spin.setValue(0.0)
         self._sync_builder_from_trigger_text()
         self._sync_trigger_hold_visibility()
@@ -7893,9 +7970,9 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self.interval_spin.setValue(self.manager.interval)
         form.addRow("캡처 주기(초)", self.interval_spin)
         self.start_hotkey_edit = QtWidgets.QLineEdit(self.manager.hotkeys.start or "")
-        self.start_hotkey_edit.setPlaceholderText("예: pgup")
+        self.start_hotkey_edit.setPlaceholderText("예: home")
         self.stop_hotkey_edit = QtWidgets.QLineEdit(self.manager.hotkeys.stop or "")
-        self.stop_hotkey_edit.setPlaceholderText("예: pgdown")
+        self.stop_hotkey_edit.setPlaceholderText("예: end")
         self.capture_hotkey_edit = QtWidgets.QLineEdit(self.manager.hotkeys.capture or "")
         self.capture_hotkey_edit.setPlaceholderText("예: f11 (한 장 캡처)")
         form.addRow("시작 단축키", self.start_hotkey_edit)
@@ -7930,7 +8007,7 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self.output_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         form.addRow("저장 위치", self.output_label)
         layout.addLayout(form)
-        layout.addWidget(QtWidgets.QLabel("단축키는 단일 키 이름(pgup, home 등)만 지원합니다."))
+        layout.addWidget(QtWidgets.QLabel("단축키는 단일 키 이름(f8, home 등)만 지원합니다."))
         self.status_label = QtWidgets.QLabel(self._status_text())
         layout.addWidget(self.status_label)
         btn_row = QtWidgets.QHBoxLayout()
@@ -7991,9 +8068,25 @@ class ScreenshotDialog(QtWidgets.QDialog):
         )
     def _apply_only(self):
         interval = float(self.interval_spin.value())
-        start_key = self.start_hotkey_edit.text().strip() or None
-        stop_key = self.stop_hotkey_edit.text().strip() or None
-        capture_key = self.capture_hotkey_edit.text().strip() or None
+        start_raw = self.start_hotkey_edit.text()
+        stop_raw = self.stop_hotkey_edit.text()
+        capture_raw = self.capture_hotkey_edit.text()
+        start_key = _sanitize_screenshot_hotkey(start_raw, allow_reserved=False)
+        stop_key = _sanitize_screenshot_hotkey(stop_raw, allow_reserved=False)
+        capture_key = _sanitize_screenshot_hotkey(capture_raw)
+        start_text = (start_raw or "").strip()
+        stop_text = (stop_raw or "").strip()
+        capture_text = (capture_raw or "").strip()
+        if start_text and start_key is None:
+            self.start_hotkey_edit.setText("")
+        elif start_key and start_key != start_text.lower():
+            self.start_hotkey_edit.setText(start_key)
+        if stop_text and stop_key is None:
+            self.stop_hotkey_edit.setText("")
+        elif stop_key and stop_key != stop_text.lower():
+            self.stop_hotkey_edit.setText(stop_key)
+        if capture_key and capture_key != capture_text.lower():
+            self.capture_hotkey_edit.setText(capture_key)
         has_hotkeys = bool(start_key or stop_key or capture_key)
         effective_enabled = bool(self.hotkey_checkbox.isChecked() and has_hotkeys)
         if self.hotkey_checkbox.isChecked() and not has_hotkeys:
@@ -8466,7 +8559,8 @@ class DebuggerDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         if state.get("visible"):
-            QtCore.QTimer.singleShot(0, self.show_and_raise)
+            # 자동 복원 시에는 포커스를 빼앗지 않는다.
+            QtCore.QTimer.singleShot(0, self.show)
     def _collect_state(self) -> dict:
         g = self.geometry()
         return {
@@ -12121,9 +12215,31 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
         self._recordable_event_count: int = 0
         self._skipped_unknown_count: int = 0
         self._accepted_actions: list[Action] | None = None
-        self._status_prefix: str = "녹화 준비"
+        self._status_prefix: str = "키보드 녹화 대기중"
+        self._hotkey_start: str = "pgup"
+        self._hotkey_stop: str = "pgdown"
+        self._hotkey_start_label: str = "PageUp"
+        self._hotkey_stop_label: str = "PageDown"
+        self._hotkey_start_prev = False
+        self._hotkey_stop_prev = False
+        self._hotkey_ready = False
+        self._hotkey_release_polls = 0
+        self._hotkey_release_polls_required = 2
+        self._hotkey_start_streak = 0
+        self._hotkey_stop_streak = 0
+        self._hotkey_start_polls_required = 2
+        self._hotkey_stop_polls_required = 1
+        self._hotkey_initial_guard_until = time.monotonic() + 0.35
         self._build_ui()
         self._timer.start()
+        self._hotkey_start_prev = self._safe_pressed(self._hotkey_start)
+        self._hotkey_stop_prev = self._safe_pressed(self._hotkey_stop)
+        self._hotkey_ready = False
+        self._hotkey_release_polls = 0
+        self._hotkey_timer = QtCore.QTimer(self)
+        self._hotkey_timer.setInterval(35)
+        self._hotkey_timer.timeout.connect(self._poll_hotkeys)
+        self._hotkey_timer.start()
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         self.status_label = QtWidgets.QLabel("")
@@ -12135,8 +12251,13 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
         hint.setStyleSheet("color: #666;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+        hotkey_hint = QtWidgets.QLabel(
+            f"단축키: {self._hotkey_start_label}=녹화 시작, {self._hotkey_stop_label}=녹화 중지"
+        )
+        hotkey_hint.setStyleSheet("color: #666;")
+        layout.addWidget(hotkey_hint)
         ctrl_row = QtWidgets.QHBoxLayout()
-        self.toggle_btn = QtWidgets.QPushButton("녹화 시작")
+        self.toggle_btn = QtWidgets.QPushButton(self._toggle_btn_text(running=False))
         self.clear_btn = QtWidgets.QPushButton("초기화")
         ctrl_row.addWidget(self.toggle_btn)
         ctrl_row.addWidget(self.clear_btn)
@@ -12167,6 +12288,20 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
         self.apply_btn.clicked.connect(self._accept_if_valid)
         self.cancel_btn.clicked.connect(self.reject)
         self._refresh_status()
+    def _toggle_btn_text(self, *, running: bool) -> str:
+        if running:
+            return f"녹화 중지 ({self._hotkey_stop_label})"
+        return f"녹화 시작 ({self._hotkey_start_label})"
+    def _is_start_hotkey_key(self, key_name: str | None) -> bool:
+        key = str(key_name or "").strip().lower()
+        if not key:
+            return False
+        return key in {str(self._hotkey_start or "").strip().lower(), "pgup", "pageup"}
+    def _is_stop_hotkey_key(self, key_name: str | None) -> bool:
+        key = str(key_name or "").strip().lower()
+        if not key:
+            return False
+        return key in {str(self._hotkey_stop or "").strip().lower(), "pgdown", "pagedown"}
     def _refresh_status(self, prefix: str | None = None):
         if prefix is not None:
             self._status_prefix = prefix
@@ -12185,16 +12320,73 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
         self._stop_event.clear()
         self._listener_thread = threading.Thread(target=self._listen_loop, name="KeyboardRecordListener", daemon=True)
         self._listener_thread.start()
-        self.toggle_btn.setText("녹화 중지")
-        self._refresh_status("녹화 중")
+        self.toggle_btn.setText(self._toggle_btn_text(running=True))
+        self._refresh_status("키보드 녹화중")
     def _stop_listener(self, *, message: str | None = None):
         self._stop_event.set()
         t = self._listener_thread
         if t and t.is_alive():
             t.join(timeout=1.0)
         self._listener_thread = None
-        self.toggle_btn.setText("녹화 시작")
-        self._refresh_status(message or "중지됨")
+        self.toggle_btn.setText(self._toggle_btn_text(running=False))
+        self._refresh_status(message or "키보드 녹화 중지됨")
+    def _safe_pressed(self, key_name: str) -> bool:
+        try:
+            return bool(get_keystate(key_name, async_=True))
+        except TypeError:
+            try:
+                return bool(get_keystate(key_name))
+            except Exception:
+                return False
+        except Exception:
+            return False
+    def _poll_hotkeys(self):
+        start_pressed = self._safe_pressed(self._hotkey_start)
+        stop_pressed = self._safe_pressed(self._hotkey_stop)
+        if time.monotonic() < self._hotkey_initial_guard_until:
+            self._hotkey_start_prev = start_pressed
+            self._hotkey_stop_prev = stop_pressed
+            return
+        if not self._hotkey_ready:
+            if not start_pressed and not stop_pressed:
+                self._hotkey_release_polls += 1
+                if self._hotkey_release_polls >= self._hotkey_release_polls_required:
+                    self._hotkey_ready = True
+                    self._hotkey_start_prev = False
+                    self._hotkey_stop_prev = False
+                    self._hotkey_start_streak = 0
+                    self._hotkey_stop_streak = 0
+            else:
+                self._hotkey_release_polls = 0
+                self._hotkey_start_prev = start_pressed
+                self._hotkey_stop_prev = stop_pressed
+            return
+        if start_pressed:
+            self._hotkey_start_streak += 1
+        else:
+            self._hotkey_start_streak = 0
+        if stop_pressed:
+            self._hotkey_stop_streak += 1
+        else:
+            self._hotkey_stop_streak = 0
+        running = bool(self._listener_thread and self._listener_thread.is_alive())
+        if running and self._hotkey_stop_streak == self._hotkey_stop_polls_required:
+            self._stop_listener(message=f"키보드 녹화 중지됨 ({self._hotkey_stop_label})")
+            running = False
+            self._hotkey_ready = False
+            self._hotkey_release_polls = 0
+            self._hotkey_start_streak = 0
+            self._hotkey_stop_streak = 0
+            self._hotkey_initial_guard_until = time.monotonic() + 0.05
+        if (not running) and self._hotkey_start_streak == self._hotkey_start_polls_required:
+            self._start_listener()
+            self._hotkey_ready = False
+            self._hotkey_release_polls = 0
+            self._hotkey_start_streak = 0
+            self._hotkey_stop_streak = 0
+            self._hotkey_initial_guard_until = time.monotonic() + 0.05
+        self._hotkey_start_prev = start_pressed
+        self._hotkey_stop_prev = stop_pressed
     def _listen_loop(self):
         try:
             inter = Interception()
@@ -12219,17 +12411,28 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
                         if state in down_states or state in up_states:
                             action = "down" if state in down_states else "up"
                             key_name = _macro_key_from_stroke(stroke)
-                            self._queue.put(
-                                {
-                                    "type": "event",
-                                    "event": {
-                                        "ts": time.time(),
-                                        "action": action,
-                                        "key": key_name,
-                                        "label": _stroke_key_label(stroke, key_name),
-                                    },
-                                }
-                            )
+                            vk_code = 0
+                            try:
+                                sc_code = int(getattr(stroke, "code", 0))
+                                vk_code = int(map_virtual_key(sc_code, MapVk.ScToVk) or 0)
+                            except Exception:
+                                vk_code = 0
+                            is_start_hotkey = self._is_start_hotkey_key(key_name) or vk_code == 33
+                            is_stop_hotkey = self._is_stop_hotkey_key(key_name) or vk_code == 34
+                            if action == "down" and is_stop_hotkey:
+                                self._queue.put({"type": "hotkey_stop"})
+                            if not (is_start_hotkey or is_stop_hotkey):
+                                self._queue.put(
+                                    {
+                                        "type": "event",
+                                        "event": {
+                                            "ts": time.time(),
+                                            "action": action,
+                                            "key": key_name,
+                                            "label": _stroke_key_label(stroke, key_name),
+                                        },
+                                    }
+                                )
             except Exception as exc:
                 self._queue.put({"type": "error", "message": str(exc)})
                 break
@@ -12247,6 +12450,9 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
             mtype = msg.get("type")
             if mtype == "error":
                 self._stop_listener(message=f"오류: {msg.get('message')}")
+                continue
+            if mtype == "hotkey_stop":
+                self._stop_listener(message=f"키보드 녹화 중지됨 ({self._hotkey_stop_label})")
                 continue
             if mtype != "event":
                 continue
@@ -12323,7 +12529,7 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
         return int(self._skipped_unknown_count)
     def _accept_if_valid(self):
         if self._listener_thread and self._listener_thread.is_alive():
-            self._stop_listener(message="중지됨")
+            self._stop_listener(message="키보드 녹화 중지됨")
             self._drain_queue()
         actions = self.recorded_actions()
         if not actions:
@@ -12340,10 +12546,18 @@ class KeyboardRecordDialog(QtWidgets.QDialog):
         self._accepted_actions = list(actions)
         self.accept()
     def done(self, result: int):
+        try:
+            self._hotkey_timer.stop()
+        except Exception:
+            pass
         self._stop_listener()
         super().done(result)
     def closeEvent(self, event):
         try:
+            try:
+                self._hotkey_timer.stop()
+            except Exception:
+                pass
             self._stop_listener()
         finally:
             super().closeEvent(event)
@@ -12369,13 +12583,27 @@ class MouseRecordDialog(QtWidgets.QDialog):
         self._max_events: int = 6000
         self._move_sample_ms: int = 15
         self._accepted_actions: list[Action] | None = None
-        self._status_prefix: str = "녹화 준비"
+        self._status_prefix: str = "마우스 녹화 대기중"
         self._hotkey_start: str = "pgup"
         self._hotkey_stop: str = "pgdown"
+        self._hotkey_start_label: str = "PageUp"
+        self._hotkey_stop_label: str = "PageDown"
         self._hotkey_start_prev = False
         self._hotkey_stop_prev = False
+        self._hotkey_ready = False
+        self._hotkey_release_polls = 0
+        self._hotkey_release_polls_required = 2
+        self._hotkey_start_streak = 0
+        self._hotkey_stop_streak = 0
+        self._hotkey_start_polls_required = 2
+        self._hotkey_stop_polls_required = 1
+        self._hotkey_initial_guard_until = time.monotonic() + 0.35
         self._build_ui()
         self._timer.start()
+        self._hotkey_start_prev = self._safe_pressed(self._hotkey_start)
+        self._hotkey_stop_prev = self._safe_pressed(self._hotkey_stop)
+        self._hotkey_ready = False
+        self._hotkey_release_polls = 0
         self._hotkey_timer = QtCore.QTimer(self)
         self._hotkey_timer.setInterval(35)
         self._hotkey_timer.timeout.connect(self._poll_hotkeys)
@@ -12391,11 +12619,13 @@ class MouseRecordDialog(QtWidgets.QDialog):
         hint.setStyleSheet("color: #666;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
-        hotkey_hint = QtWidgets.QLabel("단축키: PgUp=녹화 시작, PgDown=녹화 중지")
+        hotkey_hint = QtWidgets.QLabel(
+            f"단축키: {self._hotkey_start_label}=녹화 시작, {self._hotkey_stop_label}=녹화 중지"
+        )
         hotkey_hint.setStyleSheet("color: #666;")
         layout.addWidget(hotkey_hint)
         ctrl_row = QtWidgets.QHBoxLayout()
-        self.toggle_btn = QtWidgets.QPushButton("녹화 시작")
+        self.toggle_btn = QtWidgets.QPushButton(self._toggle_btn_text(running=False))
         self.clear_btn = QtWidgets.QPushButton("초기화")
         ctrl_row.addWidget(self.toggle_btn)
         ctrl_row.addWidget(self.clear_btn)
@@ -12427,6 +12657,10 @@ class MouseRecordDialog(QtWidgets.QDialog):
         self.apply_btn.clicked.connect(self._accept_if_valid)
         self.cancel_btn.clicked.connect(self.reject)
         self._refresh_status()
+    def _toggle_btn_text(self, *, running: bool) -> str:
+        if running:
+            return f"녹화 중지 ({self._hotkey_stop_label})"
+        return f"녹화 시작 ({self._hotkey_start_label})"
     def _refresh_status(self, prefix: str | None = None):
         if prefix is not None:
             self._status_prefix = prefix
@@ -12447,16 +12681,16 @@ class MouseRecordDialog(QtWidgets.QDialog):
         self._stop_event.clear()
         self._listener_thread = threading.Thread(target=self._listen_loop, name="MouseRecordListener", daemon=True)
         self._listener_thread.start()
-        self.toggle_btn.setText("녹화 중지")
-        self._refresh_status("녹화 중")
+        self.toggle_btn.setText(self._toggle_btn_text(running=True))
+        self._refresh_status("마우스 녹화중")
     def _stop_listener(self, *, message: str | None = None):
         self._stop_event.set()
         t = self._listener_thread
         if t and t.is_alive():
             t.join(timeout=1.0)
         self._listener_thread = None
-        self.toggle_btn.setText("녹화 시작")
-        self._refresh_status(message or "중지됨")
+        self.toggle_btn.setText(self._toggle_btn_text(running=False))
+        self._refresh_status(message or "마우스 녹화 중지됨")
     def _safe_pressed(self, key_name: str) -> bool:
         try:
             return bool(get_keystate(key_name, async_=True))
@@ -12470,12 +12704,48 @@ class MouseRecordDialog(QtWidgets.QDialog):
     def _poll_hotkeys(self):
         start_pressed = self._safe_pressed(self._hotkey_start)
         stop_pressed = self._safe_pressed(self._hotkey_stop)
+        if time.monotonic() < self._hotkey_initial_guard_until:
+            self._hotkey_start_prev = start_pressed
+            self._hotkey_stop_prev = stop_pressed
+            return
+        if not self._hotkey_ready:
+            if not start_pressed and not stop_pressed:
+                self._hotkey_release_polls += 1
+                if self._hotkey_release_polls >= self._hotkey_release_polls_required:
+                    self._hotkey_ready = True
+                    self._hotkey_start_prev = False
+                    self._hotkey_stop_prev = False
+                    self._hotkey_start_streak = 0
+                    self._hotkey_stop_streak = 0
+            else:
+                self._hotkey_release_polls = 0
+                self._hotkey_start_prev = start_pressed
+                self._hotkey_stop_prev = stop_pressed
+            return
+        if start_pressed:
+            self._hotkey_start_streak += 1
+        else:
+            self._hotkey_start_streak = 0
+        if stop_pressed:
+            self._hotkey_stop_streak += 1
+        else:
+            self._hotkey_stop_streak = 0
         running = bool(self._listener_thread and self._listener_thread.is_alive())
-        if stop_pressed and not self._hotkey_stop_prev and running:
-            self._stop_listener(message="중지됨 (PgDown)")
+        if running and self._hotkey_stop_streak == self._hotkey_stop_polls_required:
+            self._stop_listener(message=f"마우스 녹화 중지됨 ({self._hotkey_stop_label})")
             running = False
-        if start_pressed and not self._hotkey_start_prev and not running:
+            self._hotkey_ready = False
+            self._hotkey_release_polls = 0
+            self._hotkey_start_streak = 0
+            self._hotkey_stop_streak = 0
+            self._hotkey_initial_guard_until = time.monotonic() + 0.05
+        if (not running) and self._hotkey_start_streak == self._hotkey_start_polls_required:
             self._start_listener()
+            self._hotkey_ready = False
+            self._hotkey_release_polls = 0
+            self._hotkey_start_streak = 0
+            self._hotkey_stop_streak = 0
+            self._hotkey_initial_guard_until = time.monotonic() + 0.05
         self._hotkey_start_prev = start_pressed
         self._hotkey_stop_prev = stop_pressed
     def _parse_mouse_event(self, stroke) -> dict[str, Any] | None:
@@ -12729,7 +12999,7 @@ class MouseRecordDialog(QtWidgets.QDialog):
         return int(self._skipped_unknown_count)
     def _accept_if_valid(self):
         if self._listener_thread and self._listener_thread.is_alive():
-            self._stop_listener(message="중지됨")
+            self._stop_listener(message="마우스 녹화 중지됨")
             self._drain_queue()
         actions = self.recorded_actions()
         if not actions:
@@ -14006,14 +14276,14 @@ class MacroWindow(QtWidgets.QMainWindow):
             max_queue_size=screenshot_state.get("queue_size", MAX_QUEUE_SIZE),
         )
         self._theme = self._compute_theme_colors()
-        hotkey_start = screenshot_state.get("hotkey_start") or "pgup"
-        hotkey_stop = screenshot_state.get("hotkey_stop") or "pgdown"
-        hotkey_capture = screenshot_state.get("hotkey_capture")
+        hotkey_start = _sanitize_screenshot_hotkey(screenshot_state.get("hotkey_start"), allow_reserved=False)
+        hotkey_stop = _sanitize_screenshot_hotkey(screenshot_state.get("hotkey_stop"), allow_reserved=False)
+        hotkey_capture = _sanitize_screenshot_hotkey(screenshot_state.get("hotkey_capture"))
         self.screenshot_manager.configure_hotkeys(
             hotkey_start,
             hotkey_stop,
             hotkey_capture,
-            enabled=bool(screenshot_state.get("hotkey_enabled", True)),
+            enabled=bool(screenshot_state.get("hotkey_enabled", False)),
         )
         self._screenshot_dialog: ScreenshotDialog | None = None
         self.setWindowTitle(self.base_title)
@@ -15554,10 +15824,11 @@ class MacroWindow(QtWidgets.QMainWindow):
         for trig in triggers:
             key = getattr(trig, "key", "") or ""
             mode = getattr(trig, "mode", "") or ""
+            mode_txt = "1회 실행" if str(mode).strip().lower() == "once" else mode
             if key:
-                labels.append(f"{key} ({mode})" if mode else key)
-            if mode:
-                modes.append(mode)
+                labels.append(f"{key} ({mode_txt})" if mode_txt else key)
+            if mode_txt:
+                modes.append(mode_txt)
         trigger_text = ", ".join(labels[:3]) + ("..." if len(labels) > 3 else "")
         if not trigger_text:
             trigger_text = getattr(macro, "trigger_key", "") or ""
@@ -16676,7 +16947,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             base = getattr(self, "_status_badge_style", "")
             if running:
                 self.capture_label.setVisible(True)
-                self.capture_label.setText("녹화중")
+                self.capture_label.setText("스크린샷 캡처중")
                 self.capture_label.setStyleSheet(f"{base} color: #e53935; font-weight: bold;")
             else:
                 self.capture_label.setVisible(False)
