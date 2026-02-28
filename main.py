@@ -45,6 +45,7 @@ from engine import (
     DEFAULT_BASE_SCALE,
     normalize_trigger_key,
     parse_trigger_keys,
+    _send_telegram_message,
 )
 from lib import keyboard as kbutil
 from lib.interception import Interception, KeyFilter, KeyState, MapVk, MouseFilter, MouseState, map_virtual_key
@@ -270,6 +271,7 @@ ACTION_TYPE_OPTIONS = [
     ("대기 (sleep)", "sleep"),
     ("소리 알림", "sound_alert"),
     ("타이머 설정", "timer"),
+    ("텔레그램 메시지", "telegram_message"),
 ]
 _VK_TO_MACRO_KEY: dict[int, str] = {
     8: "backspace",
@@ -3239,6 +3241,7 @@ class _FileTreeView(QtWidgets.QTreeView):
     ctrlArrow = QtCore.pyqtSignal(int)
     deleteRequested = QtCore.pyqtSignal()
     refreshRequested = QtCore.pyqtSignal()
+    renameRequested = QtCore.pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent)
         self._root_path = Path.cwd()
@@ -3275,24 +3278,49 @@ class _FileTreeView(QtWidgets.QTreeView):
             self.refreshRequested.emit()
             event.accept()
             return
+        if key == QtCore.Qt.Key.Key_F2:
+            self.renameRequested.emit()
+            event.accept()
+            return
         super().keyPressEvent(event)
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent):
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() or event.source() is self:
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
     def dragMoveEvent(self, event: QtGui.QDragMoveEvent):
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() or event.source() is self:
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
+    def _selected_paths(self) -> list[Path]:
+        paths: list[Path] = []
+        seen: set[str] = set()
+        try:
+            idxs = self.selectionModel().selectedRows() if self.selectionModel() else []
+        except Exception:
+            idxs = []
+        for idx in idxs:
+            p = self._path_resolver(idx) if callable(self._path_resolver) and idx.isValid() else None
+            if not p:
+                continue
+            key = str(p.resolve()) if hasattr(p, "resolve") else str(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(p)
+        return paths
     def dropEvent(self, event: QtGui.QDropEvent):
-        if not event.mimeData().hasUrls():
+        if not event.mimeData().hasUrls() and event.source() is not self:
             return super().dropEvent(event)
         idx = self.indexAt(event.position().toPoint()) if hasattr(event, "position") else self.indexAt(event.pos())
         target_path = self._resolve_path(idx)
-        urls = event.mimeData().urls()
-        paths = [Path(u.toLocalFile()) for u in urls if u.isLocalFile()]
+        paths: list[Path] = []
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            paths = [Path(u.toLocalFile()) for u in urls if u.isLocalFile()]
+        if not paths and event.source() is self:
+            paths = self._selected_paths()
         if not paths:
             event.ignore()
             return
@@ -3483,10 +3511,11 @@ class ImageViewerDialog(QtWidgets.QDialog):
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.file_tree.hideColumn(1)  # 크기 숨김
         self.file_tree.setSortingEnabled(True)
+        self.file_tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         # 시그널 연결
         self.root_btn.clicked.connect(self._choose_root)
         self.open_folder_btn.clicked.connect(self._open_current_folder)
-        self.refresh_btn.clicked.connect(self._refresh_folder)
+        self.refresh_btn.clicked.connect(lambda _=False: self._refresh_folder(show_latest=True))
         self.delete_btn.clicked.connect(self._delete_selection)
         self.delete_all_btn.clicked.connect(self._delete_all_in_folder)
         self.auto_refresh_chk.setChecked(self._auto_refresh_enabled)
@@ -3504,7 +3533,9 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.file_tree.dropRequested.connect(self._handle_drop)
         self.file_tree.ctrlArrow.connect(self._on_tree_ctrl_arrow)
         self.file_tree.deleteRequested.connect(self._delete_selection)
-        self.file_tree.refreshRequested.connect(self._refresh_folder)
+        self.file_tree.refreshRequested.connect(lambda: self._refresh_folder(show_latest=True))
+        self.file_tree.renameRequested.connect(self._rename_selected_tree_item)
+        self.file_tree.customContextMenuRequested.connect(self._show_tree_context_menu)
         self.file_tree.doubleClicked.connect(self._on_tree_double_clicked)
         self.file_tree.selectionModel().selectionChanged.connect(self._on_tree_selection_changed)
         header.sortIndicatorChanged.connect(self._on_sort_indicator_changed)
@@ -3521,14 +3552,20 @@ class ImageViewerDialog(QtWidgets.QDialog):
             context=QtCore.Qt.ShortcutContext.ApplicationShortcut,
         )
     def _validate_dir(self, path: Path) -> Path:
+        # 뷰어가 fallback으로 사용하는 기본 스크린샷 폴더는 항상 유지한다.
+        try:
+            SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        fallback_dir = SCREENSHOT_DIR
         try:
             p = Path(path)
         except Exception:
-            p = SCREENSHOT_DIR
+            p = fallback_dir
         if p.is_file():
             p = p.parent
         if not p.exists():
-            p = SCREENSHOT_DIR
+            p = fallback_dir
         return p
     def _is_under_root(self, path: Path) -> bool:
         try:
@@ -3597,7 +3634,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._load_folder(folder, auto_select_first=auto_select_first or need_refresh)
         self._select_tree_path(folder)
         self._persist_state()
-    def _select_file(self, path: Path):
+    def _select_file(self, path: Path, *, update_tree: bool = True):
         if not path or not path.exists() or not self._is_image_file(path):
             return
         parent = path.parent
@@ -3611,7 +3648,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
                 idx = self._image_files.index(path)
             except ValueError:
                 return
-        self._select_index(idx)
+        self._select_index(idx, update_tree=update_tree)
     def _current_file(self) -> Path | None:
         if 0 <= self._current_index < len(self._image_files):
             return self._image_files[self._current_index]
@@ -3671,6 +3708,14 @@ class ImageViewerDialog(QtWidgets.QDialog):
             idxs = []
         if not idxs:
             return
+        if len(idxs) > 1:
+            # 다중 선택 시 선택 상태를 보존하기 위해 트리 선택을 다시 건드리지 않는다.
+            for idx in idxs:
+                path = self._path_from_index(idx)
+                if path and self._is_image_file(path):
+                    self._select_file(path, update_tree=False)
+                    break
+            return
         path = self._path_from_index(idxs[0])
         if not path:
             return
@@ -3678,7 +3723,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._set_current_folder(path, refresh=True, auto_select_first=False)
             return
         if self._is_image_file(path):
-            self._select_file(path)
+            self._select_file(path, update_tree=False)
         else:
             self._set_current_folder(path.parent, refresh=False, auto_select_first=False)
     def _on_tree_double_clicked(self, idx: QtCore.QModelIndex):
@@ -3750,51 +3795,196 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self.status_label.setText(" / ".join(parts))
         if errors:
             QtWidgets.QMessageBox.warning(self, "이동/복사 실패", "\n".join(errors[:5]))
-    def _delete_selection(self):
+    def _selected_tree_paths(self) -> list[Path]:
         paths: list[Path] = []
         try:
-            sel = self.file_tree.selectionModel().selectedRows()
+            sel = self.file_tree.selectionModel().selectedRows() if self.file_tree.selectionModel() else []
             for idx in sel:
                 p = self._path_from_index(idx)
                 if p and p not in paths:
                     paths.append(p)
         except Exception:
-            paths = []
+            pass
+        return paths
+    def _context_target_dir(self, path: Path | None) -> Path:
+        target = path or self._current_folder
+        if target and target.exists():
+            return target if target.is_dir() else target.parent
+        return self._current_folder
+    def _show_tree_context_menu(self, pos: QtCore.QPoint):
+        idx = self.file_tree.indexAt(pos)
+        clicked_path = self._path_from_index(idx) if idx and idx.isValid() else None
+        if idx and idx.isValid() and self.file_tree.selectionModel():
+            selected_rows = self.file_tree.selectionModel().selectedRows()
+            if idx not in selected_rows:
+                self.file_tree.selectionModel().select(
+                    idx,
+                    QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+                    | QtCore.QItemSelectionModel.SelectionFlag.Rows,
+                )
+                self.file_tree.selectionModel().setCurrentIndex(
+                    idx,
+                    QtCore.QItemSelectionModel.SelectionFlag.NoUpdate,
+                )
+        menu = QtWidgets.QMenu(self.file_tree)
+        new_folder_act = menu.addAction("새 폴더")
+        rename_act = menu.addAction("이름 변경")
+        target_path = clicked_path
+        selected = self._selected_tree_paths()
+        if target_path is None and selected:
+            target_path = selected[0]
+        rename_act.setEnabled(target_path is not None)
+        chosen = menu.exec(self.file_tree.viewport().mapToGlobal(pos))
+        if chosen == new_folder_act:
+            self._create_new_folder(target_path)
+        elif chosen == rename_act:
+            self._rename_selected_tree_item(target_path)
+    def _create_new_folder(self, base_path: Path | None = None):
+        target_dir = self._context_target_dir(base_path)
+        default_name = "새 폴더"
+        folder_name, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "새 폴더",
+            "새 폴더 이름을 입력하세요.",
+            text=default_name,
+        )
+        if not ok:
+            return
+        folder_name = folder_name.strip()
+        if not folder_name:
+            folder_name = default_name
+        if any(ch in folder_name for ch in ("\\", "/")) or folder_name in {".", ".."}:
+            QtWidgets.QMessageBox.warning(self, "새 폴더", "폴더 이름에 사용할 수 없는 문자가 있습니다.")
+            return
+        candidate = self._next_available_path(target_dir / folder_name)
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "새 폴더 실패", str(exc))
+            return
+        self._set_current_folder(target_dir, refresh=True, auto_select_first=False)
+        self._select_tree_path(candidate)
+        self.status_label.setText(f"폴더 생성: {candidate.name}")
+    def _rename_selected_tree_item(self, preferred_path: Path | None = None):
+        selected = self._selected_tree_paths()
+        target = preferred_path
+        if target is None:
+            if len(selected) > 1:
+                QtWidgets.QMessageBox.information(self, "이름 변경", "이름 변경은 항목 1개만 가능합니다.")
+                return
+            if selected:
+                target = selected[0]
+        if target is None:
+            target = self._current_file()
+        if target is None:
+            QtWidgets.QMessageBox.information(self, "이름 변경", "이름을 바꿀 항목을 선택하세요.")
+            return
+        self._rename_path(target)
+    def _rename_path(self, target: Path):
+        if not target.exists():
+            QtWidgets.QMessageBox.information(self, "이름 변경", "선택한 항목이 존재하지 않습니다.")
+            return
+        if target.is_file():
+            base_text = target.stem
+            suffix = target.suffix or ""
+            new_base, ok = QtWidgets.QInputDialog.getText(
+                self,
+                "이름 변경",
+                f"새 파일 이름을 입력하세요. (확장자 {suffix} 고정)",
+                text=base_text,
+            )
+            if not ok:
+                return
+            new_base = new_base.strip()
+            # 사용자가 확장자를 같이 입력해도 원본 확장자는 유지한다.
+            lower_name = new_base.lower()
+            for ext in (".png", ".jpg", ".jpeg", ".bmp"):
+                if lower_name.endswith(ext):
+                    new_base = new_base[: -len(ext)].rstrip()
+                    lower_name = new_base.lower()
+                    break
+            if suffix and new_base.lower().endswith(suffix.lower()):
+                new_base = new_base[: -len(suffix)].rstrip()
+            if not new_base:
+                QtWidgets.QMessageBox.information(self, "이름 변경", "파일 이름이 비어 있습니다.")
+                return
+            if any(ch in new_base for ch in ("\\", "/")) or new_base in {".", ".."}:
+                QtWidgets.QMessageBox.warning(self, "이름 변경", "파일 이름에 사용할 수 없는 문자가 있습니다.")
+                return
+            new_path = target.parent / f"{new_base}{suffix}"
+        else:
+            new_name, ok = QtWidgets.QInputDialog.getText(
+                self,
+                "이름 변경",
+                "새 폴더 이름을 입력하세요.",
+                text=target.name,
+            )
+            if not ok:
+                return
+            new_name = new_name.strip()
+            if not new_name:
+                QtWidgets.QMessageBox.information(self, "이름 변경", "폴더 이름이 비어 있습니다.")
+                return
+            if any(ch in new_name for ch in ("\\", "/")) or new_name in {".", ".."}:
+                QtWidgets.QMessageBox.warning(self, "이름 변경", "폴더 이름에 사용할 수 없는 문자가 있습니다.")
+                return
+            new_path = target.parent / new_name
+        if new_path == target:
+            return
+        if new_path.exists():
+            QtWidgets.QMessageBox.warning(self, "이름 변경", "동일한 이름의 항목이 이미 있습니다.")
+            return
+        try:
+            target.rename(new_path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "이름 변경 실패", str(exc))
+            return
+        self._set_current_folder(new_path.parent, refresh=True, auto_select_first=False)
+        if new_path.is_file() and self._is_image_file(new_path):
+            self._select_file(new_path)
+        else:
+            self._select_tree_path(new_path)
+        self.status_label.setText(f"이름 변경: {target.name} → {new_path.name}")
+    def _delete_selection(self):
+        paths = self._selected_tree_paths()
         if not paths and self._current_file():
             self._delete_current_file()
             return
         if not paths:
             QtWidgets.QMessageBox.information(self, "삭제 대상 없음", "삭제할 항목이 없습니다.")
             return
-        files = sum(1 for p in paths if p.is_file())
-        folders = sum(1 for p in paths if p.is_dir())
-        msg = []
-        if folders:
-            msg.append(f"폴더 {folders}개")
-        if files:
-            msg.append(f"파일 {files}개")
+        file_paths = [p for p in paths if p.is_file()]
+        skipped_folders = sum(1 for p in paths if p.is_dir())
+        if not file_paths:
+            QtWidgets.QMessageBox.information(
+                self,
+                "삭제 대상 없음",
+                "폴더는 삭제하지 않습니다. 이미지 파일을 선택하세요.",
+            )
+            return
+        msg = [f"파일 {len(file_paths)}개"]
+        if skipped_folders:
+            msg.append(f"폴더 {skipped_folders}개(건너뜀)")
         res = QtWidgets.QMessageBox.question(
             self,
             "선택 삭제",
             f"{', '.join(msg)}를 삭제할까요?",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes,
         )
         if res != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         removed = 0
         failed: list[str] = []
-        for p in paths:
+        for p in file_paths:
             try:
-                if p.is_dir():
-                    shutil.rmtree(p)
-                else:
-                    p.unlink()
+                p.unlink()
                 removed += 1
             except Exception as exc:
                 failed.append(f"{p.name}: {exc}")
         self._refresh_folder()
-        self.status_label.setText(f"삭제 완료: {removed}건")
+        suffix = f" (폴더 {skipped_folders}개 건너뜀)" if skipped_folders else ""
+        self.status_label.setText(f"삭제 완료: {removed}건{suffix}")
         if failed:
             QtWidgets.QMessageBox.warning(self, "삭제 실패", "\n".join(failed[:5]))
     def _refresh_favorites_tree(self):
@@ -3861,30 +4051,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         if not target or not target.exists():
             QtWidgets.QMessageBox.information(self, "이름 변경", "선택된 이미지가 없습니다.")
             return
-        base_name = target.name
-        new_name, ok = QtWidgets.QInputDialog.getText(self, "이름 변경", "새 파일 이름을 입력하세요.", text=base_name)
-        if not ok:
-            return
-        new_name = new_name.strip()
-        if not new_name:
-            QtWidgets.QMessageBox.information(self, "이름 변경", "파일 이름이 비어 있습니다.")
-            return
-        if "." not in new_name:
-            new_name += target.suffix
-        new_path = target.parent / new_name
-        if new_path == target:
-            return
-        if new_path.exists():
-            QtWidgets.QMessageBox.warning(self, "이름 변경", "동일한 이름의 파일이 이미 있습니다.")
-            return
-        try:
-            target.rename(new_path)
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "이름 변경 실패", str(exc))
-            return
-        self._set_current_folder(new_path.parent, refresh=True, auto_select_first=False)
-        self._select_file(new_path)
-        self.status_label.setText(f"이름 변경: {base_name} → {new_path.name}")
+        self._rename_path(target)
     def _add_current_to_favorites(self):
         target = self._current_file() or self._current_folder
         if not target:
@@ -4177,7 +4344,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self.close()
             return
         if key == QtCore.Qt.Key.Key_F5:
-            self._refresh_folder()
+            self._refresh_folder(show_latest=True)
             return
         if key == QtCore.Qt.Key.Key_Delete:
             self._delete_selection()
@@ -4393,8 +4560,14 @@ class ImageViewerDialog(QtWidgets.QDialog):
                 pass
         self._set_current_folder(folder, refresh=True, auto_select_first=False)
         self.status_label.setText(f"삭제 완료: {removed}개 삭제")
-    def _refresh_folder(self):
-        self._set_current_folder(self._current_folder, refresh=True, auto_select_first=False)
+    def _refresh_folder(self, *, show_latest: bool = False):
+        self._set_current_folder(
+            self._current_folder,
+            refresh=True,
+            auto_select_first=show_latest,
+        )
+        if show_latest and self._image_files:
+            self._select_index(0)
     def _open_current_folder(self):
         folder = Path(self._current_folder)
         if not folder.exists():
@@ -4412,7 +4585,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             "현재 이미지 삭제",
             f"{target.name} 파일을 삭제할까요?",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes,
         )
         if res != QtWidgets.QMessageBox.StandardButton.Yes:
             return
@@ -5221,6 +5394,17 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             return "현재 매크로 중지" + suffix
         if act.type == "sound_alert":
             return "시스템 알림음" + suffix
+        if act.type == "telegram_message":
+            chat_id = str(getattr(act, "telegram_chat_id", "") or "").strip()
+            msg = str(getattr(act, "telegram_message", "") or "").strip()
+            msg_preview = _elide_middle(msg, 34) if msg else ""
+            if chat_id and msg_preview:
+                return f"chat={chat_id} / {msg_preview}" + suffix
+            if chat_id:
+                return f"chat={chat_id}" + suffix
+            if msg_preview:
+                return msg_preview + suffix
+            return "텔레그램 전송" + suffix
         if act.type == "group":
             mode = act.group_mode or "all"
             if mode == "repeat_n":
@@ -5717,6 +5901,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("마우스 이동", "mouse_move"),
             ("대기 (sleep)", "sleep"),
             ("소리 알림", "sound_alert"),
+            ("텔레그램 메시지", "telegram_message"),
             ("현재 매크로 중지 (macro_stop)", "macro_stop"),
             ("변수 설정 (set_var)", "set_var"),
             ("타이머 설정 (timer)", "timer"),
@@ -5767,6 +5952,14 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.goto_combo.showPopup = _show_popup
         self.var_name_edit = QtWidgets.QLineEdit()
         self.var_value_edit = QtWidgets.QLineEdit()
+        self.telegram_token_edit = QtWidgets.QLineEdit()
+        self.telegram_token_edit.setPlaceholderText("봇 토큰 (예: 123456789:AA...)")
+        self.telegram_chat_id_edit = QtWidgets.QLineEdit()
+        self.telegram_chat_id_edit.setPlaceholderText("챗 ID (예: 123456789 또는 -100...)")
+        self.telegram_message_edit = QtWidgets.QLineEdit()
+        self.telegram_message_edit.setPlaceholderText("보낼 메시지")
+        self.telegram_test_btn = QtWidgets.QPushButton("테스트 메시지 보내기")
+        self.telegram_test_btn.setToolTip("현재 입력값으로 텔레그램 메시지를 테스트 전송합니다.")
         self.desc_edit = QtWidgets.QLineEdit()
         self.desc_edit.setPlaceholderText("액션 설명(선택)")
         self.region_edit = QtWidgets.QLineEdit("0,0,1,1")
@@ -5818,6 +6011,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._install_var_completer(self.sleep_edit, "sleep")
         self._install_var_completer(self.region_edit, "region")
         self._install_var_completer(self.var_value_edit, "var")
+        self._install_var_completer(self.telegram_token_edit, "var")
+        self._install_var_completer(self.telegram_chat_id_edit, "var")
+        self._install_var_completer(self.telegram_message_edit, "var")
         self._install_var_completer(self.key_edit, "key")
         self._install_var_completer(self.mouse_pos_edit, "var")
         self.key_warn_label = QtWidgets.QLabel("")
@@ -5848,6 +6044,10 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("점프 대상 라벨", self.goto_combo)
         form.addRow("변수 이름", self.var_name_edit)
         form.addRow("변수 값", self.var_value_edit)
+        form.addRow("텔레그램 봇 토큰", self.telegram_token_edit)
+        form.addRow("텔레그램 챗 ID", self.telegram_chat_id_edit)
+        form.addRow("텔레그램 메시지", self.telegram_message_edit)
+        form.addRow("텔레그램 테스트", self.telegram_test_btn)
         self.timer_slot_combo = QtWidgets.QComboBox()
         for i in range(1, 21):
             self.timer_slot_combo.addItem(f"타이머{i}", i)
@@ -5885,6 +6085,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.key_edit.textEdited.connect(self._update_trigger_warning)
         self.mouse_button_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self.type_combo.currentIndexChanged.connect(self._update_trigger_warning)
+        self.telegram_test_btn.clicked.connect(self._test_telegram_message)
         self.capture_mouse_pos_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F1"), self)
         self.capture_mouse_pos_shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.capture_mouse_pos_shortcut.activated.connect(self._capture_mouse_position)
@@ -5912,6 +6113,41 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_pos_edit.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
         self.mouse_pos_edit.selectAll()
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"마우스 좌표 입력: {txt}", self, QtCore.QRect(), 1500)
+    def _test_telegram_message(self):
+        token_raw = self.telegram_token_edit.text().strip()
+        chat_raw = self.telegram_chat_id_edit.text().strip()
+        msg_raw = self.telegram_message_edit.text()
+        if self._resolver:
+            try:
+                token_raw = self._resolver.resolve(token_raw, "var") if token_raw else token_raw
+                chat_raw = self._resolver.resolve(chat_raw, "var") if chat_raw else chat_raw
+                msg_raw = self._resolver.resolve(msg_raw, "var") if msg_raw else msg_raw
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(self, "테스트 실패", f"변수 해석 실패: {exc}")
+                return
+        token = str(token_raw or "").strip()
+        chat_id = str(chat_raw or "").strip()
+        message = str(msg_raw or "")
+        if not token:
+            QtWidgets.QMessageBox.warning(self, "입력 오류", "텔레그램 봇 토큰을 입력하세요.")
+            return
+        if not chat_id:
+            QtWidgets.QMessageBox.warning(self, "입력 오류", "텔레그램 챗 ID를 입력하세요.")
+            return
+        if not message.strip():
+            QtWidgets.QMessageBox.warning(self, "입력 오류", "텔레그램 메시지를 입력하세요.")
+            return
+        self.telegram_test_btn.setEnabled(False)
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            ok, err = _send_telegram_message(token, chat_id, message)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            self.telegram_test_btn.setEnabled(self._current_type() == "telegram_message")
+        if ok:
+            QtWidgets.QMessageBox.information(self, "테스트 성공", f"테스트 메시지를 전송했습니다. (chat_id={chat_id})")
+            return
+        QtWidgets.QMessageBox.warning(self, "테스트 실패", f"텔레그램 전송 실패: {err or 'unknown_error'}")
     def _set_field_visible(self, widget: QtWidgets.QWidget, visible: bool):
         label = self._form_layout.labelForField(widget) if hasattr(self, "_form_layout") else None
         if label:
@@ -6022,6 +6258,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_label = typ == "label"
         show_goto = typ == "goto"
         show_var = typ == "set_var"
+        show_telegram = typ == "telegram_message"
         show_timer = typ == "timer"
         show_pixel_get = typ == "pixel_get"
         show_group = typ == "group"
@@ -6052,6 +6289,12 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._set_field_visible(self.var_value_edit, show_var)
         for w in (self.var_name_edit, self.var_value_edit):
             w.setEnabled(show_var)
+        self._set_field_visible(self.telegram_token_edit, show_telegram)
+        self._set_field_visible(self.telegram_chat_id_edit, show_telegram)
+        self._set_field_visible(self.telegram_message_edit, show_telegram)
+        self._set_field_visible(self.telegram_test_btn, show_telegram)
+        for w in (self.telegram_token_edit, self.telegram_chat_id_edit, self.telegram_message_edit, self.telegram_test_btn):
+            w.setEnabled(show_telegram)
         self._set_field_visible(self.timer_slot_combo, show_timer)
         self._set_field_visible(self.timer_value_spin, show_timer)
         for w in (self.timer_slot_combo, self.timer_value_spin):
@@ -6171,6 +6414,10 @@ class ActionEditDialog(QtWidgets.QDialog):
         if act.type == "set_var":
             self.var_name_edit.setText(act.var_name or "")
             self.var_value_edit.setText(act.var_value_raw or act.var_value or "")
+        elif act.type == "telegram_message":
+            self.telegram_token_edit.setText(str(getattr(act, "telegram_bot_token", "") or ""))
+            self.telegram_chat_id_edit.setText(str(getattr(act, "telegram_chat_id", "") or ""))
+            self.telegram_message_edit.setText(str(getattr(act, "telegram_message", "") or ""))
         elif act.type == "timer":
             idx = self.timer_slot_combo.findData(getattr(act, "timer_index", 1))
             if idx >= 0:
@@ -6311,6 +6558,19 @@ class ActionEditDialog(QtWidgets.QDialog):
                     self._add_variable("var", var_name, act.var_value_raw or "")
                 except Exception:
                     pass
+        elif typ == "telegram_message":
+            bot_token = self.telegram_token_edit.text().strip()
+            chat_id = self.telegram_chat_id_edit.text().strip()
+            message_text = self.telegram_message_edit.text()
+            if not bot_token:
+                raise ValueError("텔레그램 봇 토큰을 입력하세요.")
+            if not chat_id:
+                raise ValueError("텔레그램 챗 ID를 입력하세요.")
+            if not message_text.strip():
+                raise ValueError("텔레그램 메시지를 입력하세요.")
+            act.telegram_bot_token = bot_token
+            act.telegram_chat_id = chat_id
+            act.telegram_message = message_text
         elif typ == "timer":
             slot = int(self.timer_slot_combo.currentData() or 0)
             if slot < 1 or slot > 20:
@@ -10034,6 +10294,10 @@ class DebuggerDialog(QtWidgets.QDialog):
                 target = pg.get("target") or "-"
                 region_txt = ",".join(str(v) for v in region) if region else "-"
                 extra = f"(영역={region_txt}, 대상={target})"
+            tg = detail.get("telegram") or event.get("telegram")
+            if act_type == "telegram_message" and isinstance(tg, dict):
+                chat_id = tg.get("chat_id") or "-"
+                extra = f"(chat_id={chat_id})"
             msg = f"순번 {seq if seq is not None else '-'} - 액션 {act_type}"
             if extra:
                 msg += f" {extra}"
@@ -10054,6 +10318,10 @@ class DebuggerDialog(QtWidgets.QDialog):
                 target = pg.get("target") or "-"
                 region_txt = ",".join(str(v) for v in region) if region else "-"
                 extra = f"(영역={region_txt}, 대상={target})"
+            tg = detail.get("telegram") or event.get("telegram")
+            if act_type == "telegram_message" and isinstance(tg, dict):
+                chat_id = tg.get("chat_id") or "-"
+                extra = f"(chat_id={chat_id})"
             msg = f"순번 {seq if seq is not None else '-'} - 액션 {act_type}"
             if extra:
                 msg += f" {extra}"

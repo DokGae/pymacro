@@ -1,16 +1,18 @@
 {
-  "last_profile_path": "D:\\Ion\\macro\\setting\\내마도성완성.json",
+  "last_profile_path": "D:\\Ion\\macro\\setting\\내검성완성.json",
   "profile_history": {
     "recent": [
+      "D:\\Ion\\macro\\setting\\내검성완성.json",
       "D:\\Ion\\macro\\setting\\내마도성완성.json",
       "D:\\Ion\\macro\\setting\\내정령성완성.json",
-      "D:\\Ion\\macro\\111.json",
-      "D:\\Ion\\macro\\setting\\내검성완성.json",
-      "D:\\Ion\\macro\\setting\\내호법성완성.json",
       "D:\\Ion\\macro\\setting\\내궁성완성.json",
-      "D:\\Ion\\macro\\setting\\내치유성완성.json"
+      "D:\\Ion\\macro\\setting\\내호법성완성.json",
+      "D:\\Ion\\macro\\setting\\슈고페스타.json",
+      "D:\\Ion\\macro\\setting\\내치유성완성.json",
+      "D:\\Ion\\macro\\111.json"
     ],
     "favorites": [
+      "D:\\Ion\\macro\\setting\\슈고페스타.json",
       "D:\\Ion\\macro\\setting\\내호법성완성.json",
       "D:\\Ion\\macro\\setting\\내정령성완성.json",
       "D:\\Ion\\macro\\setting\\내궁성완성.json",
@@ -50,12 +52,12 @@
     "jpeg_quality": 80,
     "png_compress_level": 0,
     "queue_size": 120,
-    "hotkey_start": "pgup",
-    "hotkey_stop": "pgdown",
+    "hotkey_start": null,
+    "hotkey_stop": null,
     "hotkey_capture": "f10",
     "hotkey_enabled": true
   },
-  "log_enabled": true,
+  "log_enabled": false,
   "image_viewer": {
     "last_dir": "D:\\Ion\\macro\\screenshot",
     "root_dir": "D:\\Ion\\macro\\screenshot",
@@ -67,8 +69,8 @@
       ]
     },
     "fav_group": "기본",
-    "last_file": "D:\\Ion\\macro\\screenshot\\000006_20260214_130247_414019.png",
-    "sort_col": 0,
+    "last_file": "D:\\Ion\\macro\\screenshot\\000001_20260228_142330_766762.png",
+    "sort_col": 3,
     "sort_order": "asc"
   }
 }

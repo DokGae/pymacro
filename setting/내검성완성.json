@@ -50,6 +50,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null
         },
@@ -81,6 +84,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null
         },
@@ -112,6 +118,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null
         },
@@ -161,6 +170,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null,
           "actions": [
@@ -271,6 +283,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null,
               "actions": [
@@ -302,6 +317,9 @@
                   "hold_keep_on_pause": false,
                   "timer_index": null,
                   "timer_value": null,
+                  "telegram_bot_token": null,
+                  "telegram_chat_id": null,
+                  "telegram_message": null,
                   "key_delay_override_enabled": false,
                   "key_delay_override": null
                 },
@@ -333,6 +351,9 @@
                   "hold_keep_on_pause": false,
                   "timer_index": null,
                   "timer_value": null,
+                  "telegram_bot_token": null,
+                  "telegram_chat_id": null,
+                  "telegram_message": null,
                   "key_delay_override_enabled": false,
                   "key_delay_override": null
                 }
@@ -445,6 +466,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null,
               "actions": [
@@ -476,6 +500,9 @@
                   "hold_keep_on_pause": false,
                   "timer_index": null,
                   "timer_value": null,
+                  "telegram_bot_token": null,
+                  "telegram_chat_id": null,
+                  "telegram_message": null,
                   "key_delay_override_enabled": false,
                   "key_delay_override": null
                 },
@@ -507,6 +534,9 @@
                   "hold_keep_on_pause": false,
                   "timer_index": null,
                   "timer_value": null,
+                  "telegram_bot_token": null,
+                  "telegram_chat_id": null,
+                  "telegram_message": null,
                   "key_delay_override_enabled": false,
                   "key_delay_override": null
                 }
@@ -619,6 +649,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null,
               "actions": [
@@ -650,6 +683,9 @@
                   "hold_keep_on_pause": false,
                   "timer_index": null,
                   "timer_value": null,
+                  "telegram_bot_token": null,
+                  "telegram_chat_id": null,
+                  "telegram_message": null,
                   "key_delay_override_enabled": false,
                   "key_delay_override": null
                 },
@@ -681,6 +717,9 @@
                   "hold_keep_on_pause": false,
                   "timer_index": null,
                   "timer_value": null,
+                  "telegram_bot_token": null,
+                  "telegram_chat_id": null,
+                  "telegram_message": null,
                   "key_delay_override_enabled": false,
                   "key_delay_override": null
                 }
@@ -814,6 +853,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null,
           "actions": [
@@ -845,6 +887,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             },
@@ -876,6 +921,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             }
@@ -1205,6 +1253,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null,
           "actions": [
@@ -1236,6 +1287,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             },
@@ -1267,6 +1321,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             }
@@ -1334,6 +1391,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null
         },
@@ -1365,8 +1425,120 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null
+        },
+        {
+          "type": "if",
+          "name": "스킬창없을때",
+          "description": null,
+          "enabled": true,
+          "once_per_macro": false,
+          "force_first_run": false,
+          "key": null,
+          "repeat": 1,
+          "repeat_raw": null,
+          "var_name": null,
+          "var_value_raw": null,
+          "confirm_fails": 1,
+          "sleep_ms": 0,
+          "condition": {
+            "type": "all",
+            "name": null,
+            "key": null,
+            "key_mode": null,
+            "var_name": null,
+            "var_value_raw": null,
+            "var_operator": "eq",
+            "region": null,
+            "color": null,
+            "pixel_pattern": null,
+            "tolerance": 0,
+            "pixel_min_count": 1,
+            "pixel_exists": true,
+            "timer_index": null,
+            "timer_value": null,
+            "timer_operator": "ge",
+            "enabled": true,
+            "conditions": [
+              {
+                "type": "pixel",
+                "name": null,
+                "key": null,
+                "key_mode": null,
+                "var_name": null,
+                "var_value_raw": null,
+                "var_operator": "eq",
+                "region": "1363,1306,1,1",
+                "color": "ffe653",
+                "pixel_pattern": null,
+                "tolerance": 30,
+                "pixel_min_count": 1,
+                "pixel_exists": false,
+                "timer_index": null,
+                "timer_value": null,
+                "timer_operator": "ge",
+                "enabled": true
+              }
+            ]
+          },
+          "label": null,
+          "goto_label": null,
+          "mouse_button": null,
+          "mouse_pos": null,
+          "mouse_pos_raw": null,
+          "pixel_region": null,
+          "pixel_region_raw": null,
+          "pixel_target": null,
+          "group_mode": null,
+          "group_repeat": null,
+          "hold_keep_on_pause": false,
+          "timer_index": null,
+          "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
+          "key_delay_override_enabled": false,
+          "key_delay_override": null,
+          "actions": [
+            {
+              "type": "macro_stop",
+              "name": null,
+              "description": null,
+              "enabled": true,
+              "once_per_macro": false,
+              "force_first_run": false,
+              "key": null,
+              "repeat": 1,
+              "repeat_raw": null,
+              "var_name": null,
+              "var_value_raw": null,
+              "confirm_fails": 1,
+              "sleep_ms": 0,
+              "condition": null,
+              "label": null,
+              "goto_label": null,
+              "mouse_button": null,
+              "mouse_pos": null,
+              "mouse_pos_raw": null,
+              "pixel_region": null,
+              "pixel_region_raw": null,
+              "pixel_target": null,
+              "group_mode": null,
+              "group_repeat": null,
+              "hold_keep_on_pause": false,
+              "timer_index": null,
+              "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
+              "key_delay_override_enabled": false,
+              "key_delay_override": null
+            }
+          ]
         },
         {
           "type": "mouse_click",
@@ -1396,6 +1568,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": true,
           "key_delay_override": {
             "press_delay_ms": 50,
@@ -1436,6 +1611,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null
         },
@@ -1525,6 +1703,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null,
           "actions": [
@@ -1556,6 +1737,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             }
@@ -1647,6 +1831,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null,
           "actions": [
@@ -1678,6 +1865,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             },
@@ -1709,6 +1899,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             }
@@ -1821,6 +2014,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null,
           "actions": [
@@ -1852,6 +2048,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             },
@@ -1883,6 +2082,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             }
@@ -1995,6 +2197,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null,
           "actions": [
@@ -2026,6 +2231,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             },
@@ -2057,6 +2265,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             }
@@ -2188,6 +2399,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null,
           "actions": [
@@ -2219,6 +2433,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             },
@@ -2250,6 +2467,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             }
@@ -2579,6 +2799,9 @@
           "hold_keep_on_pause": false,
           "timer_index": null,
           "timer_value": null,
+          "telegram_bot_token": null,
+          "telegram_chat_id": null,
+          "telegram_message": null,
           "key_delay_override_enabled": false,
           "key_delay_override": null,
           "actions": [
@@ -2610,6 +2833,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             },
@@ -2641,6 +2867,9 @@
               "hold_keep_on_pause": false,
               "timer_index": null,
               "timer_value": null,
+              "telegram_bot_token": null,
+              "telegram_chat_id": null,
+              "telegram_message": null,
               "key_delay_override_enabled": false,
               "key_delay_override": null
             }

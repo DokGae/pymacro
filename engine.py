@@ -14,6 +14,9 @@ import json
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Literal, Optional, Set, Tuple
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 
 import numpy as np
 from PIL import Image
@@ -56,6 +59,7 @@ ActionType = Literal[
     "noop",
     "set_var",
     "timer",
+    "telegram_message",
 ]
 GroupMode = Literal["all", "first_true", "first_true_continue", "first_true_return", "while", "repeat_n"]
 StepType = Literal["press", "down", "up", "sleep", "if", "loop_while"]  # legacy 호환용
@@ -91,6 +95,58 @@ def _play_alert_sound() -> bool:
         return True
     except Exception:
         return False
+
+
+def _send_telegram_message(bot_token: str, chat_id: str, message: str, *, timeout_sec: float = 8.0) -> tuple[bool, str | None]:
+    token = str(bot_token or "").strip()
+    target = str(chat_id or "").strip()
+    text = str(message or "")
+    if not token:
+        return False, "missing_bot_token"
+    if not target:
+        return False, "missing_chat_id"
+    if not text.strip():
+        return False, "missing_message"
+    payload = urllib_parse.urlencode({"chat_id": target, "text": text}).encode("utf-8")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    req = urllib_request.Request(url=url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+    try:
+        with urllib_request.urlopen(req, timeout=max(1.0, float(timeout_sec))) as resp:
+            body = resp.read()
+    except urllib_error.HTTPError as exc:
+        detail = ""
+        try:
+            raw = exc.read().decode("utf-8", errors="replace")
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                detail = str(parsed.get("description") or "").strip()
+            if not detail:
+                detail = raw.strip()
+        except Exception:
+            detail = ""
+        msg = f"http_{exc.code}"
+        if detail:
+            msg += f": {detail[:200]}"
+        return False, msg
+    except Exception as exc:
+        return False, str(exc)
+    try:
+        decoded = body.decode("utf-8", errors="replace").strip()
+    except Exception:
+        decoded = ""
+    if not decoded:
+        return True, None
+    try:
+        data = json.loads(decoded)
+    except Exception:
+        return True, None
+    if isinstance(data, dict) and data.get("ok") is True:
+        return True, None
+    if isinstance(data, dict):
+        desc = str(data.get("description") or "").strip()
+        return False, desc or "telegram_api_not_ok"
+    return False, "telegram_api_unknown_response"
 
 
 def _normalize_macro_mode(mode_raw: Any, *, default: str = "hold") -> str:
@@ -581,6 +637,9 @@ class Action:
     hold_keep_on_pause: bool = False
     timer_index: Optional[int] = None
     timer_value: Optional[float] = None
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    telegram_message: Optional[str] = None
     key_delay_override_enabled: bool = False
     key_delay_override: Optional[KeyDelayConfig] = None
 
@@ -768,6 +827,13 @@ class Action:
                 key_resolved = resolver.resolve(key_raw, "key")
             except Exception:
                 key_resolved = key_raw
+        telegram_bot_token = None
+        telegram_chat_id = None
+        telegram_message = None
+        if typ == "telegram_message":
+            telegram_bot_token = data.get("telegram_bot_token", data.get("bot_token"))
+            telegram_chat_id = data.get("telegram_chat_id", data.get("chat_id"))
+            telegram_message = data.get("telegram_message", data.get("message"))
         return cls(
             type=typ,
             name=data.get("name"),
@@ -804,6 +870,9 @@ class Action:
             hold_keep_on_pause=bool(data.get("hold_keep_on_pause", False)),
             timer_index=timer_index,
             timer_value=timer_value,
+            telegram_bot_token=str(telegram_bot_token) if telegram_bot_token is not None else None,
+            telegram_chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
+            telegram_message=str(telegram_message) if telegram_message is not None else None,
             key_delay_override_enabled=override_enabled,
             key_delay_override=key_delay_override,
         )
@@ -837,6 +906,9 @@ class Action:
             "hold_keep_on_pause": getattr(self, "hold_keep_on_pause", False),
             "timer_index": self.timer_index,
             "timer_value": self.timer_value,
+            "telegram_bot_token": self.telegram_bot_token,
+            "telegram_chat_id": self.telegram_chat_id,
+            "telegram_message": self.telegram_message,
             "key_delay_override_enabled": getattr(self, "key_delay_override_enabled", False),
             "key_delay_override": self.key_delay_override.to_dict() if getattr(self, "key_delay_override", None) else None,
         }
@@ -1813,6 +1885,12 @@ class MacroRunner:
             }
         if action.type == "timer":
             detail["timer"] = {"slot": action.timer_index, "value": action.timer_value}
+        if action.type == "telegram_message":
+            msg = str(getattr(action, "telegram_message", "") or "")
+            preview = msg.replace("\n", " ").strip()
+            if len(preview) > 60:
+                preview = preview[:57] + "..."
+            detail["telegram"] = {"chat_id": getattr(action, "telegram_chat_id", None), "message": preview}
         payload = {
             "type": stage,
             "macro": self._macro_context(),
@@ -1863,13 +1941,18 @@ class MacroRunner:
         with self._held_lock:
             return dict(self._held_key_policy), dict(self._held_mouse_policy)
 
-    def start(self, *, start_cycle: int = 0):
+    def start(self, *, start_cycle: int = 0, reset_all_timers: bool = True):
         if self._thread and self._thread.is_alive():
             return
         try:
             self._start_cycle = max(0, int(start_cycle))
         except Exception:
             self._start_cycle = 0
+        if reset_all_timers:
+            try:
+                self.engine._start_all_timers_from_zero()
+            except Exception:
+                pass
         self._stop_event.clear()
         self._release_inputs_on_stop = True
         self._sent_stop_event = False
@@ -2090,6 +2173,43 @@ class MacroRunner:
                 self.engine._emit_log("소리 알림 재생 실패")
             self.engine._emit_event({"type": "action", "action": "sound_alert", "played": played})
             return end_result(status="sound" if played else "sound_failed", played=played)
+
+        if action.type == "telegram_message":
+            token_raw = str(getattr(action, "telegram_bot_token", "") or "").strip()
+            chat_raw = str(getattr(action, "telegram_chat_id", "") or "").strip()
+            msg_raw = str(getattr(action, "telegram_message", "") or "")
+            if self._resolver:
+                try:
+                    token_raw = self._resolver.resolve(token_raw, "var") if token_raw else token_raw
+                    chat_raw = self._resolver.resolve(chat_raw, "var") if chat_raw else chat_raw
+                    msg_raw = self._resolver.resolve(msg_raw, "var") if msg_raw else msg_raw
+                except Exception as exc:
+                    self.engine._emit_log(f"텔레그램 메시지 변수 해석 실패: {exc}")
+                    return end_result(status="error", error=str(exc))
+            token = str(token_raw or "").strip()
+            chat_id = str(chat_raw or "").strip()
+            message = str(msg_raw or "")
+            if not token:
+                return end_result(status="error", error="missing_bot_token")
+            if not chat_id:
+                return end_result(status="error", error="missing_chat_id")
+            if not message.strip():
+                return end_result(status="error", error="missing_message")
+            ok, err = _send_telegram_message(token, chat_id, message)
+            self.engine._emit_event(
+                {
+                    "type": "action",
+                    "action": "telegram_message",
+                    "chat_id": chat_id,
+                    "message": (message.replace("\n", " ").strip()[:80]),
+                    "ok": ok,
+                }
+            )
+            if not ok:
+                self.engine._emit_log(f"텔레그램 메시지 전송 실패: {err or 'unknown_error'}")
+                return end_result(status="error", error=err or "telegram_send_failed", chat_id=chat_id)
+            self.engine._emit_log(f"텔레그램 메시지 전송 완료: chat_id={chat_id}")
+            return end_result(status="telegram_sent", chat_id=chat_id)
 
         def _resolve_repeat_val(act: Action) -> int:
             if getattr(act, "repeat_range", None):
@@ -2752,6 +2872,11 @@ class MacroEngine:
     def _reset_timers(self):
         with self._timer_lock:
             self._timers = [{"start": None, "offset": 0.0} for _ in range(20)]
+
+    def _start_all_timers_from_zero(self):
+        now = time.monotonic()
+        with self._timer_lock:
+            self._timers = [{"start": now, "offset": 0.0} for _ in range(20)]
 
     def _set_timer(self, slot: int, seconds: float):
         idx = max(0, min(len(self._timers) - 1, slot - 1))
@@ -3890,7 +4015,7 @@ class MacroEngine:
                     inherit_held_mouse=inherit_mouse,
                 )
                 self._macro_runners[idx] = runner
-                runner.start(start_cycle=start_cycle)
+                runner.start(start_cycle=start_cycle, reset_all_timers=False)
                 self._toggle_states[idx] = True
             else:
                 if held:
@@ -3932,9 +4057,9 @@ class MacroEngine:
 
     def _update_hold_trigger(self, macro_idx: int, trig_idx: int, macro: Macro, trigger: MacroTrigger) -> bool:
         key = (macro_idx, trig_idx)
-        # 기본적으로는 모디파이어를 허용하지 않는(strict) 판정을 사용하되,
-        # 이미 잡힌 홀드가 있는 상태에서 추가 모디파이어 때문에 strict가 풀리는 경우에는
-        # 홀드를 유지하여 토글 오동작을 막는다.
+        # 홀드 시작 판정은 strict(추가 modifier 금지)로 유지해 토글/1회 트리거와 충돌을 막고,
+        # 홀드가 이미 시작된 뒤 해제 판정은 raw(실제 물리 눌림) 기준으로 본다.
+        # 이렇게 해야 modifier 상태 변화나 strict 판정 흔들림으로 인한 홀드 고착을 줄일 수 있다.
         pressed_strict, strict_detail = self._trigger_state(trigger.key, disallow_extra_modifiers=True)
         pressed_raw, state_detail = self._trigger_state(trigger.key, disallow_extra_modifiers=False)
         self._hold_raw_state[key] = bool(pressed_raw)
@@ -3942,8 +4067,13 @@ class MacroEngine:
         state_detail["blocked_by_extra_mods"] = blocked
         self._hold_blocked_by_extra_mods[key] = bool(blocked)
 
-        if not pressed_strict and blocked and key in self._active_hold_triggers:
-            pressed = True
+        if key in self._active_hold_triggers:
+            # 이미 홀드가 시작된 뒤에는 strict(추가 modifier 차단)보다
+            # 실제 물리 눌림(raw) 상태를 우선해서 해제를 판단해야
+            # 간헐적인 홀드 고착(키를 뗐는데 계속 눌림으로 유지) 현상을 막을 수 있다.
+            pressed = bool(pressed_raw)
+        elif not pressed_strict and blocked:
+            pressed = False
         else:
             pressed = pressed_strict
         state_detail["raw_pressed"] = pressed_raw
