@@ -1,14 +1,15 @@
 {
-  "last_profile_path": "D:\\Ion\\macro\\setting\\내검성완성.json",
+  "last_profile_path": "D:\\Ion\\macro\\setting\\내정령성완성.json",
   "profile_history": {
     "recent": [
-      "D:\\Ion\\macro\\setting\\내검성완성.json",
-      "D:\\Ion\\macro\\setting\\내마도성완성.json",
       "D:\\Ion\\macro\\setting\\내정령성완성.json",
-      "D:\\Ion\\macro\\setting\\내궁성완성.json",
+      "D:\\Ion\\macro\\setting\\내마도성완성.json",
+      "D:\\Ion\\macro\\setting\\내검성완성.json",
       "D:\\Ion\\macro\\setting\\내호법성완성.json",
-      "D:\\Ion\\macro\\setting\\슈고페스타.json",
+      "D:\\Ion\\macro\\setting\\내궁성완성.json",
       "D:\\Ion\\macro\\setting\\내치유성완성.json",
+      "D:\\Ion\\macro\\setting\\내살성완성(에즈).json",
+      "D:\\Ion\\macro\\setting\\슈고페스타.json",
       "D:\\Ion\\macro\\111.json"
     ],
     "favorites": [
@@ -22,8 +23,8 @@
   },
   "debugger": {
     "geometry": [
-      431,
-      111,
+      126,
+      119,
       900,
       697
     ],
@@ -37,7 +38,7 @@
     "fail_capture_cooldown": 1.0,
     "fail_capture_confirmations": 1,
     "fail_capture_limit": null,
-    "use_viewer_image": true,
+    "use_viewer_image": false,
     "sections": {
       "section_condition": true,
       "section_pixel": false,
@@ -69,7 +70,7 @@
       ]
     },
     "fav_group": "기본",
-    "last_file": "D:\\Ion\\macro\\screenshot\\000001_20260228_142330_766762.png",
+    "last_file": "D:\\Ion\\macro\\screenshot\\000001_20260310_234150_813718.png",
     "sort_col": 3,
     "sort_order": "asc"
   }

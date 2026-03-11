@@ -1781,6 +1781,7 @@ class MacroRunner:
         self._force_first_cycle = self._has_force_first_action(self.macro.actions)
         self._start_cycle = 0
         self._release_inputs_on_stop = True
+        self._terminal_status: str = "idle"
 
     def _has_force_first_action(self, actions: List[Action]) -> bool:
         for act in actions:
@@ -1962,6 +1963,7 @@ class MacroRunner:
         self._first_cycle_done = bool(self._start_cycle > 0)
         self._force_first_cycle = self._has_force_first_action(self.macro.actions)
         self._current_cycle = self._start_cycle
+        self._terminal_status = "running"
         name = f"Macro-{self.macro.primary_trigger().key or self.macro.trigger_key}"
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._thread.start()
@@ -1975,6 +1977,8 @@ class MacroRunner:
 
     def stop(self, *, release_inputs: bool = True, run_stop_actions: bool = True):
         label = self.macro.trigger_label(include_mode=False) or self.macro.trigger_key
+        if self._terminal_status == "running":
+            self._terminal_status = "stopped"
         self._stop_request_after_cycle = False
         self._stop_event.set()
         self._release_inputs_on_stop = bool(release_inputs)
@@ -2011,6 +2015,9 @@ class MacroRunner:
 
     def current_cycle(self) -> int:
         return getattr(self, "_current_cycle", 0)
+
+    def terminal_status(self) -> str:
+        return str(getattr(self, "_terminal_status", "unknown") or "unknown")
 
     def _run_stop_actions(self):
         if self._stop_actions_run:
@@ -2056,11 +2063,15 @@ class MacroRunner:
             if stopped and not self._stop_actions_run:
                 self._run_stop_actions()
             if stopped:
+                if self._terminal_status == "running":
+                    self._terminal_status = "stopped"
                 if not self._stop_logged:
                     self.engine._emit_log(f"매크로 정지: {self.macro.trigger_label(include_mode=False) or self.macro.trigger_key}")
                     self._stop_logged = True
                 self._notify_macro_stop("stopped")
             else:
+                if self._terminal_status == "running":
+                    self._terminal_status = "finished"
                 self._notify_macro_stop("finished")
         finally:
             self._release_held_keys()
@@ -2309,6 +2320,7 @@ class MacroRunner:
 
         if action.type == "macro_stop":
             # 현재 매크로를 즉시 중단한다.
+            self._terminal_status = "macro_stop"
             self.stop()
             return end_result(signal="break", status="macro_stop")
 
@@ -3792,10 +3804,17 @@ class MacroEngine:
 
                 runner = self._macro_runners.get(idx)
                 if runner is not None and not runner.is_alive():
+                    terminal_status = ""
+                    try:
+                        terminal_status = runner.terminal_status()
+                    except Exception:
+                        terminal_status = ""
                     self._macro_runners.pop(idx, None)
                     self._toggle_states[idx] = False
                     self._once_latched_indices.discard(idx)
-                    if macro.mode == "hold" and getattr(macro, "cycle_count", None) not in (None, 0):
+                    if macro.mode == "hold" and (
+                        getattr(macro, "cycle_count", None) not in (None, 0) or terminal_status == "macro_stop"
+                    ):
                         self._hold_exhausted_indices.add(idx)
 
             time.sleep(self.tick)
