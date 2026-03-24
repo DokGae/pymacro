@@ -356,6 +356,73 @@ def _normalize_region_tuple(region: Any) -> Optional[Tuple[int, int, int, int]]:
     return reg_tuple  # type: ignore[return-value]
 
 
+_RELATIVE_MOUSE_POS_PREFIXES = ("rel:", "delta:", "offset:")
+
+
+class _WinPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def _current_cursor_pos() -> Optional[tuple[int, int]]:
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        user32 = ctypes.windll.user32
+    except Exception:
+        return None
+    try:
+        pt = _WinPoint()
+        ok = bool(user32.GetCursorPos(ctypes.byref(pt)))
+        if not ok:
+            return None
+        return int(pt.x), int(pt.y)
+    except Exception:
+        return None
+
+
+def _relative_mouse_expr(raw: Any) -> Optional[str]:
+    if not isinstance(raw, str):
+        return None
+    text_raw = raw.strip()
+    if not text_raw:
+        return None
+    lower = text_raw.lower()
+    for prefix in _RELATIVE_MOUSE_POS_PREFIXES:
+        if lower.startswith(prefix):
+            return text_raw[len(prefix) :].strip()
+    return None
+
+
+def _is_relative_mouse_pos_raw(raw: Any) -> bool:
+    return _relative_mouse_expr(raw) is not None
+
+
+def _parse_relative_mouse_delta(raw: Any, resolver: Optional[VariableResolver]) -> tuple[Optional[tuple[int, int]], Optional[str]]:
+    expr = _relative_mouse_expr(raw)
+    if expr is None:
+        return None, None
+    text_raw = str(raw).strip()
+    if not expr:
+        raise ValueError("상대 마우스 좌표는 rel:dx,dy 형식이어야 합니다.")
+    resolved = resolver.resolve(expr, "var") if resolver else expr
+    if isinstance(resolved, (tuple, list)):
+        if len(resolved) != 2:
+            raise ValueError("상대 마우스 좌표는 rel:dx,dy 형식이어야 합니다.")
+        try:
+            dx, dy = int(resolved[0]), int(resolved[1])
+        except Exception as exc:
+            raise ValueError("상대 마우스 좌표는 정수여야 합니다.") from exc
+        return (dx, dy), text_raw
+    parts = [p.strip() for p in str(resolved).split(",") if p.strip()]
+    if len(parts) != 2:
+        raise ValueError("상대 마우스 좌표는 rel:dx,dy 형식이어야 합니다.")
+    try:
+        dx, dy = int(parts[0]), int(parts[1])
+    except Exception as exc:
+        raise ValueError("상대 마우스 좌표는 정수여야 합니다.") from exc
+    return (dx, dy), text_raw
+
+
 def _parse_mouse_pos(raw: Any, resolver: Optional[VariableResolver]) -> tuple[Optional[tuple[int, int]], Optional[str]]:
     """
     마우스 좌표 문자열/튜플을 (x, y), raw 텍스트 형태로 파싱한다.
@@ -629,6 +696,7 @@ class Action:
     mouse_button: Optional[str] = None
     mouse_pos: Optional[tuple[int, int]] = None
     mouse_pos_raw: Optional[str] = None
+    mouse_move_duration_ms: int = 0
     pixel_region: Optional[Region] = None
     pixel_region_raw: Optional[str] = None
     pixel_target: Optional[str] = None
@@ -811,10 +879,19 @@ class Action:
         mouse_pos_raw: Optional[str] = None
         if mouse_pos_raw_val is not None:
             try:
-                mouse_pos, mouse_pos_raw = _parse_mouse_pos(mouse_pos_raw_val, resolver)
+                if _is_relative_mouse_pos_raw(mouse_pos_raw_val):
+                    mouse_pos = None
+                    mouse_pos_raw = str(mouse_pos_raw_val).strip()
+                else:
+                    mouse_pos, mouse_pos_raw = _parse_mouse_pos(mouse_pos_raw_val, resolver)
             except Exception:
                 mouse_pos = None
                 mouse_pos_raw = str(mouse_pos_raw_val).strip() if mouse_pos_raw_val is not None else None
+        mouse_move_duration_raw = data.get("mouse_move_duration_ms", data.get("mouse_move_duration", 0))
+        try:
+            mouse_move_duration_ms = max(0, int(float(mouse_move_duration_raw or 0)))
+        except Exception:
+            mouse_move_duration_ms = 0
         group_repeat_raw = data.get("group_repeat")
         try:
             group_repeat = max(1, int(group_repeat_raw)) if group_repeat_raw not in (None, "") else None
@@ -862,6 +939,7 @@ class Action:
             mouse_button=data.get("mouse_button") or data.get("button"),
             mouse_pos=mouse_pos,
             mouse_pos_raw=mouse_pos_raw,
+            mouse_move_duration_ms=mouse_move_duration_ms,
             pixel_region=region,
             pixel_region_raw=region_raw,
             pixel_target=data.get("pixel_target"),
@@ -898,6 +976,7 @@ class Action:
             "mouse_button": self.mouse_button,
             "mouse_pos": list(self.mouse_pos) if self.mouse_pos is not None else None,
             "mouse_pos_raw": self.mouse_pos_raw,
+            "mouse_move_duration_ms": max(0, int(getattr(self, "mouse_move_duration_ms", 0) or 0)),
             "pixel_region": list(self.pixel_region) if self.pixel_region is not None else None,
             "pixel_region_raw": self.pixel_region_raw,
             "pixel_target": self.pixel_target,
@@ -2139,6 +2218,52 @@ class MacroRunner:
                 # allow nested condition polls if needed later
                 pass
 
+    def _resolve_mouse_move_duration_ms(self, action: Action) -> int:
+        try:
+            return max(0, int(getattr(action, "mouse_move_duration_ms", 0) or 0))
+        except Exception:
+            return 0
+
+    def _send_mouse_move_smooth(self, button: str, target_pos: tuple[int, int], duration_ms: int) -> bool:
+        if duration_ms <= 0:
+            return self.engine._send_mouse("mouse_move", button, hold_ms=0, pos=target_pos)
+        start_pos = _current_cursor_pos()
+        if start_pos is None:
+            # 현재 좌표를 읽을 수 없으면 단발 이동으로 폴백
+            return self.engine._send_mouse("mouse_move", button, hold_ms=0, pos=target_pos)
+        sx, sy = int(start_pos[0]), int(start_pos[1])
+        tx, ty = int(target_pos[0]), int(target_pos[1])
+        dx, dy = (tx - sx), (ty - sy)
+        if dx == 0 and dy == 0:
+            return True
+        duration_ms = max(1, int(duration_ms))
+        distance = max(abs(dx), abs(dy))
+        base_steps = max(2, min(300, int(round(duration_ms / 8.0))))
+        dist_steps = max(2, min(300, int(round(distance / 12.0))))
+        steps = max(base_steps, dist_steps)
+        start_ts = time.perf_counter()
+        prev_x, prev_y = sx, sy
+        for step_idx in range(1, steps + 1):
+            if self._stop_event.is_set() and not self._running_stop_actions:
+                return False
+            t = step_idx / float(steps)
+            eased = t * t * (3.0 - 2.0 * t)  # smoothstep
+            nx = sx + int(round(dx * eased))
+            ny = sy + int(round(dy * eased))
+            if nx != prev_x or ny != prev_y:
+                ok = self.engine._send_mouse("mouse_move", button, hold_ms=0, pos=(nx, ny))
+                if not ok:
+                    return False
+                prev_x, prev_y = nx, ny
+            if step_idx < steps:
+                target_ts = start_ts + (duration_ms / 1000.0) * (step_idx / float(steps))
+                wait_sec = target_ts - time.perf_counter()
+                if wait_sec > 0:
+                    self._stop_event.wait(wait_sec)
+        if (prev_x, prev_y) != (tx, ty):
+            return self.engine._send_mouse("mouse_move", button, hold_ms=0, pos=(tx, ty))
+        return True
+
     def _exec_action(self, action: Action, labels: Dict[str, int], path: List[str], idx_path: List[int]) -> "MacroRunner._Result":
         def end_result(
             signal: str = "none",
@@ -2245,6 +2370,8 @@ class MacroRunner:
                     return end_result(status="stopped", signal="break")
                 ok = self.engine._send_key(action.type, action.key, hold_ms=press_delay if action.type == "press" else 0)
                 if not ok:
+                    if self._stop_event.is_set() and not self._running_stop_actions:
+                        return end_result(status="stopped", signal="break")
                     return end_result(status="error", error="send_failed")
                 if action.type == "down":
                     policy = bool(getattr(action, "hold_keep_on_pause", False))
@@ -2264,13 +2391,17 @@ class MacroRunner:
 
         if action.type in ("mouse_click", "mouse_down", "mouse_up", "mouse_move"):
             button = (action.mouse_button or action.key or "mouse1").strip() if (action.mouse_button or action.key) else "mouse1"
-            pos = action.mouse_pos
-            if pos is None and getattr(action, "mouse_pos_raw", None):
-                try:
-                    pos, _ = _parse_mouse_pos(action.mouse_pos_raw, self._resolver)
-                except Exception:
-                    pos = None
-            if action.type == "mouse_move" and pos is None:
+            mouse_pos_raw = getattr(action, "mouse_pos_raw", None)
+            relative_mode = _is_relative_mouse_pos_raw(mouse_pos_raw)
+            pos: Optional[tuple[int, int]] = None
+            if not relative_mode:
+                pos = action.mouse_pos
+                if pos is None and mouse_pos_raw:
+                    try:
+                        pos, _ = _parse_mouse_pos(mouse_pos_raw, self._resolver)
+                    except Exception:
+                        pos = None
+            if action.type == "mouse_move" and not relative_mode and pos is None:
                 self.engine._emit_log("마우스 이동 좌표가 비어 있습니다.")
                 return end_result(status="error", error="missing_mouse_pos")
             press_delay, gap_delay = self.engine._resolve_mouse_delays(action)
@@ -2279,12 +2410,36 @@ class MacroRunner:
             for i in range(repeat):
                 if self._stop_event.is_set() and not self._running_stop_actions:
                     return end_result(status="stopped", signal="break")
-                ok = self.engine._send_mouse(
-                    action.type,
-                    button,
-                    hold_ms=press_delay if action.type == "mouse_click" else 0,
-                    pos=pos,
-                )
+                run_pos = pos
+                if relative_mode:
+                    try:
+                        delta, _ = _parse_relative_mouse_delta(mouse_pos_raw, self._resolver)
+                    except Exception as exc:
+                        self.engine._emit_log(f"마우스 상대 이동 좌표 파싱 실패: {exc}")
+                        return end_result(status="error", error="invalid_mouse_pos")
+                    if delta is None:
+                        self.engine._emit_log("마우스 상대 이동 좌표가 비어 있습니다.")
+                        return end_result(status="error", error="missing_mouse_pos")
+                    cur = _current_cursor_pos()
+                    if cur is None:
+                        self.engine._emit_log("현재 마우스 좌표를 읽지 못했습니다.")
+                        return end_result(status="error", error="mouse_pos_unavailable")
+                    run_pos = (cur[0] + delta[0], cur[1] + delta[1])
+                if action.type == "mouse_move" and run_pos is None:
+                    self.engine._emit_log("마우스 이동 좌표가 비어 있습니다.")
+                    return end_result(status="error", error="missing_mouse_pos")
+                if action.type == "mouse_move":
+                    if run_pos is None:
+                        return end_result(status="error", error="missing_mouse_pos")
+                    move_duration_ms = self._resolve_mouse_move_duration_ms(action)
+                    ok = self._send_mouse_move_smooth(button, run_pos, move_duration_ms)
+                else:
+                    ok = self.engine._send_mouse(
+                        action.type,
+                        button,
+                        hold_ms=press_delay if action.type == "mouse_click" else 0,
+                        pos=run_pos,
+                    )
                 if not ok:
                     return end_result(status="error", error="send_failed")
                 if action.type == "mouse_down":
@@ -2296,7 +2451,7 @@ class MacroRunner:
                     with self._held_lock:
                         self._held_mouse.discard(button)
                         self._held_mouse_policy.pop(button, None)
-                self.engine._emit_event({"type": "action", "action": action.type, "button": event_target, "pos": pos})
+                self.engine._emit_event({"type": "action", "action": action.type, "button": event_target, "pos": run_pos})
                 if gap_delay > 0 and i < repeat - 1:
                     self._sleep_with_condition_poll(gap_delay, allow_condition=False)
             if gap_delay > 0:

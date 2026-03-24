@@ -655,6 +655,29 @@ def _parse_point(text: str, *, resolver=None) -> tuple[int, int]:
         return int(parts[0]), int(parts[1])
     except Exception as exc:
         raise ValueError("좌표는 정수여야 합니다.") from exc
+
+
+_RELATIVE_MOUSE_RAW_PREFIX = "rel:"
+
+
+def _is_relative_mouse_pos_raw(raw: str | None) -> bool:
+    if raw is None:
+        return False
+    text = str(raw).strip().lower()
+    return text.startswith("rel:") or text.startswith("delta:") or text.startswith("offset:")
+
+
+def _strip_relative_mouse_pos_raw(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    lower = text.lower()
+    for prefix in ("rel:", "delta:", "offset:"):
+        if lower.startswith(prefix):
+            return text[len(prefix) :].strip()
+    return text
+
+
+def _build_relative_mouse_pos_raw(delta_text: str) -> str:
+    return f"{_RELATIVE_MOUSE_RAW_PREFIX}{str(delta_text or '').strip()}"
 def _split_region_offset(raw: str) -> tuple[str, str]:
     if "+" not in raw:
         return raw.strip(), ""
@@ -5361,7 +5384,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             btn = getattr(act, "mouse_button", None) or getattr(act, "key", "") or "mouse1"
             pos_txt = ""
             if getattr(act, "mouse_pos_raw", None):
-                pos_txt = f" @{act.mouse_pos_raw}"
+                raw_txt = str(getattr(act, "mouse_pos_raw") or "")
+                if _is_relative_mouse_pos_raw(raw_txt):
+                    pos_txt = f" @rel:{_strip_relative_mouse_pos_raw(raw_txt)}"
+                else:
+                    pos_txt = f" @{raw_txt}"
             elif getattr(act, "mouse_pos", None):
                 x, y = act.mouse_pos
                 pos_txt = f" @{x},{y}"
@@ -5369,6 +5396,13 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             value = prefix + rep_txt
             if pos_txt:
                 value += pos_txt
+            if act.type == "mouse_move":
+                try:
+                    move_ms = max(0, int(getattr(act, "mouse_move_duration_ms", 0) or 0))
+                except Exception:
+                    move_ms = 0
+                if move_ms > 0:
+                    value += f" ~{move_ms}ms"
             return value + suffix
         if act.type == "sleep":
             return act.sleep_value_text() + suffix
@@ -5935,9 +5969,18 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("X2 (mouse5)", "mouse5"),
         ]:
             self.mouse_button_combo.addItem(label, val)
+        self.mouse_pos_mode_combo = QtWidgets.QComboBox()
+        self.mouse_pos_mode_combo.addItem("절대 좌표 (x,y)", "absolute")
+        self.mouse_pos_mode_combo.addItem("현재 위치 기준 (dx,dy)", "relative")
+        self.mouse_pos_mode_combo.setToolTip("mouse_move에서 좌표를 절대/상대 방식으로 선택합니다.")
         self.mouse_pos_edit = QtWidgets.QLineEdit()
         self.mouse_pos_edit.setPlaceholderText("x,y (비우면 현재 위치)")
         self.mouse_pos_edit.setToolTip("F1: 현재 마우스 좌표 입력")
+        self.mouse_move_duration_spin = QtWidgets.QSpinBox()
+        self.mouse_move_duration_spin.setRange(0, 60000)
+        self.mouse_move_duration_spin.setSingleStep(10)
+        self.mouse_move_duration_spin.setSuffix(" ms")
+        self.mouse_move_duration_spin.setToolTip("0이면 즉시 이동, 0보다 크면 해당 시간 동안 부드럽게 이동합니다.")
         self.sleep_edit = QtWidgets.QLineEdit("0")
         self.label_edit = QtWidgets.QLineEdit()
         self.goto_combo = QtWidgets.QComboBox()
@@ -6036,7 +6079,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("키", self.key_edit)
         form.addRow("", self.key_warn_label)
         form.addRow("마우스 버튼", self.mouse_button_combo)
+        form.addRow("마우스 이동 기준", self.mouse_pos_mode_combo)
         form.addRow("마우스 좌표 x,y (선택)", self.mouse_pos_edit)
+        form.addRow("마우스 이동 시간", self.mouse_move_duration_spin)
         form.addRow("반복 횟수", self.repeat_edit)
         form.addRow("일시중지 시 유지", self.pause_keep_check)
         form.addRow("Sleep(ms 또는 범위)", self.sleep_edit)
@@ -6084,6 +6129,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.group_mode_combo.currentIndexChanged.connect(self._sync_fields)
         self.key_edit.textEdited.connect(self._update_trigger_warning)
         self.mouse_button_combo.currentIndexChanged.connect(self._update_trigger_warning)
+        self.mouse_pos_mode_combo.currentIndexChanged.connect(self._sync_mouse_pos_hint)
         self.type_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self.telegram_test_btn.clicked.connect(self._test_telegram_message)
         self.capture_mouse_pos_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F1"), self)
@@ -6099,9 +6145,32 @@ class ActionEditDialog(QtWidgets.QDialog):
         super().showEvent(event)
         if self._current_type() == "goto":
             self._refresh_goto_targets()
+    def _mouse_move_pos_mode(self) -> str:
+        mode = self.mouse_pos_mode_combo.currentData()
+        return str(mode or "absolute")
+    def _set_mouse_move_pos_mode(self, mode: str):
+        idx = self.mouse_pos_mode_combo.findData(mode)
+        self.mouse_pos_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+    def _sync_mouse_pos_hint(self):
+        relative = self._current_type() == "mouse_move" and self._mouse_move_pos_mode() == "relative"
+        if relative:
+            self.mouse_pos_edit.setPlaceholderText("dx,dy (예: 120,-80)")
+            self.mouse_pos_edit.setToolTip("현재 마우스 위치 기준 상대 이동량입니다. 예: 50,-20")
+        else:
+            self.mouse_pos_edit.setPlaceholderText("x,y (비우면 현재 위치)")
+            self.mouse_pos_edit.setToolTip("F1: 현재 마우스 좌표 입력")
     def _capture_mouse_position(self):
         mouse_types = {"mouse_click", "mouse_down", "mouse_up", "mouse_move"}
         if self._current_type() not in mouse_types:
+            return
+        if self._current_type() == "mouse_move" and self._mouse_move_pos_mode() == "relative":
+            QtWidgets.QToolTip.showText(
+                QtGui.QCursor.pos(),
+                "상대 이동 모드: dx,dy 값을 직접 입력하세요.",
+                self,
+                QtCore.QRect(),
+                1500,
+            )
             return
         pos = _current_cursor_pos()
         if pos is None:
@@ -6253,6 +6322,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         mouse_types = ("mouse_click", "mouse_down", "mouse_up", "mouse_move")
         show_key = typ in ("press", "down", "up")
         show_mouse_btn = typ in ("mouse_click", "mouse_down", "mouse_up")
+        show_mouse_move_mode = typ == "mouse_move"
+        show_mouse_move_duration = typ == "mouse_move"
         show_mouse_pos = typ in mouse_types
         show_sleep = typ == "sleep"
         show_label = typ == "label"
@@ -6271,8 +6342,12 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.key_edit.setEnabled(show_key)
         self._set_field_visible(self.mouse_button_combo, show_mouse_btn)
         self.mouse_button_combo.setEnabled(show_mouse_btn)
+        self._set_field_visible(self.mouse_pos_mode_combo, show_mouse_move_mode)
+        self.mouse_pos_mode_combo.setEnabled(show_mouse_move_mode)
         self._set_field_visible(self.mouse_pos_edit, show_mouse_pos)
         self.mouse_pos_edit.setEnabled(show_mouse_pos)
+        self._set_field_visible(self.mouse_move_duration_spin, show_mouse_move_duration)
+        self.mouse_move_duration_spin.setEnabled(show_mouse_move_duration)
         self._set_field_visible(self.repeat_edit, show_repeat)
         self.repeat_edit.setEnabled(show_repeat)
         self._set_field_visible(self.pause_keep_check, show_pause_keep)
@@ -6318,6 +6393,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._set_field_visible(self.delay_override_group, show_override)
         self.delay_override_group.setEnabled(show_override)
         self._toggle_override_enabled()
+        self._sync_mouse_pos_hint()
     def _edit_condition(self):
         seed_cond = self._condition or Condition(type="pixel", region=(0, 0, 1, 1), color=(255, 0, 0), tolerance=0)
         seed_name = getattr(seed_cond, "name", None)
@@ -6372,14 +6448,22 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.pause_keep_check.setChecked(bool(getattr(act, "hold_keep_on_pause", False)))
         except Exception:
             self.pause_keep_check.setChecked(False)
+        try:
+            self.mouse_move_duration_spin.setValue(max(0, int(getattr(act, "mouse_move_duration_ms", 0) or 0)))
+        except Exception:
+            self.mouse_move_duration_spin.setValue(0)
+        self._set_mouse_move_pos_mode("absolute")
         if act.type in ("mouse_click", "mouse_down", "mouse_up", "mouse_move"):
             btn_val = getattr(act, "mouse_button", None) or getattr(act, "key", None) or "mouse1"
             idx = self.mouse_button_combo.findData(btn_val)
             if idx >= 0:
                 self.mouse_button_combo.setCurrentIndex(idx)
             pos_raw = getattr(act, "mouse_pos_raw", None)
-            if pos_raw:
-                self.mouse_pos_edit.setText(pos_raw)
+            if act.type == "mouse_move" and pos_raw and _is_relative_mouse_pos_raw(str(pos_raw)):
+                self._set_mouse_move_pos_mode("relative")
+                self.mouse_pos_edit.setText(_strip_relative_mouse_pos_raw(str(pos_raw)))
+            elif pos_raw:
+                self.mouse_pos_edit.setText(str(pos_raw))
             elif getattr(act, "mouse_pos", None):
                 x, y = act.mouse_pos
                 self.mouse_pos_edit.setText(f"{x},{y}")
@@ -6509,11 +6593,18 @@ class ActionEditDialog(QtWidgets.QDialog):
             btn = self.mouse_button_combo.currentData() or "mouse1"
             act.mouse_button = btn
             pos_text = self.mouse_pos_edit.text().strip()
+            move_mode = self._mouse_move_pos_mode() if typ == "mouse_move" else "absolute"
             if typ == "mouse_move" and not pos_text:
                 raise ValueError("마우스 이동 좌표를 입력하세요.")
             if pos_text:
-                act.mouse_pos_raw = pos_text
-                act.mouse_pos = _parse_point(pos_text, resolver=self._resolver)
+                if typ == "mouse_move" and move_mode == "relative":
+                    _parse_point(pos_text, resolver=self._resolver)
+                    act.mouse_pos_raw = _build_relative_mouse_pos_raw(pos_text)
+                    act.mouse_pos = None
+                else:
+                    act.mouse_pos_raw = pos_text
+                    act.mouse_pos = _parse_point(pos_text, resolver=self._resolver)
+            act.mouse_move_duration_ms = max(0, int(self.mouse_move_duration_spin.value())) if typ == "mouse_move" else 0
             repeat_val, repeat_range, repeat_raw = self._parse_repeat_input()
             act.repeat = repeat_val
             act.repeat_range = repeat_range

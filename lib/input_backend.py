@@ -45,6 +45,10 @@ class INPUT(ctypes.Structure):
     _fields_ = [("type", ctypes.c_uint), ("ki", KEYBDINPUT)]
 
 
+class _WinPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
 def _is_admin() -> bool:
     if not sys.platform.startswith("win"):
         return True
@@ -265,6 +269,19 @@ def _send_mouse_move(x: int, y: int):
     if user32 is None:
         raise RuntimeError("SendInput(mouse_event) is unavailable on this platform.")
     user32.SetCursorPos(int(x), int(y))
+
+
+def _current_cursor_pos() -> Optional[tuple[int, int]]:
+    if user32 is None:
+        return None
+    try:
+        pt = _WinPoint()
+        ok = bool(user32.GetCursorPos(ctypes.byref(pt)))
+        if not ok:
+            return None
+        return int(pt.x), int(pt.y)
+    except Exception:
+        return None
 
 
 def _send_mouse_click(button: str, *, hold_ms: int = 0, x: Optional[int] = None, y: Optional[int] = None):
@@ -518,6 +535,24 @@ class InterceptionBackend(KeyboardBackend):
         self._mouse_send(button, is_down=False, x=x, y=y)
 
     def mouse_move(self, x: int, y: int):
-        # Interception는 상대 이동 기본. 절대 이동은 SetCursorPos로 처리.
-        if user32:
-            user32.SetCursorPos(int(x), int(y))
+        dev = self._mouse_device()
+        target_x = int(x)
+        target_y = int(y)
+        cur = _current_cursor_pos()
+        if cur is None:
+            # 커서 기준점 조회가 안 되면 기존 방식으로 이동한다.
+            _send_mouse_move(target_x, target_y)
+            return
+        dx = target_x - int(cur[0])
+        dy = target_y - int(cur[1])
+        if dx == 0 and dy == 0:
+            return
+        stroke = dev.stroke.__class__()  # MouseStroke
+        stroke.state = int(getattr(MouseState, "Move", 0))
+        stroke.flags = 0  # MoveRelative
+        stroke.rolling = 0
+        stroke.rawbtns = 0
+        stroke.x = int(dx)
+        stroke.y = int(dy)
+        stroke.info = 0
+        dev.send(stroke)
