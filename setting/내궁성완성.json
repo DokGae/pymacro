@@ -1,17 +1,17 @@
 {
   "macros": [
     {
-      "trigger_key": "mouse2",
+      "trigger_key": "mouse4",
       "mode": "hold",
       "hold_press_seconds": null,
       "triggers": [
         {
-          "key": "mouse2",
+          "key": "mouse4",
           "mode": "hold",
           "hold_press_seconds": null
         },
         {
-          "key": "ctrl+mouse2",
+          "key": "ctrl+mouse4",
           "mode": "toggle",
           "hold_press_seconds": null
         }
