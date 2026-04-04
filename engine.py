@@ -10,6 +10,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 import json
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -2718,7 +2719,6 @@ class MacroRunner:
 class MacroEngine:
     """
     트리거 키를 누르는 동안 기본 액션을 반복 실행하고 조건별로 참/거짓 액션을 추가로 실행하는 엔진.
-    글로벌 키: Home(활성), Pause(일시정지 토글), End(종료), PageUp(픽셀 테스트)
     """
 
     def __init__(self, profile: Optional[MacroProfile] = None, *, tick: float = 0.02):
@@ -2733,7 +2733,6 @@ class MacroEngine:
         self._thread: Optional[threading.Thread] = None
         self._events: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self._hotkey_states: Dict[str, bool] = {}
-        self._hotkey_pressed_at: Dict[str, float] = {}
         self._cond_key_states: Dict[str, bool] = {}
         self._cond_lock = threading.Lock()
         self._macro_runners: Dict[int, MacroRunner] = {}
@@ -3792,188 +3791,260 @@ class MacroEngine:
             parts.append(str(note))
         self._emit_log(" ".join(parts))
 
-    def _handle_hotkeys(self):
-        if self._edge("home", disallow_extra_modifiers=True):
-            self.active = True
-            self.paused = False
-            self._emit_log("Home: 활성화")
-            self._emit_state()
-        if self._edge("pause", disallow_extra_modifiers=True):
-            if self.active:
-                self.paused = not self.paused
-                self._emit_log(f"Pause: {'일시정지' if self.paused else '재개'}")
-                if self.paused:
-                    self._pause_all_macros()
-                else:
-                    self._resume_paused_holds()
-                self._emit_state()
-        if self._edge("end", disallow_extra_modifiers=True):
-            self.active = False
-            self.paused = False
+    def _exception_log_lines(self, exc: Exception, *, limit: int = 8) -> List[str]:
+        try:
+            blocks = traceback.format_exception(type(exc), exc, exc.__traceback__)
+        except Exception:
+            return [str(exc)]
+        lines: List[str] = []
+        for block in blocks:
+            for line in block.splitlines():
+                text = line.strip()
+                if text:
+                    lines.append(text)
+        if not lines:
+            lines.append(str(exc))
+        return lines[-max(1, limit) :]
+
+    def _emit_exception_log(self, prefix: str, exc: Exception, *, limit: int = 8):
+        lines = self._exception_log_lines(exc, limit=limit)
+        head = lines[-1] if lines else str(exc)
+        self._emit_log(f"{prefix}: {head}")
+        for line in lines[:-1]:
+            self._emit_log(line)
+
+    def _guard_trigger_still_active(self, guard_idx: int) -> bool:
+        try:
+            macro = self._profile.macros[guard_idx]
+        except Exception:
+            return False
+        if not macro or not getattr(macro, "enabled", True):
+            return False
+        try:
+            triggers = self._macro_triggers(macro)
+        except Exception:
+            return False
+        for trig in triggers:
+            mode = _normalize_macro_mode(getattr(trig, "mode", "hold"), default="hold")
+            if mode != "hold":
+                continue
+            try:
+                pressed, _ = self._trigger_state(trig.key, disallow_extra_modifiers=False)
+            except Exception:
+                continue
+            if pressed:
+                return True
+        return False
+
+    def _handle_macro_exception(self, idx: int, macro: Macro, exc: Exception):
+        label = ""
+        try:
+            label = macro.trigger_label(include_mode=False) or macro.trigger_key or getattr(macro, "name", "")
+        except Exception:
+            label = getattr(macro, "name", "") or ""
+        suffix = f" [{label}]" if label else ""
+        self._emit_exception_log(f"매크로 처리 예외#{idx}{suffix}", exc)
+        runner = self._macro_runners.pop(idx, None)
+        if runner is not None:
+            try:
+                runner.stop()
+            except Exception as stop_exc:
+                self._emit_exception_log(f"매크로 정지 실패#{idx}{suffix}", stop_exc, limit=4)
+        if self._guard_macro_idx == idx:
+            self._guard_macro_idx = None
+            self._resume_suspended_toggles()
+        self._clear_macro_state(idx)
+
+    def _recover_loop_exception(self, exc: Exception):
+        try:
+            self._emit_exception_log("엔진 루프 예외", exc)
+        except Exception:
+            pass
+        try:
             self._stop_all_macros()
+        except Exception:
+            pass
+        try:
             self._reset_condition_states()
-            self._emit_log("End: 비활성화")
+        except Exception:
+            pass
+        self._hotkey_states.clear()
+        self._recent_sends.clear()
+        try:
+            self._refresh_swallow(self._get_app_context(force=True))
+        except Exception:
+            pass
+        try:
             self._emit_state()
-        if self._edge("pageup", disallow_extra_modifiers=True):
-            self._run_pixel_test(source="hotkey")
+        except Exception:
+            pass
+
+    def _tick_macro(self, idx: int, macro: Macro, app_ctx: Optional[Dict[str, Any]]):
+        if self._guard_macro_idx is not None and idx != self._guard_macro_idx:
+            # 가드 매크로가 동작 중이면 다른 매크로는 대기
+            return
+        if not getattr(macro, "enabled", True):
+            runner = self._macro_runners.pop(idx, None)
+            if runner:
+                runner.stop()
+            self._clear_macro_state(idx)
+            return
+        if not self._macro_matches_app(macro, app_ctx):
+            runner = self._macro_runners.pop(idx, None)
+            if runner:
+                runner.stop()
+                if self._guard_macro_idx == idx:
+                    self._guard_macro_idx = None
+                    self._resume_suspended_toggles()
+            self._clear_macro_state(idx)
+            return
+        runner = self._macro_runners.get(idx)
+        triggers = self._macro_triggers(macro)
+        was_active_hold = any(k[0] == idx for k in self._active_hold_triggers)
+        toggle_on = bool(self._toggle_states.get(idx, False))
+        active_holds: Set[tuple[int, int]] = {k for k in self._active_hold_triggers if k[0] == idx}
+        hold_raw_prev: Dict[int, bool] = {}
+        hold_key_sets: Dict[int, Set[str]] = {}
+        once_requested = False
+        for trig_idx, trig in enumerate(triggers):
+            trig_mode = _normalize_macro_mode(getattr(trig, "mode", "hold"), default="hold")
+            if trig_mode != "hold":
+                continue
+            hold_raw_prev[trig_idx] = self._hold_raw_state.get((idx, trig_idx), False)
+            hold_key_sets[trig_idx] = set(parse_trigger_keys(trig.key))
+
+        for trig_idx, trig in enumerate(triggers):
+            trig_mode = _normalize_macro_mode(getattr(trig, "mode", "hold"), default="hold")
+            if trig_mode == "hold":
+                is_active = self._update_hold_trigger(idx, trig_idx, macro, trig)
+                if is_active:
+                    active_holds.add((idx, trig_idx))
+                    # 홀드가 잡히는 순간 토글 상태를 강제로 해제하여
+                    # 토글→홀드 전환 시 홀드 업에 맞춰 멈추도록 한다.
+                    if toggle_on:
+                        toggle_on = False
+                        self._toggle_states[idx] = False
+                else:
+                    active_holds.discard((idx, trig_idx))
+            else:
+                # 이미 이전 루프부터 홀드가 유지 중이면 토글을 무시하지만,
+                # 이번 루프에 처음 홀드가 잡힌 순간(예: Ctrl을 먼저 누르고 mouse4를 눌러 토글/1회 의도)에는 허용한다.
+                toggle_keys = set(parse_trigger_keys(trig.key))
+                hold_was_down_prev = any(
+                    hold_raw_prev.get(h_idx, False)
+                    and bool(toggle_keys & hold_key_sets.get(h_idx, set()))
+                    and not self._hold_blocked_by_extra_mods.get((idx, h_idx), False)
+                    for h_idx in hold_key_sets
+                )
+                hold_was_down_cur = any(
+                    # 홀드 키를 이미 누른 상태에서 모디파이어만 추가되면 토글로 전환되지 않도록 막는다.
+                    self._hold_raw_state.get((idx, h_idx), False)
+                    and bool(toggle_keys & hold_key_sets.get(h_idx, set()))
+                    and not self._hold_blocked_by_extra_mods.get((idx, h_idx), False)
+                    for h_idx in hold_key_sets
+                )
+                if (active_holds and was_active_hold) or hold_was_down_prev or hold_was_down_cur:
+                    # 홀드가 잡혀 있으면 토글/1회 트리거는 무시해 오동작을 막는다.
+                    continue
+                ignore_window = self._edge_block_window if runner is not None else 0.0
+                if self._edge(trig.key, ignore_recent_sec=ignore_window, disallow_extra_modifiers=True):
+                    if trig_mode == "once":
+                        once_requested = True
+                        self._once_latched_indices.add(idx)
+                        toggle_on = True
+                        self._toggle_states[idx] = True
+                    else:
+                        toggle_on = not toggle_on
+                        self._toggle_states[idx] = toggle_on
+
+        self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != idx} | active_holds
+        self._toggle_states[idx] = toggle_on
+
+        # cycle_count 설정된 홀드 매크로는 트리거를 뗄 때까지 재시작하지 않는다.
+        hold_blocked = False
+        if macro.mode == "hold" and idx in self._hold_exhausted_indices:
+            if active_holds:
+                hold_blocked = True
+            else:
+                self._hold_exhausted_indices.discard(idx)
+
+        should_run = toggle_on or bool(active_holds) or once_requested
+        if hold_blocked:
+            should_run = False
+
+        if should_run and runner is None:
+            self._apply_macro_interaction(idx)
+            run_macro = macro
+            if once_requested or idx in self._once_latched_indices:
+                # 1회 실행은 내부적으로 toggle+cycle_count=1과 같은 경로로 실행한다.
+                run_macro = copy.deepcopy(macro)
+                run_macro.cycle_count = 1
+            runner = MacroRunner(run_macro, self, idx)
+            self._macro_runners[idx] = runner
+            runner.start()
+        elif not should_run and runner is not None:
+            # 1회 실행(또는 첫 사이클 완료 대기)로 stop-after-cycle 요청된 러너는
+            # 입력 상태와 무관하게 사이클 종료 시점까지 자연 종료시킨다.
+            if runner.is_stop_after_cycle_requested():
+                pass
+            else:
+                self._toggle_states[idx] = False
+                if runner.should_finish_first_cycle():
+                    if not runner.first_cycle_done():
+                        runner.request_stop_after_cycle()
+                    elif runner.is_stop_after_cycle_requested():
+                        pass
+                    else:
+                        runner.stop()
+                        self._macro_runners.pop(idx, None)
+                        self._once_latched_indices.discard(idx)
+                else:
+                    runner.stop()
+                    self._macro_runners.pop(idx, None)
+                    self._once_latched_indices.discard(idx)
+
+        runner = self._macro_runners.get(idx)
+        if runner is not None and not runner.is_alive():
+            terminal_status = ""
+            try:
+                terminal_status = runner.terminal_status()
+            except Exception:
+                terminal_status = ""
+            self._macro_runners.pop(idx, None)
+            self._toggle_states[idx] = False
+            self._once_latched_indices.discard(idx)
+            if macro.mode == "hold" and (
+                getattr(macro, "cycle_count", None) not in (None, 0) or terminal_status == "macro_stop"
+            ):
+                self._hold_exhausted_indices.add(idx)
 
     def _loop(self):
         self._emit_state()
         while not self._stop_event.is_set():
-            self._handle_hotkeys()
-            app_ctx = self._get_app_context()
-            self._refresh_swallow(app_ctx)
-            if not self.running:
-                break
+            try:
+                app_ctx = self._get_app_context()
+                self._refresh_swallow(app_ctx)
+                if not self.running:
+                    break
 
-            if not self.active or self.paused:
-                time.sleep(self.tick)
-                continue
-
-            with self._lock:
-                macros = list(self._profile.macros)
-
-            for idx, macro in enumerate(macros):
-                if self._guard_macro_idx is not None and idx != self._guard_macro_idx:
-                    # 가드 매크로가 동작 중이면 다른 매크로는 대기
+                if not self.active or self.paused:
+                    time.sleep(self.tick)
                     continue
-                if not getattr(macro, "enabled", True):
-                    runner = self._macro_runners.pop(idx, None)
-                    if runner:
-                        runner.stop()
-                    self._clear_macro_state(idx)
-                    continue
-                if not self._macro_matches_app(macro, app_ctx):
-                    runner = self._macro_runners.pop(idx, None)
-                    if runner:
-                        runner.stop()
-                        if self._guard_macro_idx == idx:
-                            self._guard_macro_idx = None
-                            self._resume_suspended_toggles()
-                    self._clear_macro_state(idx)
-                    continue
-                runner = self._macro_runners.get(idx)
-                triggers = self._macro_triggers(macro)
-                was_active_hold = any(k[0] == idx for k in self._active_hold_triggers)
-                toggle_on = bool(self._toggle_states.get(idx, False))
-                active_holds: Set[tuple[int, int]] = {k for k in self._active_hold_triggers if k[0] == idx}
-                hold_raw_prev: Dict[int, bool] = {}
-                hold_key_sets: Dict[int, Set[str]] = {}
-                once_requested = False
-                for trig_idx, trig in enumerate(triggers):
-                    trig_mode = _normalize_macro_mode(getattr(trig, "mode", "hold"), default="hold")
-                    if trig_mode != "hold":
-                        continue
-                    hold_raw_prev[trig_idx] = self._hold_raw_state.get((idx, trig_idx), False)
-                    hold_key_sets[trig_idx] = set(parse_trigger_keys(trig.key))
 
-                for trig_idx, trig in enumerate(triggers):
-                    trig_mode = _normalize_macro_mode(getattr(trig, "mode", "hold"), default="hold")
-                    if trig_mode == "hold":
-                        is_active = self._update_hold_trigger(idx, trig_idx, macro, trig)
-                        if is_active:
-                            active_holds.add((idx, trig_idx))
-                            # 홀드가 잡히는 순간 토글 상태를 강제로 해제하여
-                            # 토글→홀드 전환 시 홀드 업에 맞춰 멈추도록 한다.
-                            if toggle_on:
-                                toggle_on = False
-                                self._toggle_states[idx] = False
-                        else:
-                            active_holds.discard((idx, trig_idx))
-                    else:
-                        # 이미 이전 루프부터 홀드가 유지 중이면 토글을 무시하지만,
-                        # 이번 루프에 처음 홀드가 잡힌 순간(예: Ctrl을 먼저 누르고 mouse4를 눌러 토글/1회 의도)에는 허용한다.
-                        toggle_keys = set(parse_trigger_keys(trig.key))
-                        hold_was_down_prev = any(
-                            hold_raw_prev.get(h_idx, False)
-                            and bool(toggle_keys & hold_key_sets.get(h_idx, set()))
-                            and not self._hold_blocked_by_extra_mods.get((idx, h_idx), False)
-                            for h_idx in hold_key_sets
-                        )
-                        hold_was_down_cur = any(
-                            # 홀드 키를 이미 누른 상태에서 모디파이어만 추가되면 토글로 전환되지 않도록 막는다.
-                            self._hold_raw_state.get((idx, h_idx), False)
-                            and bool(toggle_keys & hold_key_sets.get(h_idx, set()))
-                            and not self._hold_blocked_by_extra_mods.get((idx, h_idx), False)
-                            for h_idx in hold_key_sets
-                        )
-                        if (active_holds and was_active_hold) or hold_was_down_prev or hold_was_down_cur:
-                            # 홀드가 잡혀 있으면 토글/1회 트리거는 무시해 오동작을 막는다.
-                            continue
-                        ignore_window = self._edge_block_window if runner is not None else 0.0
-                        if self._edge(trig.key, ignore_recent_sec=ignore_window, disallow_extra_modifiers=True):
-                            if trig_mode == "once":
-                                once_requested = True
-                                self._once_latched_indices.add(idx)
-                                toggle_on = True
-                                self._toggle_states[idx] = True
-                            else:
-                                toggle_on = not toggle_on
-                                self._toggle_states[idx] = toggle_on
+                with self._lock:
+                    macros = list(self._profile.macros)
 
-                self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != idx} | active_holds
-                self._toggle_states[idx] = toggle_on
-
-                # cycle_count 설정된 홀드 매크로는 트리거를 뗄 때까지 재시작하지 않는다.
-                hold_blocked = False
-                if macro.mode == "hold" and idx in self._hold_exhausted_indices:
-                    if active_holds:
-                        hold_blocked = True
-                    else:
-                        self._hold_exhausted_indices.discard(idx)
-
-                should_run = toggle_on or bool(active_holds) or once_requested
-                if hold_blocked:
-                    should_run = False
-
-                if should_run and runner is None:
-                    self._apply_macro_interaction(idx)
-                    run_macro = macro
-                    if once_requested or idx in self._once_latched_indices:
-                        # 1회 실행은 내부적으로 toggle+cycle_count=1과 같은 경로로 실행한다.
-                        run_macro = copy.deepcopy(macro)
-                        run_macro.cycle_count = 1
-                    runner = MacroRunner(run_macro, self, idx)
-                    self._macro_runners[idx] = runner
-                    runner.start()
-                elif not should_run and runner is not None:
-                    # 1회 실행(또는 첫 사이클 완료 대기)로 stop-after-cycle 요청된 러너는
-                    # 입력 상태와 무관하게 사이클 종료 시점까지 자연 종료시킨다.
-                    if runner.is_stop_after_cycle_requested():
-                        pass
-                    else:
-                        self._toggle_states[idx] = False
-                        if runner.should_finish_first_cycle():
-                            if not runner.first_cycle_done():
-                                runner.request_stop_after_cycle()
-                            elif runner.is_stop_after_cycle_requested():
-                                pass
-                            else:
-                                runner.stop()
-                                self._macro_runners.pop(idx, None)
-                                self._once_latched_indices.discard(idx)
-                        else:
-                            runner.stop()
-                            self._macro_runners.pop(idx, None)
-                            self._once_latched_indices.discard(idx)
-
-                runner = self._macro_runners.get(idx)
-                if runner is not None and not runner.is_alive():
-                    terminal_status = ""
+                for idx, macro in enumerate(macros):
                     try:
-                        terminal_status = runner.terminal_status()
-                    except Exception:
-                        terminal_status = ""
-                    self._macro_runners.pop(idx, None)
-                    self._toggle_states[idx] = False
-                    self._once_latched_indices.discard(idx)
-                    if macro.mode == "hold" and (
-                        getattr(macro, "cycle_count", None) not in (None, 0) or terminal_status == "macro_stop"
-                    ):
-                        self._hold_exhausted_indices.add(idx)
+                        self._tick_macro(idx, macro, app_ctx)
+                    except Exception as exc:
+                        self._handle_macro_exception(idx, macro, exc)
 
-            time.sleep(self.tick)
-            self._clear_guard_if_needed()
+                time.sleep(self.tick)
+                self._clear_guard_if_needed()
+            except Exception as exc:
+                self._recover_loop_exception(exc)
+                time.sleep(max(self.tick * 5, 0.1))
 
         self._stop_all_macros()
         self.running = False
@@ -4207,10 +4278,13 @@ class MacroEngine:
         if guard_idx in self._macro_runners:
             return
         # 홀드 기반 가드 매크로는 스레드가 cycle_limit으로 종료되어도 키를 떼기 전까지는
-        # 다른 매크로를 막아야 하므로, 홀드가 유지되는 동안 가드를 유지한다.
+        # 다른 매크로를 막아야 하므로, 캐시 상태뿐 아니라 실제 눌림도 다시 확인한다.
         still_holding_guard = any(k[0] == guard_idx for k in self._active_hold_triggers)
+        if not still_holding_guard:
+            still_holding_guard = self._guard_trigger_still_active(guard_idx)
         if still_holding_guard:
             return
+        self._clear_macro_state(guard_idx)
         self._guard_macro_idx = None
         self._resume_suspended_toggles()
 

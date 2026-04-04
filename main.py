@@ -14675,7 +14675,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.poll_timer.setInterval(100)
         self.poll_timer.timeout.connect(self._poll_engine)
         self.poll_timer.start()
-        self._status_hint = "Home=활성, Pause=일시정지, End=종료, 기능 메뉴=디버거/픽셀 테스트"
+        self._status_hint = "상단 버튼=활성/일시정지/비활성화, 기능 메뉴=디버거/픽셀 테스트"
         self.statusBar().showMessage(self._status_hint)
         self._set_capture_status(self.screenshot_manager.is_running)
     def _show_apply_feedback(self, ok: bool):
