@@ -36,10 +36,9 @@
     "test_region": "1682,4,77,15",
     "test_color": "bb2327",
     "test_expect": true,
-    "fail_capture_enabled": true,
-    "fail_capture_cooldown": 1.0,
-    "fail_capture_confirmations": 1,
-    "fail_capture_limit": null,
+    "fail_capture_enabled": false,
+    "fail_capture_interval_seconds": 1.0,
+    "fail_capture_duration_seconds": 3.0,
     "use_viewer_image": false,
     "sections": {
       "section_condition": true,
@@ -72,7 +71,7 @@
       ]
     },
     "fav_group": "기본",
-    "last_file": "D:\\Ion\\macro\\screenshot\\000007_20260306_143539_292009.png",
+    "last_file": "D:\\Ion\\macro\\screenshot\\000001_20260404_164433_222700.png",
     "sort_col": 3,
     "sort_order": "asc"
   }

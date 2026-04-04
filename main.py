@@ -8611,14 +8611,18 @@ class DebuggerDialog(QtWidgets.QDialog):
         self._focus_viewer_cb = focus_viewer_cb
         self._get_viewer_cb = get_viewer_cb
         self._fail_capture_enabled = False
-        self._fail_capture_cooldown = 1.0
+        self._fail_capture_interval_seconds = 1.0
+        self._fail_capture_duration_seconds = 3.0
         self._last_condition_result: bool | None = None
-        self._last_capture_ts: float = 0.0
-        self._fail_capture_limit: int | None = None
-        self._fail_capture_count: int = 0
         self._fail_capture_armed: bool = False
-        self._fail_capture_confirmations: int = 1
-        self._fail_capture_false_streak: int = 0
+        self._fail_capture_timer = QtCore.QTimer(self)
+        self._fail_capture_timer.setSingleShot(False)
+        self._fail_capture_timer.timeout.connect(self._tick_fail_capture_session)
+        self._fail_capture_session_active: bool = False
+        self._fail_capture_session_deadline: float = 0.0
+        self._fail_capture_session_label: str | None = None
+        self._fail_capture_capture_index: int = 0
+        self._fail_capture_total_count: int = 0
         self._last_condition_tree: dict | None = None
         self._compare_color_override: tuple[int, int, int] | None = None
         self._section_controls: dict[str, QtWidgets.QToolButton] = {}
@@ -8695,31 +8699,31 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.capture_toggle_btn.setIcon(QtGui.QIcon.fromTheme("camera"))
         self.capture_toggle_btn.toggled.connect(self._on_capture_toggle)
         capture_row.addWidget(self.capture_toggle_btn)
-        capture_row.addWidget(QtWidgets.QLabel("쿨다운(초):"))
-        self.capture_cooldown_spin = QtWidgets.QDoubleSpinBox()
-        self.capture_cooldown_spin.setRange(0.1, 5.0)
-        self.capture_cooldown_spin.setSingleStep(0.1)
-        self.capture_cooldown_spin.setDecimals(1)
-        self.capture_cooldown_spin.setValue(self._fail_capture_cooldown)
-        self.capture_cooldown_spin.valueChanged.connect(self._on_capture_cooldown_changed)
-        capture_row.addWidget(self.capture_cooldown_spin)
-        capture_row.addWidget(QtWidgets.QLabel("연속 실패:"))
-        self.capture_confirm_spin = QtWidgets.QSpinBox()
-        self.capture_confirm_spin.setRange(1, 10)
-        self.capture_confirm_spin.setValue(self._fail_capture_confirmations)
-        self.capture_confirm_spin.valueChanged.connect(self._on_capture_confirm_changed)
-        capture_row.addWidget(self.capture_confirm_spin)
-        capture_row.addWidget(QtWidgets.QLabel("캡처 제한(장):"))
-        self.capture_limit_edit = QtWidgets.QLineEdit()
-        self.capture_limit_edit.setPlaceholderText("제한 없음")
-        self.capture_limit_edit.setFixedWidth(70)
-        int_validator = QtGui.QIntValidator(1, 9999, self.capture_limit_edit)
-        self.capture_limit_edit.setValidator(int_validator)
-        self.capture_limit_edit.textChanged.connect(self._on_capture_limit_changed)
-        capture_row.addWidget(self.capture_limit_edit)
+        capture_row.addWidget(QtWidgets.QLabel("캡처 간격(초):"))
+        self.capture_interval_spin = QtWidgets.QDoubleSpinBox()
+        self.capture_interval_spin.setRange(0.1, 60.0)
+        self.capture_interval_spin.setSingleStep(0.1)
+        self.capture_interval_spin.setDecimals(1)
+        self.capture_interval_spin.setValue(self._fail_capture_interval_seconds)
+        self.capture_interval_spin.valueChanged.connect(self._on_capture_interval_changed)
+        capture_row.addWidget(self.capture_interval_spin)
+        capture_row.addWidget(QtWidgets.QLabel("캡처 지속시간(초):"))
+        self.capture_duration_spin = QtWidgets.QDoubleSpinBox()
+        self.capture_duration_spin.setRange(0.0, 300.0)
+        self.capture_duration_spin.setSingleStep(0.1)
+        self.capture_duration_spin.setDecimals(1)
+        self.capture_duration_spin.setValue(self._fail_capture_duration_seconds)
+        self.capture_duration_spin.valueChanged.connect(self._on_capture_duration_changed)
+        capture_row.addWidget(self.capture_duration_spin)
         self.capture_hotkey_label = QtWidgets.QLabel("Hotkey: Ctrl+F12")
         self.capture_hotkey_label.setStyleSheet("color: gray;")
         capture_row.addWidget(self.capture_hotkey_label)
+        self.capture_state_label = QtWidgets.QLabel("상태: OFF")
+        self.capture_state_label.setStyleSheet("color: gray;")
+        capture_row.addWidget(self.capture_state_label)
+        self.capture_count_label = QtWidgets.QLabel("캡처 0회")
+        self.capture_count_label.setStyleSheet("color: gray;")
+        capture_row.addWidget(self.capture_count_label)
         capture_row.addStretch()
         cond_layout.addLayout(capture_row)
         compare_row = QtWidgets.QHBoxLayout()
@@ -8848,13 +8852,23 @@ class DebuggerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         try:
-            self._fail_capture_cooldown = float(state.get("fail_capture_cooldown", self._fail_capture_cooldown))
-            self.capture_cooldown_spin.setValue(self._fail_capture_cooldown)
+            interval_val = state.get("fail_capture_interval_seconds", state.get("fail_capture_cooldown", self._fail_capture_interval_seconds))
+            self._fail_capture_interval_seconds = max(0.1, float(interval_val))
+            self.capture_interval_spin.setValue(self._fail_capture_interval_seconds)
         except Exception:
             pass
         try:
-            self._fail_capture_confirmations = int(state.get("fail_capture_confirmations", self._fail_capture_confirmations))
-            self.capture_confirm_spin.setValue(self._fail_capture_confirmations)
+            duration_val = state.get("fail_capture_duration_seconds")
+            if duration_val is None:
+                duration_val = self._fail_capture_duration_seconds
+                legacy_limit = state.get("fail_capture_limit")
+                try:
+                    if legacy_limit not in (None, "", False):
+                        duration_val = max(0.0, self._fail_capture_interval_seconds * max(1, int(legacy_limit)))
+                except Exception:
+                    duration_val = self._fail_capture_duration_seconds
+            self._fail_capture_duration_seconds = max(0.0, float(duration_val))
+            self.capture_duration_spin.setValue(self._fail_capture_duration_seconds)
         except Exception:
             pass
         self._use_viewer_image = bool(state.get("use_viewer_image", False))
@@ -8862,13 +8876,10 @@ class DebuggerDialog(QtWidgets.QDialog):
             self.viewer_image_chk.setChecked(self._use_viewer_image)
         except Exception:
             pass
-        self._fail_capture_enabled = bool(state.get("fail_capture_enabled", False))
-        limit = state.get("fail_capture_limit")
-        try:
-            self._fail_capture_limit = int(limit) if limit not in (None, "", False) else None
-        except Exception:
-            self._fail_capture_limit = None
-        self.capture_limit_edit.setText("" if self._fail_capture_limit is None else str(self._fail_capture_limit))
+        self._fail_capture_enabled = False
+        self._fail_capture_armed = False
+        self._fail_capture_total_count = 0
+        self._stop_fail_capture_session()
         self._refresh_capture_ui()
         try:
             self._tolerance = int(state.get("tolerance", self._tolerance))
@@ -8923,9 +8934,8 @@ class DebuggerDialog(QtWidgets.QDialog):
             "test_color": self.color_input.text().strip(),
             "test_expect": bool(self.expect_combo.currentData()) if self.expect_combo.currentIndex() >= 0 else True,
             "fail_capture_enabled": self._fail_capture_enabled,
-            "fail_capture_cooldown": float(self.capture_cooldown_spin.value()),
-            "fail_capture_confirmations": int(self.capture_confirm_spin.value()),
-            "fail_capture_limit": self._fail_capture_limit,
+            "fail_capture_interval_seconds": float(self.capture_interval_spin.value()),
+            "fail_capture_duration_seconds": float(self.capture_duration_spin.value()),
             "use_viewer_image": bool(self.viewer_image_chk.isChecked()) if hasattr(self, "viewer_image_chk") else False,
             "sections": {k: btn.isChecked() for k, btn in self._section_controls.items()},
             "highlight_selection": bool(getattr(self, "highlight_btn", None).isChecked()) if hasattr(self, "highlight_btn") else False,
@@ -8933,6 +8943,11 @@ class DebuggerDialog(QtWidgets.QDialog):
         }
     def closeEvent(self, event: QtGui.QCloseEvent):
         self.stop_condition_debug()
+        self._fail_capture_enabled = False
+        self._fail_capture_armed = False
+        self._fail_capture_total_count = 0
+        self._stop_fail_capture_session()
+        self._refresh_capture_ui()
         # 창을 닫을 때 뷰어에 남은 오버레이를 정리
         self._clear_viewer_overlay()
         if callable(self._close_cb):
@@ -9590,7 +9605,8 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.condition_fail_label.setText("실패 경로: -")
         self.condition_stop_btn.setEnabled(bool(self._condition_eval_fn))
         self._last_condition_result = None
-        self._last_capture_ts = 0.0
+        self._fail_capture_armed = False
+        self._stop_fail_capture_session()
         self._refresh_capture_ui()
     def _refresh_capture_ui(self):
         on = self._fail_capture_enabled
@@ -9598,59 +9614,184 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.capture_toggle_btn.setChecked(on)
         self.capture_toggle_btn.blockSignals(False)
         self.capture_toggle_btn.setText(f"실패 시 캡처 {'ON' if on else 'OFF'}")
-        color = "limegreen" if on else "gray"
+        color = "#e53935" if (on and self._fail_capture_session_active) else ("limegreen" if on else "gray")
         self.capture_toggle_btn.setStyleSheet(f"color: {color}; font-weight: bold;")
-        # OFF에서도 설정을 바꿀 수 있도록 항상 활성화
-        self.capture_cooldown_spin.setEnabled(True)
-        self.capture_confirm_spin.setEnabled(True)
-        self.capture_limit_edit.setEnabled(True)
-    def _on_capture_toggle(self, checked: bool):
-        self._fail_capture_enabled = bool(checked)
-        self._last_condition_result = None
-        self._last_capture_ts = 0.0
-        self._fail_capture_count = 0
-        self._fail_capture_armed = False
-        self._fail_capture_false_streak = 0
-        if checked:
-            self._set_condition_pending(label=self._condition_label)
-        self._refresh_capture_ui()
-        self._append_log_line(f"[캡처] 조건 실패 캡처 {'ON (참 대기중)' if checked else 'OFF'}")
-        if self._save_state_cb:
-            try:
-                self._save_state_cb(self._collect_state())
-            except Exception:
-                pass
-    def _on_capture_cooldown_changed(self, value: float):
-        self._fail_capture_cooldown = float(value)
-        if self._save_state_cb:
-            try:
-                self._save_state_cb(self._collect_state())
-            except Exception:
-                pass
-    def _on_capture_confirm_changed(self, value: int):
-        self._fail_capture_confirmations = max(1, int(value))
-        self._fail_capture_false_streak = 0
-        if self._save_state_cb:
-            try:
-                self._save_state_cb(self._collect_state())
-            except Exception:
-                pass
-    def _on_capture_limit_changed(self, text: str):
-        txt = text.strip()
-        if not txt:
-            self._fail_capture_limit = None
+        if not on:
+            state_text = "상태: OFF"
+            state_color = "gray"
+        elif self._fail_capture_session_active:
+            state_text = f"상태: 캡처 중 ({self._fail_capture_capture_index}회)"
+            state_color = "#e53935"
+        elif self._fail_capture_armed:
+            state_text = "상태: 다음 거짓 전환 대기중"
+            state_color = "limegreen"
+        elif self._last_condition_result is False:
+            state_text = "상태: 메인노드 참 1회 대기중"
+            state_color = "darkorange"
         else:
+            state_text = "상태: 메인노드 결과 대기중"
+            state_color = "darkorange"
+        self.capture_state_label.setText(state_text)
+        self.capture_state_label.setStyleSheet(f"color: {state_color};")
+        self.capture_count_label.setText(f"캡처 {self._fail_capture_total_count}회")
+        # OFF에서도 설정을 바꿀 수 있도록 항상 활성화
+        self.capture_interval_spin.setEnabled(True)
+        self.capture_duration_spin.setEnabled(True)
+    def _can_toggle_fail_capture(self) -> bool:
+        if not self._condition_timer.isActive():
+            return False
+        return True
+    def _stop_fail_capture_session(self):
+        if self._fail_capture_timer.isActive():
+            self._fail_capture_timer.stop()
+        self._fail_capture_session_active = False
+        self._fail_capture_session_deadline = 0.0
+        self._fail_capture_session_label = None
+        self._fail_capture_capture_index = 0
+    def _dispatch_fail_capture(self, *, tree: dict | None, label: str, trigger: str) -> bool:
+        if not self._fail_capture_enabled or not callable(self._fail_capture_cb):
+            return False
+        fail_path = " > ".join(self._find_first_failure_path(tree, [])) if isinstance(tree, dict) else ""
+        try:
+            self.condition_tree.viewport().repaint()
+            self.repaint()
+            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        except Exception:
+            pass
+        self._fail_capture_capture_index += 1
+        try:
+            self._fail_capture_cb(
+                {
+                    "label": label,
+                    "fail_path": fail_path,
+                    "timestamp": time.time(),
+                    "result": False,
+                    "tree": tree,
+                    "capture_trigger": trigger,
+                    "capture_index": self._fail_capture_capture_index,
+                    "capture_interval_seconds": float(self._fail_capture_interval_seconds),
+                    "capture_duration_seconds": float(self._fail_capture_duration_seconds),
+                    "capture_total_count": self._fail_capture_total_count + 1,
+                }
+            )
+            self._fail_capture_total_count += 1
+            self._refresh_capture_ui()
+            self._append_log_line(
+                f"[캡처] 조건 실패 캡처 {self._fail_capture_total_count}회 저장 완료 "
+                f"(이번 전환 {self._fail_capture_capture_index}회, {fail_path or '경로 없음'})"
+            )
+            return True
+        except Exception as exc:
+            self._append_log_line(f"[캡처 오류] {exc}")
+            return False
+    def _start_fail_capture_session(self, tree: dict, *, label: str):
+        self._stop_fail_capture_session()
+        self._fail_capture_session_active = True
+        self._fail_capture_session_label = label
+        duration = max(0.0, float(self._fail_capture_duration_seconds))
+        self._fail_capture_session_deadline = time.monotonic() + duration
+        if not self._dispatch_fail_capture(tree=tree, label=label, trigger="transition"):
+            self._stop_fail_capture_session()
+            return
+        interval = max(0.1, float(self._fail_capture_interval_seconds))
+        next_fire_at = time.monotonic() + interval
+        if next_fire_at <= self._fail_capture_session_deadline + 1e-9:
+            self._fail_capture_timer.start(max(1, int(interval * 1000)))
+        else:
+            self._stop_fail_capture_session()
+        self._refresh_capture_ui()
+    def _tick_fail_capture_session(self):
+        if not self._fail_capture_session_active:
+            self._stop_fail_capture_session()
+            self._refresh_capture_ui()
+            return
+        if not self._fail_capture_enabled or not callable(self._fail_capture_cb):
+            self._stop_fail_capture_session()
+            self._refresh_capture_ui()
+            return
+        if time.monotonic() > self._fail_capture_session_deadline + 1e-9:
+            self._stop_fail_capture_session()
+            self._refresh_capture_ui()
+            return
+        tree = self._last_condition_tree if isinstance(self._last_condition_tree, dict) else None
+        if isinstance(tree, dict) and tree.get("result") is True:
+            self._stop_fail_capture_session()
+            self._refresh_capture_ui()
+            return
+        label = self._condition_label or self._fail_capture_session_label or "조건 디버그"
+        if not self._dispatch_fail_capture(tree=tree, label=label, trigger="interval"):
+            self._stop_fail_capture_session()
+            self._refresh_capture_ui()
+            return
+        interval = max(0.1, float(self._fail_capture_interval_seconds))
+        if time.monotonic() + interval > self._fail_capture_session_deadline + 1e-9:
+            self._stop_fail_capture_session()
+            self._refresh_capture_ui()
+    def _on_capture_toggle(self, checked: bool, *, notify_user: bool = True):
+        checked = bool(checked)
+        if checked and not self._can_toggle_fail_capture():
+            self.capture_toggle_btn.blockSignals(True)
+            self.capture_toggle_btn.setChecked(False)
+            self.capture_toggle_btn.blockSignals(False)
+            self._fail_capture_enabled = False
+            self._fail_capture_armed = False
+            self._stop_fail_capture_session()
+            self._refresh_capture_ui()
+            if notify_user:
+                QtWidgets.QMessageBox.information(self, "실패 시 캡처", "조건 디버그 실행 중에만 사용할 수 있습니다.")
+            return
+        current_result = bool(self._last_condition_tree.get("result")) if isinstance(self._last_condition_tree, dict) else None
+        self._fail_capture_enabled = checked
+        self._last_condition_result = current_result
+        self._stop_fail_capture_session()
+        if checked:
+            self._fail_capture_total_count = 0
+            if current_result is True:
+                self._fail_capture_armed = True
+                self._append_log_line("[캡처] 조건 실패 캡처 ON (현재 메인노드 참, 다음 거짓 전환부터 작동)")
+            elif current_result is False:
+                self._fail_capture_armed = False
+                self._append_log_line("[캡처] 조건 실패 캡처 ON (현재 메인노드 거짓, 메인노드가 1회 참이 된 뒤 다음 거짓부터 작동)")
+                if notify_user:
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        "실패 시 캡처",
+                        "현재 메인노드가 거짓입니다.\n메인노드가 1회 참이 된 뒤 다음 거짓부터 작동합니다.",
+                    )
+            else:
+                self._fail_capture_armed = False
+                self._append_log_line("[캡처] 조건 실패 캡처 ON (메인노드 결과 대기중, 메인노드가 1회 참이 된 뒤 다음 거짓부터 작동)")
+                if notify_user:
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        "실패 시 캡처",
+                        "현재 메인노드 결과를 아직 확인하지 못했습니다.\n메인노드가 1회 참이 된 뒤 다음 거짓부터 작동합니다.",
+                    )
+        else:
+            self._fail_capture_armed = False
+            self._append_log_line("[캡처] 조건 실패 캡처 OFF")
+        self._refresh_capture_ui()
+        if self._save_state_cb:
             try:
-                self._fail_capture_limit = max(1, int(txt))
+                self._save_state_cb(self._collect_state())
             except Exception:
-                self._fail_capture_limit = None
+                pass
+    def _on_capture_interval_changed(self, value: float):
+        self._fail_capture_interval_seconds = max(0.1, float(value))
+        if self._save_state_cb:
+            try:
+                self._save_state_cb(self._collect_state())
+            except Exception:
+                pass
+    def _on_capture_duration_changed(self, value: float):
+        self._fail_capture_duration_seconds = max(0.0, float(value))
         if self._save_state_cb:
             try:
                 self._save_state_cb(self._collect_state())
             except Exception:
                 pass
     def toggle_fail_capture_from_hotkey(self):
-        self._on_capture_toggle(not self._fail_capture_enabled)
+        self._on_capture_toggle(not self._fail_capture_enabled, notify_user=False)
     def _set_test_inputs(self, config: dict):
         if not isinstance(config, dict):
             return
@@ -9790,79 +9931,27 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.condition_fail_label.setText("실패 경로: -")
         self._last_condition_result = None
     def _maybe_capture_failure(self, tree: dict, *, label: str):
+        result_now = bool(tree.get("result"))
+        prev_result = self._last_condition_result
+        self._last_condition_result = result_now
         if not self._fail_capture_enabled:
-            self._last_condition_result = tree.get("result")
+            self._fail_capture_armed = False
+            self._stop_fail_capture_session()
             return
         if not callable(self._fail_capture_cb):
-            self._last_condition_result = tree.get("result")
+            self._stop_fail_capture_session()
             return
-        result_now = bool(tree.get("result"))
-        now = time.monotonic()
         if result_now:
-            # 참을 본 이후부터만 거짓을 캡처
             self._fail_capture_armed = True
-            self._fail_capture_false_streak = 0
-            self._last_condition_result = result_now
+            self._stop_fail_capture_session()
             return
-        # result_now is False
+        if self._fail_capture_session_active:
+            return
         if not self._fail_capture_armed:
-            self._last_condition_result = result_now
             return
-        pixel_results = self._collect_pixel_results(tree)
-        all_pixels_failed = bool(pixel_results) and all(res is not True for res in pixel_results)
-        if not all_pixels_failed:
-            self._fail_capture_false_streak = 0
-            self._last_condition_result = result_now
-            return
-        self._fail_capture_false_streak += 1
-        should_capture = False
-        reason = ""
-        if self._last_condition_result:
-            should_capture = self._fail_capture_false_streak >= self._fail_capture_confirmations
-            reason = "transition"
-        elif now - self._last_capture_ts >= max(0.0, self._fail_capture_cooldown):
-            should_capture = self._fail_capture_false_streak >= self._fail_capture_confirmations
-            reason = "cooldown"
-        self._last_condition_result = result_now
-        if not should_capture:
-            return
-        if self._fail_capture_limit is not None and self._fail_capture_count >= self._fail_capture_limit:
-            if self._fail_capture_count == self._fail_capture_limit:
-                self._append_log_line(f"[캡처] 제한 {self._fail_capture_limit}장에 도달하여 추가 캡처 중단")
-                self._fail_capture_count += 1  # 한 번만 알림
-            return
-        self._fail_capture_false_streak += 1
-        if self._fail_capture_false_streak < self._fail_capture_confirmations:
-            self._last_condition_result = result_now
-            return
-        # 연속 실패 조건을 만족한 경우에만 캡처 실행
-        self._last_capture_ts = now
-        self._fail_capture_count += 1
-        fail_path = " > ".join(self._find_first_failure_path(tree, []))
-        try:
-            self.condition_tree.viewport().repaint()
-            self.repaint()
-            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
-        except Exception:
-            pass
-        try:
-            self._fail_capture_cb(
-                {
-                    "label": label,
-                    "fail_path": fail_path,
-                    "timestamp": time.time(),
-                    "cooldown_reason": reason,
-                    "result": False,
-                    "tree": tree,
-                }
-            )
-            self._append_log_line(f"[캡처] 조건 실패 캡처 실행 ({fail_path or '경로 없음'})")
-        except Exception as exc:
-            self._append_log_line(f"[캡처 오류] {exc}")
-        self._fail_capture_false_streak = 0
-        if self._fail_capture_limit is not None and self._fail_capture_count >= self._fail_capture_limit:
-            self._append_log_line(f"[캡처] 제한 {self._fail_capture_limit}장에 도달하여 캡처 OFF")
-            self._on_capture_toggle(False)
+        if prev_result is True:
+            self._fail_capture_armed = False
+            self._start_fail_capture_session(tree, label=label)
             return
     def _on_condition_compare_color(self):
         text = self.condition_color_compare_edit.text().strip()
@@ -17072,54 +17161,106 @@ class MacroWindow(QtWidgets.QMainWindow):
             self.engine.clear_debug_image_override()
         except Exception:
             pass
+    def _resolve_fail_capture_output_dir(self) -> Path:
+        viewer = getattr(self, "_image_viewer_dialog", None)
+        if viewer is not None:
+            root = getattr(viewer, "_root_dir", None)
+            if isinstance(root, Path):
+                try:
+                    root.mkdir(parents=True, exist_ok=True)
+                    return root
+                except Exception:
+                    pass
+        state = self._image_viewer_state if isinstance(self._image_viewer_state, dict) else {}
+        raw_path = state.get("root_dir") or state.get("last_dir")
+        try:
+            target = Path(raw_path) if raw_path else SCREENSHOT_DIR
+        except Exception:
+            target = SCREENSHOT_DIR
+        if target.is_file():
+            target = target.parent
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            target = SCREENSHOT_DIR
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        return target
+    def _sanitize_fail_capture_name(self, value: str | None, *, fallback: str) -> str:
+        text = unicodedata.normalize("NFKC", (value or "").strip())
+        text = text.replace(">", " ")
+        text = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]+', "_", text)
+        text = re.sub(r"\s+", "_", text)
+        text = re.sub(r"_+", "_", text).strip(" ._")
+        return (text[:48] or fallback)
     def _capture_condition_failure(self, payload: dict):
         label = (payload or {}).get("label") or "condition"
         fail_path = (payload or {}).get("fail_path") or ""
         tree = (payload or {}).get("tree") or getattr(self, "_last_condition_tree", None)
         details = self._failed_pixel_details(tree, dedup_by_coord=True)
-        if not details:
-            return None
-        def _pixel_pass(item: dict) -> bool:
-            target = item.get("target")
-            sample = item.get("sample")
-            tol = int(item.get("tolerance", 0))
-            expect_exists = bool(item.get("expect_exists", True))
-            if not (isinstance(target, (list, tuple)) and len(target) == 3 and isinstance(sample, (list, tuple)) and len(sample) == 3):
-                return False if expect_exists else True
-            diff_val = max(abs(int(sample[i]) - int(target[i])) for i in range(3))
-            if expect_exists:
-                return diff_val <= tol
-            return diff_val > tol
-        any_pass = any(_pixel_pass(item) for item in details)
-        if any_pass:
-            return None
-        parts = []
-        for item in details:
-            coord = item.get("coord")
-            coord_txt = f"{coord[0]},{coord[1]}" if coord else "-"
-            tgt = item.get("target")
-            sample = item.get("sample")
-            tol = item.get("tolerance")
-            diff = item.get("diff")
-            expect = item.get("expect_exists")
-            need = item.get("need")
-            tgt_hex = _rgb_to_hex(tgt) or "-"
-            samp_hex = _rgb_to_hex(sample) or "-"
-            tgt_chip = _color_chip_html(tgt_hex if tgt_hex != "-" else None)
-            samp_chip = _color_chip_html(samp_hex if samp_hex != "-" else None)
-            expect_txt = "있음" if expect else "없음"
-            need_txt = f" 필요={need}" if need else ""
-            parts.append(
-                f"{coord_txt} [목표={tgt_hex} {tgt_chip} 샘플={samp_hex} {samp_chip} tol={tol} 기대={expect_txt}{need_txt}]"
-            )
-        sample_msg = f"[캡처] 조건 실패 캡처 실행 : {', '.join(parts)}"
-        self._append_log(sample_msg, rich=True)
-        if self.debugger:
+        output_dir = self._resolve_fail_capture_output_dir()
+        label_part = self._sanitize_fail_capture_name(label, fallback="condition")
+        fail_part = self._sanitize_fail_capture_name(fail_path.replace(" > ", "_"), fallback="root_false")
+        now_ts = time.time()
+        stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now_ts))
+        millis = int((now_ts % 1) * 1000)
+        capture_index = max(1, int((payload or {}).get("capture_index") or 1))
+        filename = f"debug_fail_{label_part}_{fail_part}_{stamp}_{millis:03d}_{capture_index:02d}"
+        capture_manager = ScreenCaptureManager(
+            output_dir=output_dir,
+            interval_seconds=self.screenshot_manager.interval,
+            image_format=self.screenshot_manager.image_format,
+            jpeg_quality=self.screenshot_manager.jpeg_quality,
+            png_compress_level=self.screenshot_manager.png_compress_level,
+            max_queue_size=self.screenshot_manager.max_queue_size,
+        )
+        metadata = {
+            "label": label,
+            "fail_path": fail_path,
+            "capture_trigger": (payload or {}).get("capture_trigger"),
+            "capture_index": capture_index,
+            "capture_total_count": (payload or {}).get("capture_total_count"),
+            "capture_interval_seconds": (payload or {}).get("capture_interval_seconds"),
+            "capture_duration_seconds": (payload or {}).get("capture_duration_seconds"),
+            "captured_at": now_ts,
+            "output_dir": str(output_dir),
+            "failed_pixels": details,
+        }
+        saved_path = capture_manager.capture_with_name(filename=filename, metadata=metadata)
+        notifier = getattr(self.screenshot_manager, "_notify_single_capture", None)
+        if callable(notifier) and saved_path is not None:
             try:
-                self.debugger._append_log_line(sample_msg, rich=True)
+                notifier(saved_path)
             except Exception:
                 pass
-        return None
+        parts = []
+        for item in details[:8]:
+            coord = item.get("coord")
+            coord_txt = f"{coord[0]},{coord[1]}" if coord else "-"
+            tgt_hex = _rgb_to_hex(item.get("target")) or "-"
+            sample_hex = _rgb_to_hex(item.get("sample")) or "-"
+            tol = item.get("tolerance")
+            expect = "있음" if item.get("expect_exists") else "없음"
+            parts.append(f"{coord_txt} [목표={tgt_hex} 샘플={sample_hex} tol={tol} 기대={expect}]")
+        if len(details) > 8:
+            parts.append(f"... 외 {len(details) - 8}개")
+        total_count = (payload or {}).get("capture_total_count")
+        total_txt = f"{int(total_count)}회" if total_count not in (None, "") else "기록"
+        summary_parts = [f"[캡처] 조건 실패 캡처 {total_txt} 저장: {saved_path or '경로 없음'}"]
+        if fail_path:
+            summary_parts.append(f"실패 경로={fail_path}")
+        if parts:
+            summary_parts.append(" | ".join(parts))
+        sample_msg = " | ".join(summary_parts)
+        self._append_log(sample_msg)
+        if self.debugger:
+            try:
+                self.debugger._append_log_line(sample_msg)
+            except Exception:
+                pass
+        return saved_path
     def _failed_pixel_details(self, tree: dict | None, *, dedup_by_coord: bool = False) -> list[dict]:
         if not tree:
             return []
