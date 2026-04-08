@@ -273,6 +273,9 @@ ACTION_TYPE_OPTIONS = [
     ("타이머 설정", "timer"),
     ("텔레그램 메시지", "telegram_message"),
 ]
+SOUND_FILE_DIALOG_FILTER = (
+    "Audio Files (*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.wma *.mid *.midi);;All Files (*.*)"
+)
 _VK_TO_MACRO_KEY: dict[int, str] = {
     8: "backspace",
     9: "tab",
@@ -5427,6 +5430,10 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if act.type == "macro_stop":
             return "현재 매크로 중지" + suffix
         if act.type == "sound_alert":
+            sound_path = str(getattr(act, "sound_file", "") or "").strip()
+            if sound_path:
+                sound_name = Path(sound_path).name or sound_path
+                return _elide_middle(sound_name, 34) + suffix
             return "시스템 알림음" + suffix
         if act.type == "telegram_message":
             chat_id = str(getattr(act, "telegram_chat_id", "") or "").strip()
@@ -5982,6 +5989,18 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_move_duration_spin.setSuffix(" ms")
         self.mouse_move_duration_spin.setToolTip("0이면 즉시 이동, 0보다 크면 해당 시간 동안 부드럽게 이동합니다.")
         self.sleep_edit = QtWidgets.QLineEdit("0")
+        self.sound_file_edit = QtWidgets.QLineEdit()
+        self.sound_file_edit.setPlaceholderText("비우면 시스템 알림음 사용")
+        self.sound_file_browse_btn = QtWidgets.QPushButton("파일 선택...")
+        self.sound_file_clear_btn = QtWidgets.QPushButton("지우기")
+        sound_file_row = QtWidgets.QHBoxLayout()
+        sound_file_row.setContentsMargins(0, 0, 0, 0)
+        sound_file_row.setSpacing(6)
+        sound_file_row.addWidget(self.sound_file_edit, 1)
+        sound_file_row.addWidget(self.sound_file_browse_btn)
+        sound_file_row.addWidget(self.sound_file_clear_btn)
+        self.sound_file_wrap = QtWidgets.QWidget()
+        self.sound_file_wrap.setLayout(sound_file_row)
         self.label_edit = QtWidgets.QLineEdit()
         self.goto_combo = QtWidgets.QComboBox()
         self.goto_combo.setEditable(False)
@@ -6085,6 +6104,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("반복 횟수", self.repeat_edit)
         form.addRow("일시중지 시 유지", self.pause_keep_check)
         form.addRow("Sleep(ms 또는 범위)", self.sleep_edit)
+        form.addRow("사운드 파일(선택)", self.sound_file_wrap)
         form.addRow("라벨 이름", self.label_edit)
         form.addRow("점프 대상 라벨", self.goto_combo)
         form.addRow("변수 이름", self.var_name_edit)
@@ -6132,6 +6152,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_pos_mode_combo.currentIndexChanged.connect(self._sync_mouse_pos_hint)
         self.type_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self.telegram_test_btn.clicked.connect(self._test_telegram_message)
+        self.sound_file_browse_btn.clicked.connect(self._browse_sound_file)
+        self.sound_file_clear_btn.clicked.connect(self.sound_file_edit.clear)
         self.capture_mouse_pos_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F1"), self)
         self.capture_mouse_pos_shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.capture_mouse_pos_shortcut.activated.connect(self._capture_mouse_position)
@@ -6217,6 +6239,23 @@ class ActionEditDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "테스트 성공", f"테스트 메시지를 전송했습니다. (chat_id={chat_id})")
             return
         QtWidgets.QMessageBox.warning(self, "테스트 실패", f"텔레그램 전송 실패: {err or 'unknown_error'}")
+    def _browse_sound_file(self):
+        start_dir = Path.cwd()
+        current_path = str(self.sound_file_edit.text() or "").strip()
+        if current_path:
+            try:
+                current = Path(current_path).expanduser()
+                start_dir = current if current.is_dir() else current.parent
+            except Exception:
+                start_dir = Path.cwd()
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "사운드 파일 선택",
+            str(start_dir),
+            SOUND_FILE_DIALOG_FILTER,
+        )
+        if path:
+            self.sound_file_edit.setText(path)
     def _set_field_visible(self, widget: QtWidgets.QWidget, visible: bool):
         label = self._form_layout.labelForField(widget) if hasattr(self, "_form_layout") else None
         if label:
@@ -6326,6 +6365,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_mouse_move_duration = typ == "mouse_move"
         show_mouse_pos = typ in mouse_types
         show_sleep = typ == "sleep"
+        show_sound = typ == "sound_alert"
         show_label = typ == "label"
         show_goto = typ == "goto"
         show_var = typ == "set_var"
@@ -6354,6 +6394,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.pause_keep_check.setEnabled(show_pause_keep)
         self._set_field_visible(self.sleep_edit, show_sleep)
         self.sleep_edit.setEnabled(show_sleep)
+        self._set_field_visible(self.sound_file_wrap, show_sound)
+        for w in (self.sound_file_edit, self.sound_file_browse_btn, self.sound_file_clear_btn):
+            w.setEnabled(show_sound)
         self._set_field_visible(self.label_edit, show_label)
         self.label_edit.setEnabled(show_label)
         if show_goto:
@@ -6470,6 +6513,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             else:
                 self.mouse_pos_edit.clear()
         self.sleep_edit.setText(act.sleep_value_text() if hasattr(act, "sleep_value_text") else "")
+        self.sound_file_edit.setText(str(getattr(act, "sound_file", "") or ""))
         self.label_edit.setText(act.label or "")
         self._refresh_goto_targets(act.goto_label or "")
         raw_region = act.pixel_region_raw or ",".join(str(v) for v in (act.pixel_region or []))
@@ -6631,6 +6675,8 @@ class ActionEditDialog(QtWidgets.QDialog):
             act.sleep_ms, act.sleep_range = Action.parse_sleep(
                 self._resolver.resolve(act.sleep_raw, "sleep") if self._resolver and act.sleep_raw else act.sleep_raw
             )
+        elif typ == "sound_alert":
+            act.sound_file = self.sound_file_edit.text().strip() or None
         elif typ == "label":
             act.label = self.label_edit.text().strip() or None
         elif typ == "goto":
@@ -10474,6 +10520,10 @@ class DebuggerDialog(QtWidgets.QDialog):
                 target = pg.get("target") or "-"
                 region_txt = ",".join(str(v) for v in region) if region else "-"
                 extra = f"(영역={region_txt}, 대상={target})"
+            sd = detail.get("sound_alert") or event.get("sound_alert")
+            if act_type == "sound_alert" and isinstance(sd, dict):
+                sound_file = str(sd.get("sound_file") or "").strip()
+                extra = f"(파일={Path(sound_file).name or sound_file})" if sound_file else "(시스템 알림음)"
             tg = detail.get("telegram") or event.get("telegram")
             if act_type == "telegram_message" and isinstance(tg, dict):
                 chat_id = tg.get("chat_id") or "-"
@@ -10498,6 +10548,10 @@ class DebuggerDialog(QtWidgets.QDialog):
                 target = pg.get("target") or "-"
                 region_txt = ",".join(str(v) for v in region) if region else "-"
                 extra = f"(영역={region_txt}, 대상={target})"
+            sd = detail.get("sound_alert") or event.get("sound_alert")
+            if act_type == "sound_alert" and isinstance(sd, dict):
+                sound_file = str(sd.get("sound_file") or "").strip()
+                extra = f"(파일={Path(sound_file).name or sound_file})" if sound_file else "(시스템 알림음)"
             tg = detail.get("telegram") or event.get("telegram")
             if act_type == "telegram_message" and isinstance(tg, dict):
                 chat_id = tg.get("chat_id") or "-"

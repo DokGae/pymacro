@@ -21,6 +21,10 @@ from urllib import request as urllib_request
 
 import numpy as np
 from PIL import Image
+try:
+    import winsound
+except Exception:
+    winsound = None
 
 from lib.interception import Interception, KeyFilter, KeyState
 from lib.input_backend import InterceptionBackend, KeyboardBackendStatus, KeyDelayConfig, SoftwareBackend
@@ -80,22 +84,127 @@ PATTERN_DIR = Path(__file__).parent / "pattern"
 PATTERN_FILE = PATTERN_DIR / "patterns.json"
 
 
-def _play_alert_sound() -> bool:
-    """Play a short system alert sound. Returns True when playback call succeeds."""
+def _sound_path_text(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        text = os.path.expandvars(os.path.expanduser(text))
+    except Exception:
+        pass
+    try:
+        return os.path.abspath(text)
+    except Exception:
+        return text
+
+
+def _mci_error_text(code: int) -> str:
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        if int(ctypes.windll.winmm.mciGetErrorStringW(int(code), buf, len(buf))):
+            text = str(buf.value or "").strip()
+            if text:
+                return text
+    except Exception:
+        pass
+    return f"mci_error_{code}"
+
+
+def _mci_send_string(command: str, *, return_length: int = 0) -> tuple[int, str]:
+    winmm = ctypes.windll.winmm
+    if return_length > 0:
+        buf = ctypes.create_unicode_buffer(return_length)
+        code = int(winmm.mciSendStringW(command, buf, return_length, None))
+        return code, str(buf.value or "")
+    code = int(winmm.mciSendStringW(command, None, 0, None))
+    return code, ""
+
+
+def _close_mci_alias(alias: str):
+    if not alias:
+        return
+    try:
+        _mci_send_string(f"close {alias}")
+    except Exception:
+        pass
+
+
+def _watch_mci_alias(alias: str):
+    try:
+        while True:
+            time.sleep(0.25)
+            code, mode = _mci_send_string(f"status {alias} mode", return_length=64)
+            if code != 0:
+                break
+            if str(mode or "").strip().lower() not in {"playing", "paused", "seeking"}:
+                break
+    finally:
+        _close_mci_alias(alias)
+
+
+def _play_sound_file(path: str) -> tuple[bool, str | None]:
+    resolved = _sound_path_text(path)
+    if not resolved:
+        return False, "empty_sound_file"
+    if not os.path.isfile(resolved):
+        return False, "sound_file_not_found"
+    suffix = Path(resolved).suffix.lower()
+    if suffix == ".wav" and winsound is not None:
+        try:
+            winsound.PlaySound(
+                resolved,
+                winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+            )
+            return True, None
+        except Exception:
+            pass
+    alias = f"macro_sound_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    escaped = resolved.replace('"', '""')
+    open_cmds = [f'open "{escaped}" alias {alias}']
+    if suffix == ".wav":
+        open_cmds.insert(0, f'open "{escaped}" type waveaudio alias {alias}')
+    elif suffix in {".mp3", ".mp4", ".m4a", ".aac", ".wma", ".avi", ".wmv"}:
+        open_cmds.insert(0, f'open "{escaped}" type mpegvideo alias {alias}')
+    elif suffix in {".mid", ".midi", ".rmi"}:
+        open_cmds.insert(0, f'open "{escaped}" type sequencer alias {alias}')
+    open_error: str | None = None
+    opened = False
+    for cmd in open_cmds:
+        code, _ = _mci_send_string(cmd)
+        if code == 0:
+            opened = True
+            break
+        open_error = _mci_error_text(code)
+    if not opened:
+        return False, open_error or "sound_open_failed"
+    code, _ = _mci_send_string(f"play {alias}")
+    if code != 0:
+        _close_mci_alias(alias)
+        return False, _mci_error_text(code)
+    threading.Thread(target=_watch_mci_alias, args=(alias,), daemon=True).start()
+    return True, None
+
+
+def _play_alert_sound(sound_file: Optional[str] = None) -> tuple[bool, str | None, str | None]:
+    """Play configured sound file or fallback alert sound."""
+    sound_path = _sound_path_text(sound_file)
+    if sound_path:
+        played, error = _play_sound_file(sound_path)
+        return played, sound_path, error
     # Windows system notification sound (best-effort).
     try:
         user32 = ctypes.windll.user32
         if int(user32.MessageBeep(0x00000040)):
-            return True
+            return True, None, None
     except Exception:
         pass
     # Terminal bell fallback.
     try:
         sys.stdout.write("\a")
         sys.stdout.flush()
-        return True
+        return True, None, None
     except Exception:
-        return False
+        return False, None, "system_alert_failed"
 
 
 def _send_telegram_message(bot_token: str, chat_id: str, message: str, *, timeout_sec: float = 8.0) -> tuple[bool, str | None]:
@@ -706,6 +815,7 @@ class Action:
     hold_keep_on_pause: bool = False
     timer_index: Optional[int] = None
     timer_value: Optional[float] = None
+    sound_file: Optional[str] = None
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
     telegram_message: Optional[str] = None
@@ -905,6 +1015,9 @@ class Action:
                 key_resolved = resolver.resolve(key_raw, "key")
             except Exception:
                 key_resolved = key_raw
+        sound_file = None
+        if typ == "sound_alert":
+            sound_file = data.get("sound_file", data.get("sound_path"))
         telegram_bot_token = None
         telegram_chat_id = None
         telegram_message = None
@@ -949,6 +1062,7 @@ class Action:
             hold_keep_on_pause=bool(data.get("hold_keep_on_pause", False)),
             timer_index=timer_index,
             timer_value=timer_value,
+            sound_file=str(sound_file) if sound_file is not None else None,
             telegram_bot_token=str(telegram_bot_token) if telegram_bot_token is not None else None,
             telegram_chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
             telegram_message=str(telegram_message) if telegram_message is not None else None,
@@ -986,6 +1100,7 @@ class Action:
             "hold_keep_on_pause": getattr(self, "hold_keep_on_pause", False),
             "timer_index": self.timer_index,
             "timer_value": self.timer_value,
+            "sound_file": self.sound_file,
             "telegram_bot_token": self.telegram_bot_token,
             "telegram_chat_id": self.telegram_chat_id,
             "telegram_message": self.telegram_message,
@@ -1966,6 +2081,12 @@ class MacroRunner:
             }
         if action.type == "timer":
             detail["timer"] = {"slot": action.timer_index, "value": action.timer_value}
+        if action.type == "sound_alert":
+            sound_path = str(getattr(action, "sound_file", "") or "").strip()
+            detail["sound_alert"] = {
+                "sound_file": sound_path or None,
+                "mode": "file" if sound_path else "system",
+            }
         if action.type == "telegram_message":
             msg = str(getattr(action, "telegram_message", "") or "")
             preview = msg.replace("\n", " ").strip()
@@ -2305,11 +2426,29 @@ class MacroRunner:
             return end_result(status="sleep", duration=sleep_ms)
 
         if action.type == "sound_alert":
-            played = _play_alert_sound()
+            sound_file = str(getattr(action, "sound_file", "") or "").strip()
+            played, resolved_sound_file, sound_error = _play_alert_sound(sound_file or None)
             if not played:
-                self.engine._emit_log("소리 알림 재생 실패")
-            self.engine._emit_event({"type": "action", "action": "sound_alert", "played": played})
-            return end_result(status="sound" if played else "sound_failed", played=played)
+                if resolved_sound_file:
+                    self.engine._emit_log(
+                        f"사운드 파일 재생 실패: {resolved_sound_file} ({sound_error or 'unknown_error'})"
+                    )
+                else:
+                    self.engine._emit_log("소리 알림 재생 실패")
+            self.engine._emit_event(
+                {
+                    "type": "action",
+                    "action": "sound_alert",
+                    "played": played,
+                    "sound_file": resolved_sound_file,
+                }
+            )
+            return end_result(
+                status="sound" if played else "sound_failed",
+                played=played,
+                sound_file=resolved_sound_file,
+                error=sound_error,
+            )
 
         if action.type == "telegram_message":
             token_raw = str(getattr(action, "telegram_bot_token", "") or "").strip()
