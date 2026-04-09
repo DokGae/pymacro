@@ -276,6 +276,53 @@ ACTION_TYPE_OPTIONS = [
 SOUND_FILE_DIALOG_FILTER = (
     "Audio Files (*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.wma *.mid *.midi);;All Files (*.*)"
 )
+SOUND_WAIT_MODE_OPTIONS = [
+    ("1회 재생 후 다음 액션", "once"),
+    ("지정 시간 재생 후 다음 액션", "duration"),
+    ("지정 횟수 재생 후 다음 액션", "repeat"),
+]
+
+
+def _format_sound_wait_suffix(wait_mode: Any, duration_sec: Any, repeat_count: Any) -> str:
+    mode = str(wait_mode or "once").strip().lower()
+    if mode == "duration":
+        try:
+            value = max(0.0, float(duration_sec or 0.0))
+        except Exception:
+            value = 0.0
+        return f" / {value:g}초" if value > 0 else " / 0초"
+    if mode == "repeat":
+        try:
+            value = max(1, int(repeat_count or 1))
+        except Exception:
+            value = 1
+        return f" x{value}"
+    return ""
+
+
+def _format_sound_alert_brief(
+    sound_file: Any,
+    *,
+    wait_mode: Any = "once",
+    duration_sec: Any = None,
+    repeat_count: Any = 1,
+) -> str:
+    sound_path = str(sound_file or "").strip()
+    base = _elide_middle(Path(sound_path).name or sound_path, 34) if sound_path else "시스템 알림음"
+    return base + _format_sound_wait_suffix(wait_mode, duration_sec, repeat_count)
+
+
+def _format_sound_alert_event_text(detail: Any) -> str:
+    if not isinstance(detail, dict):
+        return ""
+    sound_file = str(detail.get("sound_file") or "").strip()
+    extra = _format_sound_wait_suffix(detail.get("wait_mode"), detail.get("duration_sec"), detail.get("repeat_count"))
+    if sound_file:
+        return f"(파일={Path(sound_file).name or sound_file}{extra})"
+    if extra:
+        return f"(시스템 알림음{extra})"
+    return "(시스템 알림음)"
+
 _VK_TO_MACRO_KEY: dict[int, str] = {
     8: "backspace",
     9: "tab",
@@ -5430,11 +5477,15 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if act.type == "macro_stop":
             return "현재 매크로 중지" + suffix
         if act.type == "sound_alert":
-            sound_path = str(getattr(act, "sound_file", "") or "").strip()
-            if sound_path:
-                sound_name = Path(sound_path).name or sound_path
-                return _elide_middle(sound_name, 34) + suffix
-            return "시스템 알림음" + suffix
+            return (
+                _format_sound_alert_brief(
+                    getattr(act, "sound_file", ""),
+                    wait_mode=getattr(act, "sound_wait_mode", "once"),
+                    duration_sec=getattr(act, "sound_duration_sec", None),
+                    repeat_count=getattr(act, "sound_repeat_count", 1),
+                )
+                + suffix
+            )
         if act.type == "telegram_message":
             chat_id = str(getattr(act, "telegram_chat_id", "") or "").strip()
             msg = str(getattr(act, "telegram_message", "") or "").strip()
@@ -5929,6 +5980,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._existing_children: List[Action] = []
         self._existing_else: List[Action] = []
         self._existing_elifs: List[tuple[Condition, List[Action]]] = []
+        self._updating_action_key_builder = False
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
         self.type_combo = QtWidgets.QComboBox()
@@ -5966,7 +6018,26 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.force_first_check = QtWidgets.QCheckBox("첫 입력 1회 무조건 실행(트리거 상태 무시)")
         self.force_first_check.setToolTip("트리거가 풀려도 첫 사이클을 한 번은 끝까지 실행")
         self.key_edit = QtWidgets.QLineEdit()
-        self.key_edit.setPlaceholderText("예: r / space / ctrl+shift+t")
+        self.key_edit.setPlaceholderText("예: r / space (조합은 아래 체크박스로 설정)")
+        self.action_mod_ctrl = QtWidgets.QCheckBox("Ctrl")
+        self.action_mod_shift = QtWidgets.QCheckBox("Shift")
+        self.action_mod_alt = QtWidgets.QCheckBox("Alt")
+        self.action_mod_win = QtWidgets.QCheckBox("Win")
+        self.action_main_key_edit = QtWidgets.QLineEdit()
+        self.action_main_key_edit.setPlaceholderText("주 키 (예: 2, r, f1)")
+        self.action_main_key_edit.setClearButtonEnabled(True)
+        action_key_builder_row = QtWidgets.QWidget()
+        action_key_builder_layout = QtWidgets.QHBoxLayout(action_key_builder_row)
+        action_key_builder_layout.setContentsMargins(0, 0, 0, 0)
+        for chk in (
+            self.action_mod_ctrl,
+            self.action_mod_shift,
+            self.action_mod_alt,
+            self.action_mod_win,
+        ):
+            action_key_builder_layout.addWidget(chk)
+        action_key_builder_layout.addWidget(self.action_main_key_edit, stretch=1)
+        self.action_key_builder_row = action_key_builder_row
         self.mouse_button_combo = QtWidgets.QComboBox()
         for label, val in [
             ("왼쪽 버튼 (mouse1)", "mouse1"),
@@ -6001,6 +6072,21 @@ class ActionEditDialog(QtWidgets.QDialog):
         sound_file_row.addWidget(self.sound_file_clear_btn)
         self.sound_file_wrap = QtWidgets.QWidget()
         self.sound_file_wrap.setLayout(sound_file_row)
+        self.sound_wait_mode_combo = QtWidgets.QComboBox()
+        for label, value in SOUND_WAIT_MODE_OPTIONS:
+            self.sound_wait_mode_combo.addItem(label, value)
+        self.sound_duration_spin = QtWidgets.QDoubleSpinBox()
+        self.sound_duration_spin.setRange(0.1, 86400.0)
+        self.sound_duration_spin.setDecimals(2)
+        self.sound_duration_spin.setSingleStep(0.1)
+        self.sound_duration_spin.setValue(3.0)
+        self.sound_duration_spin.setSuffix(" 초")
+        self.sound_duration_spin.setToolTip("사운드 파일을 이 시간만큼 재생한 뒤 다음 액션으로 넘어갑니다.")
+        self.sound_repeat_spin = QtWidgets.QSpinBox()
+        self.sound_repeat_spin.setRange(1, 999999)
+        self.sound_repeat_spin.setValue(1)
+        self.sound_repeat_spin.setSuffix(" 회")
+        self.sound_repeat_spin.setToolTip("사운드 파일 또는 시스템 알림음을 지정한 횟수만큼 재생한 뒤 다음 액션으로 넘어갑니다.")
         self.label_edit = QtWidgets.QLineEdit()
         self.goto_combo = QtWidgets.QComboBox()
         self.goto_combo.setEditable(False)
@@ -6096,6 +6182,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow(self.once_check)
         form.addRow(self.force_first_check)
         form.addRow("키", self.key_edit)
+        form.addRow("조합 구성", self.action_key_builder_row)
         form.addRow("", self.key_warn_label)
         form.addRow("마우스 버튼", self.mouse_button_combo)
         form.addRow("마우스 이동 기준", self.mouse_pos_mode_combo)
@@ -6105,6 +6192,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("일시중지 시 유지", self.pause_keep_check)
         form.addRow("Sleep(ms 또는 범위)", self.sleep_edit)
         form.addRow("사운드 파일(선택)", self.sound_file_wrap)
+        form.addRow("사운드 재생 방식", self.sound_wait_mode_combo)
+        form.addRow("사운드 재생 시간", self.sound_duration_spin)
+        form.addRow("사운드 반복 횟수", self.sound_repeat_spin)
         form.addRow("라벨 이름", self.label_edit)
         form.addRow("점프 대상 라벨", self.goto_combo)
         form.addRow("변수 이름", self.var_name_edit)
@@ -6147,7 +6237,17 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.edit_cond_btn.clicked.connect(self._edit_condition)
         self.type_combo.currentIndexChanged.connect(self._sync_fields)
         self.group_mode_combo.currentIndexChanged.connect(self._sync_fields)
-        self.key_edit.textEdited.connect(self._update_trigger_warning)
+        self.sound_wait_mode_combo.currentIndexChanged.connect(self._sync_fields)
+        for chk in (
+            self.action_mod_ctrl,
+            self.action_mod_shift,
+            self.action_mod_alt,
+            self.action_mod_win,
+        ):
+            chk.toggled.connect(self._sync_action_key_from_builder)
+        self.action_main_key_edit.textChanged.connect(self._sync_action_key_from_builder)
+        self.key_edit.textChanged.connect(self._sync_action_key_builder_from_text)
+        self.key_edit.textChanged.connect(self._update_trigger_warning)
         self.mouse_button_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self.mouse_pos_mode_combo.currentIndexChanged.connect(self._sync_mouse_pos_hint)
         self.type_combo.currentIndexChanged.connect(self._update_trigger_warning)
@@ -6161,6 +6261,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         if action:
             self._load(action)
         else:
+            self._sync_action_key_builder_from_text()
             self._sync_fields()
             self._update_trigger_warning()
     def showEvent(self, event: QtGui.QShowEvent):
@@ -6173,6 +6274,47 @@ class ActionEditDialog(QtWidgets.QDialog):
     def _set_mouse_move_pos_mode(self, mode: str):
         idx = self.mouse_pos_mode_combo.findData(mode)
         self.mouse_pos_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+    def _sound_wait_mode(self) -> str:
+        mode = self.sound_wait_mode_combo.currentData()
+        return str(mode or "once")
+    def _sync_action_key_from_builder(self):
+        if self._updating_action_key_builder:
+            return
+        parts: list[str] = []
+        if self.action_mod_ctrl.isChecked():
+            parts.append("ctrl")
+        if self.action_mod_shift.isChecked():
+            parts.append("shift")
+        if self.action_mod_alt.isChecked():
+            parts.append("alt")
+        if self.action_mod_win.isChecked():
+            parts.append("win")
+        main = self.action_main_key_edit.text().strip()
+        if main:
+            parts.append(main)
+        combined = normalize_trigger_key("+".join(parts))
+        self._updating_action_key_builder = True
+        try:
+            self.key_edit.setText(combined)
+        finally:
+            self._updating_action_key_builder = False
+    def _sync_action_key_builder_from_text(self):
+        if self._updating_action_key_builder:
+            return
+        text = self.key_edit.text().strip()
+        keys = parse_trigger_keys(text)
+        mods = {k for k in keys if k in ("ctrl", "shift", "alt", "win")}
+        main_key = next((k for k in keys if k not in mods), "")
+        self._updating_action_key_builder = True
+        try:
+            self.action_mod_ctrl.setChecked("ctrl" in mods)
+            self.action_mod_shift.setChecked("shift" in mods)
+            self.action_mod_alt.setChecked("alt" in mods)
+            self.action_mod_win.setChecked("win" in mods)
+            self.action_main_key_edit.setText(main_key)
+            self.key_edit.setText(normalize_trigger_key(text))
+        finally:
+            self._updating_action_key_builder = False
     def _sync_mouse_pos_hint(self):
         relative = self._current_type() == "mouse_move" and self._mouse_move_pos_mode() == "relative"
         if relative:
@@ -6366,6 +6508,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_mouse_pos = typ in mouse_types
         show_sleep = typ == "sleep"
         show_sound = typ == "sound_alert"
+        sound_wait_mode = self._sound_wait_mode() if show_sound else "once"
+        show_sound_duration = show_sound and sound_wait_mode == "duration"
+        show_sound_repeat = show_sound and sound_wait_mode == "repeat"
         show_label = typ == "label"
         show_goto = typ == "goto"
         show_var = typ == "set_var"
@@ -6380,6 +6525,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_pause_keep = typ in ("down", "mouse_down")
         self._set_field_visible(self.key_edit, show_key)
         self.key_edit.setEnabled(show_key)
+        self._set_field_visible(self.action_key_builder_row, show_key)
+        self.action_key_builder_row.setEnabled(show_key)
         self._set_field_visible(self.mouse_button_combo, show_mouse_btn)
         self.mouse_button_combo.setEnabled(show_mouse_btn)
         self._set_field_visible(self.mouse_pos_mode_combo, show_mouse_move_mode)
@@ -6397,6 +6544,12 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._set_field_visible(self.sound_file_wrap, show_sound)
         for w in (self.sound_file_edit, self.sound_file_browse_btn, self.sound_file_clear_btn):
             w.setEnabled(show_sound)
+        self._set_field_visible(self.sound_wait_mode_combo, show_sound)
+        self.sound_wait_mode_combo.setEnabled(show_sound)
+        self._set_field_visible(self.sound_duration_spin, show_sound_duration)
+        self.sound_duration_spin.setEnabled(show_sound_duration)
+        self._set_field_visible(self.sound_repeat_spin, show_sound_repeat)
+        self.sound_repeat_spin.setEnabled(show_sound_repeat)
         self._set_field_visible(self.label_edit, show_label)
         self.label_edit.setEnabled(show_label)
         if show_goto:
@@ -6514,6 +6667,17 @@ class ActionEditDialog(QtWidgets.QDialog):
                 self.mouse_pos_edit.clear()
         self.sleep_edit.setText(act.sleep_value_text() if hasattr(act, "sleep_value_text") else "")
         self.sound_file_edit.setText(str(getattr(act, "sound_file", "") or ""))
+        sound_wait_mode = str(getattr(act, "sound_wait_mode", "once") or "once").strip().lower()
+        idx_sound_mode = self.sound_wait_mode_combo.findData(sound_wait_mode)
+        self.sound_wait_mode_combo.setCurrentIndex(idx_sound_mode if idx_sound_mode >= 0 else 0)
+        try:
+            self.sound_duration_spin.setValue(max(0.1, float(getattr(act, "sound_duration_sec", 3.0) or 3.0)))
+        except Exception:
+            self.sound_duration_spin.setValue(3.0)
+        try:
+            self.sound_repeat_spin.setValue(max(1, int(getattr(act, "sound_repeat_count", 1) or 1)))
+        except Exception:
+            self.sound_repeat_spin.setValue(1)
         self.label_edit.setText(act.label or "")
         self._refresh_goto_targets(act.goto_label or "")
         raw_region = act.pixel_region_raw or ",".join(str(v) for v in (act.pixel_region or []))
@@ -6677,6 +6841,18 @@ class ActionEditDialog(QtWidgets.QDialog):
             )
         elif typ == "sound_alert":
             act.sound_file = self.sound_file_edit.text().strip() or None
+            act.sound_wait_mode = self._sound_wait_mode()
+            act.sound_duration_sec = None
+            act.sound_repeat_count = 1
+            if act.sound_wait_mode == "duration":
+                if not act.sound_file:
+                    raise ValueError("시간 기준 사운드 재생은 사운드 파일을 선택하세요.")
+                duration_sec = float(self.sound_duration_spin.value())
+                if duration_sec <= 0:
+                    raise ValueError("사운드 재생 시간은 0보다 커야 합니다.")
+                act.sound_duration_sec = duration_sec
+            elif act.sound_wait_mode == "repeat":
+                act.sound_repeat_count = max(1, int(self.sound_repeat_spin.value()))
         elif typ == "label":
             act.label = self.label_edit.text().strip() or None
         elif typ == "goto":
@@ -10522,8 +10698,7 @@ class DebuggerDialog(QtWidgets.QDialog):
                 extra = f"(영역={region_txt}, 대상={target})"
             sd = detail.get("sound_alert") or event.get("sound_alert")
             if act_type == "sound_alert" and isinstance(sd, dict):
-                sound_file = str(sd.get("sound_file") or "").strip()
-                extra = f"(파일={Path(sound_file).name or sound_file})" if sound_file else "(시스템 알림음)"
+                extra = _format_sound_alert_event_text(sd)
             tg = detail.get("telegram") or event.get("telegram")
             if act_type == "telegram_message" and isinstance(tg, dict):
                 chat_id = tg.get("chat_id") or "-"
@@ -10550,8 +10725,7 @@ class DebuggerDialog(QtWidgets.QDialog):
                 extra = f"(영역={region_txt}, 대상={target})"
             sd = detail.get("sound_alert") or event.get("sound_alert")
             if act_type == "sound_alert" and isinstance(sd, dict):
-                sound_file = str(sd.get("sound_file") or "").strip()
-                extra = f"(파일={Path(sound_file).name or sound_file})" if sound_file else "(시스템 알림음)"
+                extra = _format_sound_alert_event_text(sd)
             tg = detail.get("telegram") or event.get("telegram")
             if act_type == "telegram_message" and isinstance(tg, dict):
                 chat_id = tg.get("chat_id") or "-"

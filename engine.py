@@ -21,10 +21,6 @@ from urllib import request as urllib_request
 
 import numpy as np
 from PIL import Image
-try:
-    import winsound
-except Exception:
-    winsound = None
 
 from lib.interception import Interception, KeyFilter, KeyState
 from lib.input_backend import InterceptionBackend, KeyboardBackendStatus, KeyDelayConfig, SoftwareBackend
@@ -67,6 +63,7 @@ ActionType = Literal[
     "telegram_message",
 ]
 GroupMode = Literal["all", "first_true", "first_true_continue", "first_true_return", "while", "repeat_n"]
+SoundWaitMode = Literal["once", "duration", "repeat"]
 StepType = Literal["press", "down", "up", "sleep", "if", "loop_while"]  # legacy 호환용
 MacroMode = Literal["hold", "toggle", "once"]
 VarCategory = Literal["sleep", "region", "color", "key", "var"]
@@ -129,35 +126,22 @@ def _close_mci_alias(alias: str):
         pass
 
 
-def _watch_mci_alias(alias: str):
-    try:
-        while True:
-            time.sleep(0.25)
-            code, mode = _mci_send_string(f"status {alias} mode", return_length=64)
-            if code != 0:
-                break
-            if str(mode or "").strip().lower() not in {"playing", "paused", "seeking"}:
-                break
-    finally:
-        _close_mci_alias(alias)
+def _wait_with_optional_stop(stop_event: threading.Event | None, seconds: float) -> bool:
+    if seconds <= 0:
+        return bool(stop_event is not None and stop_event.is_set())
+    if stop_event is not None:
+        return bool(stop_event.wait(seconds))
+    time.sleep(seconds)
+    return False
 
 
-def _play_sound_file(path: str) -> tuple[bool, str | None]:
+def _open_sound_alias(path: str) -> tuple[str | None, str | None, str | None]:
     resolved = _sound_path_text(path)
     if not resolved:
-        return False, "empty_sound_file"
+        return None, None, "empty_sound_file"
     if not os.path.isfile(resolved):
-        return False, "sound_file_not_found"
+        return resolved, None, "sound_file_not_found"
     suffix = Path(resolved).suffix.lower()
-    if suffix == ".wav" and winsound is not None:
-        try:
-            winsound.PlaySound(
-                resolved,
-                winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
-            )
-            return True, None
-        except Exception:
-            pass
     alias = f"macro_sound_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
     escaped = resolved.replace('"', '""')
     open_cmds = [f'open "{escaped}" alias {alias}']
@@ -168,43 +152,155 @@ def _play_sound_file(path: str) -> tuple[bool, str | None]:
     elif suffix in {".mid", ".midi", ".rmi"}:
         open_cmds.insert(0, f'open "{escaped}" type sequencer alias {alias}')
     open_error: str | None = None
-    opened = False
     for cmd in open_cmds:
         code, _ = _mci_send_string(cmd)
         if code == 0:
-            opened = True
-            break
+            return resolved, alias, None
         open_error = _mci_error_text(code)
-    if not opened:
-        return False, open_error or "sound_open_failed"
-    code, _ = _mci_send_string(f"play {alias}")
+    return resolved, None, open_error or "sound_open_failed"
+
+
+def _play_mci_alias(
+    alias: str,
+    *,
+    stop_event: threading.Event | None = None,
+    deadline: float | None = None,
+    poll_sec: float = 0.05,
+) -> tuple[bool, bool, str | None]:
+    code, _ = _mci_send_string(f"play {alias} from 0")
     if code != 0:
+        return False, False, _mci_error_text(code)
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            try:
+                _mci_send_string(f"stop {alias}")
+            except Exception:
+                pass
+            return False, True, None
+        if deadline is not None and time.monotonic() >= deadline:
+            try:
+                _mci_send_string(f"stop {alias}")
+            except Exception:
+                pass
+            return True, False, None
+        code, mode = _mci_send_string(f"status {alias} mode", return_length=64)
+        if code != 0:
+            return False, False, _mci_error_text(code)
+        mode_text = str(mode or "").strip().lower()
+        if mode_text not in {"playing", "paused", "seeking", "opening"}:
+            return True, False, None
+        wait_sec = max(0.01, float(poll_sec or 0.05))
+        if deadline is not None:
+            wait_sec = min(wait_sec, max(0.0, deadline - time.monotonic()))
+        if _wait_with_optional_stop(stop_event, wait_sec):
+            try:
+                _mci_send_string(f"stop {alias}")
+            except Exception:
+                pass
+            return False, True, None
+
+
+def _play_sound_file(
+    path: str,
+    *,
+    wait_mode: SoundWaitMode = "once",
+    duration_sec: float | None = None,
+    repeat_count: int = 1,
+    stop_event: threading.Event | None = None,
+    poll_sec: float = 0.05,
+) -> tuple[bool, str | None, bool, str | None]:
+    resolved, alias, open_error = _open_sound_alias(path)
+    if not alias:
+        return False, resolved, False, open_error
+    try:
+        mode: SoundWaitMode = wait_mode if wait_mode in ("once", "duration", "repeat") else "once"
+        if mode == "duration":
+            try:
+                target_duration = float(duration_sec or 0.0)
+            except Exception:
+                target_duration = 0.0
+            if target_duration <= 0:
+                return False, resolved, False, "invalid_sound_duration"
+            deadline = time.monotonic() + target_duration
+            while True:
+                ok, stopped, error = _play_mci_alias(alias, stop_event=stop_event, deadline=deadline, poll_sec=poll_sec)
+                if not ok:
+                    return False, resolved, stopped, error
+                if time.monotonic() >= deadline:
+                    return True, resolved, False, None
+        loops = 1
+        if mode == "repeat":
+            try:
+                loops = max(1, int(repeat_count or 1))
+            except Exception:
+                loops = 1
+        for _ in range(loops):
+            ok, stopped, error = _play_mci_alias(alias, stop_event=stop_event, poll_sec=poll_sec)
+            if not ok:
+                return False, resolved, stopped, error
+        return True, resolved, False, None
+    finally:
         _close_mci_alias(alias)
-        return False, _mci_error_text(code)
-    threading.Thread(target=_watch_mci_alias, args=(alias,), daemon=True).start()
-    return True, None
 
 
-def _play_alert_sound(sound_file: Optional[str] = None) -> tuple[bool, str | None, str | None]:
+def _play_system_alert(
+    *,
+    repeat_count: int = 1,
+    stop_event: threading.Event | None = None,
+    interval_sec: float = 0.35,
+) -> tuple[bool, bool, str | None]:
+    try:
+        loops = max(1, int(repeat_count or 1))
+    except Exception:
+        loops = 1
+    for idx in range(loops):
+        if stop_event is not None and stop_event.is_set():
+            return False, True, None
+        played = False
+        try:
+            user32 = ctypes.windll.user32
+            played = bool(int(user32.MessageBeep(0x00000040)))
+        except Exception:
+            played = False
+        if not played:
+            try:
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+                played = True
+            except Exception:
+                played = False
+        if not played:
+            return False, False, "system_alert_failed"
+        if idx + 1 < loops and _wait_with_optional_stop(stop_event, interval_sec):
+            return False, True, None
+    return True, False, None
+
+
+def _play_alert_sound(
+    sound_file: Optional[str] = None,
+    *,
+    wait_mode: SoundWaitMode = "once",
+    duration_sec: float | None = None,
+    repeat_count: int = 1,
+    stop_event: threading.Event | None = None,
+    poll_sec: float = 0.05,
+) -> tuple[bool, str | None, bool, str | None]:
     """Play configured sound file or fallback alert sound."""
     sound_path = _sound_path_text(sound_file)
     if sound_path:
-        played, error = _play_sound_file(sound_path)
-        return played, sound_path, error
-    # Windows system notification sound (best-effort).
-    try:
-        user32 = ctypes.windll.user32
-        if int(user32.MessageBeep(0x00000040)):
-            return True, None, None
-    except Exception:
-        pass
-    # Terminal bell fallback.
-    try:
-        sys.stdout.write("\a")
-        sys.stdout.flush()
-        return True, None, None
-    except Exception:
-        return False, None, "system_alert_failed"
+        return _play_sound_file(
+            sound_path,
+            wait_mode=wait_mode,
+            duration_sec=duration_sec,
+            repeat_count=repeat_count,
+            stop_event=stop_event,
+            poll_sec=poll_sec,
+        )
+    if wait_mode == "duration":
+        return False, None, False, "sound_file_required_for_duration"
+    loops = repeat_count if wait_mode == "repeat" else 1
+    played, stopped, error = _play_system_alert(repeat_count=loops, stop_event=stop_event)
+    return played, None, stopped, error
 
 
 def _send_telegram_message(bot_token: str, chat_id: str, message: str, *, timeout_sec: float = 8.0) -> tuple[bool, str | None]:
@@ -816,6 +912,9 @@ class Action:
     timer_index: Optional[int] = None
     timer_value: Optional[float] = None
     sound_file: Optional[str] = None
+    sound_wait_mode: SoundWaitMode = "once"
+    sound_duration_sec: Optional[float] = None
+    sound_repeat_count: int = 1
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
     telegram_message: Optional[str] = None
@@ -1016,8 +1115,30 @@ class Action:
             except Exception:
                 key_resolved = key_raw
         sound_file = None
+        sound_wait_mode: SoundWaitMode = "once"
+        sound_duration_sec: Optional[float] = None
+        sound_repeat_count = 1
         if typ == "sound_alert":
             sound_file = data.get("sound_file", data.get("sound_path"))
+            raw_mode = str(data.get("sound_wait_mode", data.get("sound_play_mode", "")) or "").strip().lower()
+            if raw_mode in ("once", "duration", "repeat"):
+                sound_wait_mode = raw_mode  # type: ignore[assignment]
+            raw_duration = data.get("sound_duration_sec", data.get("sound_duration"))
+            if raw_duration not in (None, ""):
+                try:
+                    sound_duration_sec = max(0.0, float(raw_duration))
+                except Exception:
+                    sound_duration_sec = None
+            raw_repeat = data.get("sound_repeat_count", data.get("sound_repeat", 1))
+            try:
+                sound_repeat_count = max(1, int(raw_repeat or 1))
+            except Exception:
+                sound_repeat_count = 1
+            if raw_mode not in ("once", "duration", "repeat"):
+                if sound_duration_sec not in (None, 0, 0.0):
+                    sound_wait_mode = "duration"
+                elif sound_repeat_count > 1:
+                    sound_wait_mode = "repeat"
         telegram_bot_token = None
         telegram_chat_id = None
         telegram_message = None
@@ -1063,6 +1184,9 @@ class Action:
             timer_index=timer_index,
             timer_value=timer_value,
             sound_file=str(sound_file) if sound_file is not None else None,
+            sound_wait_mode=sound_wait_mode,
+            sound_duration_sec=sound_duration_sec,
+            sound_repeat_count=sound_repeat_count,
             telegram_bot_token=str(telegram_bot_token) if telegram_bot_token is not None else None,
             telegram_chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
             telegram_message=str(telegram_message) if telegram_message is not None else None,
@@ -1101,6 +1225,9 @@ class Action:
             "timer_index": self.timer_index,
             "timer_value": self.timer_value,
             "sound_file": self.sound_file,
+            "sound_wait_mode": getattr(self, "sound_wait_mode", "once"),
+            "sound_duration_sec": self.sound_duration_sec,
+            "sound_repeat_count": max(1, int(getattr(self, "sound_repeat_count", 1) or 1)),
             "telegram_bot_token": self.telegram_bot_token,
             "telegram_chat_id": self.telegram_chat_id,
             "telegram_message": self.telegram_message,
@@ -2083,9 +2210,21 @@ class MacroRunner:
             detail["timer"] = {"slot": action.timer_index, "value": action.timer_value}
         if action.type == "sound_alert":
             sound_path = str(getattr(action, "sound_file", "") or "").strip()
+            wait_mode = str(getattr(action, "sound_wait_mode", "once") or "once").strip().lower()
+            try:
+                duration_sec = float(getattr(action, "sound_duration_sec", 0.0) or 0.0)
+            except Exception:
+                duration_sec = 0.0
+            try:
+                repeat_count = max(1, int(getattr(action, "sound_repeat_count", 1) or 1))
+            except Exception:
+                repeat_count = 1
             detail["sound_alert"] = {
                 "sound_file": sound_path or None,
-                "mode": "file" if sound_path else "system",
+                "source_mode": "file" if sound_path else "system",
+                "wait_mode": wait_mode,
+                "duration_sec": duration_sec if wait_mode == "duration" else None,
+                "repeat_count": repeat_count if wait_mode == "repeat" else 1,
             }
         if action.type == "telegram_message":
             msg = str(getattr(action, "telegram_message", "") or "")
@@ -2427,12 +2566,43 @@ class MacroRunner:
 
         if action.type == "sound_alert":
             sound_file = str(getattr(action, "sound_file", "") or "").strip()
-            played, resolved_sound_file, sound_error = _play_alert_sound(sound_file or None)
+            sound_wait_mode = str(getattr(action, "sound_wait_mode", "once") or "once").strip().lower()
+            if sound_wait_mode not in ("once", "duration", "repeat"):
+                sound_wait_mode = "once"
+            try:
+                sound_duration_sec = float(getattr(action, "sound_duration_sec", 0.0) or 0.0)
+            except Exception:
+                sound_duration_sec = 0.0
+            try:
+                sound_repeat_count = max(1, int(getattr(action, "sound_repeat_count", 1) or 1))
+            except Exception:
+                sound_repeat_count = 1
+            poll_sec = max(0.02, min(0.10, float(getattr(self.engine, "tick", 0.05) or 0.05)))
+            played, resolved_sound_file, sound_stopped, sound_error = _play_alert_sound(
+                sound_file or None,
+                wait_mode=sound_wait_mode,  # type: ignore[arg-type]
+                duration_sec=sound_duration_sec,
+                repeat_count=sound_repeat_count,
+                stop_event=self._stop_event,
+                poll_sec=poll_sec,
+            )
+            if sound_stopped and not self._running_stop_actions:
+                return end_result(
+                    signal="break",
+                    status="stopped",
+                    played=False,
+                    sound_file=resolved_sound_file,
+                    wait_mode=sound_wait_mode,
+                    duration_sec=sound_duration_sec if sound_wait_mode == "duration" else None,
+                    repeat_count=sound_repeat_count if sound_wait_mode == "repeat" else 1,
+                )
             if not played:
                 if resolved_sound_file:
                     self.engine._emit_log(
                         f"사운드 파일 재생 실패: {resolved_sound_file} ({sound_error or 'unknown_error'})"
                     )
+                elif sound_error == "sound_file_required_for_duration":
+                    self.engine._emit_log("사운드 시간 재생은 파일 선택이 필요합니다.")
                 else:
                     self.engine._emit_log("소리 알림 재생 실패")
             self.engine._emit_event(
@@ -2441,12 +2611,18 @@ class MacroRunner:
                     "action": "sound_alert",
                     "played": played,
                     "sound_file": resolved_sound_file,
+                    "wait_mode": sound_wait_mode,
+                    "duration_sec": sound_duration_sec if sound_wait_mode == "duration" else None,
+                    "repeat_count": sound_repeat_count if sound_wait_mode == "repeat" else 1,
                 }
             )
             return end_result(
                 status="sound" if played else "sound_failed",
                 played=played,
                 sound_file=resolved_sound_file,
+                wait_mode=sound_wait_mode,
+                duration_sec=sound_duration_sec if sound_wait_mode == "duration" else None,
+                repeat_count=sound_repeat_count if sound_wait_mode == "repeat" else 1,
                 error=sound_error,
             )
 
