@@ -270,6 +270,7 @@ ACTION_TYPE_OPTIONS = [
     ("마우스 이동", "mouse_move"),
     ("대기 (sleep)", "sleep"),
     ("소리 알림", "sound_alert"),
+    ("다른 매크로 1사이클 실행", "macro_cycle"),
     ("타이머 설정", "timer"),
     ("텔레그램 메시지", "telegram_message"),
 ]
@@ -5469,6 +5470,9 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             return (act.goto_label or act.label or "") + suffix
         if act.type == "label":
             return (act.label or "") + suffix
+        if act.type == "macro_cycle":
+            target = str(getattr(act, "macro_target", "") or "").strip() or "대상 없음"
+            return f"{target} (1사이클)" + suffix
         if act.type == "pixel_get":
             region_text = act.pixel_region_raw or (
                 ",".join(str(v) for v in act.pixel_region) if act.pixel_region else ""
@@ -5949,6 +5953,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         pattern_provider=None,
         open_pattern_manager=None,
         trigger_keys_provider=None,
+        macro_list_provider=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("액션 설정")
@@ -5976,6 +5981,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._pattern_provider = pattern_provider
         self._open_pattern_manager = open_pattern_manager
         self._trigger_keys_provider = trigger_keys_provider
+        self._macro_list_provider = macro_list_provider
         self._condition: Condition | None = None
         self._existing_children: List[Action] = []
         self._existing_else: List[Action] = []
@@ -5994,6 +6000,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("마우스 이동", "mouse_move"),
             ("대기 (sleep)", "sleep"),
             ("소리 알림", "sound_alert"),
+            ("다른 매크로 1사이클 실행", "macro_cycle"),
             ("텔레그램 메시지", "telegram_message"),
             ("현재 매크로 중지 (macro_stop)", "macro_stop"),
             ("변수 설정 (set_var)", "set_var"),
@@ -6098,6 +6105,16 @@ class ActionEditDialog(QtWidgets.QDialog):
             self._refresh_goto_targets()
             _orig_show_popup()
         self.goto_combo.showPopup = _show_popup
+        self.macro_target_combo = QtWidgets.QComboBox()
+        self.macro_target_combo.setEditable(False)
+        self.macro_target_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.macro_target_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._refresh_macro_targets()
+        _orig_macro_popup = self.macro_target_combo.showPopup
+        def _show_macro_popup():
+            self._refresh_macro_targets()
+            _orig_macro_popup()
+        self.macro_target_combo.showPopup = _show_macro_popup
         self.var_name_edit = QtWidgets.QLineEdit()
         self.var_value_edit = QtWidgets.QLineEdit()
         self.telegram_token_edit = QtWidgets.QLineEdit()
@@ -6197,6 +6214,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("사운드 반복 횟수", self.sound_repeat_spin)
         form.addRow("라벨 이름", self.label_edit)
         form.addRow("점프 대상 라벨", self.goto_combo)
+        form.addRow("실행할 매크로", self.macro_target_combo)
         form.addRow("변수 이름", self.var_name_edit)
         form.addRow("변수 값", self.var_value_edit)
         form.addRow("텔레그램 봇 토큰", self.telegram_token_edit)
@@ -6268,6 +6286,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         super().showEvent(event)
         if self._current_type() == "goto":
             self._refresh_goto_targets()
+        elif self._current_type() == "macro_cycle":
+            self._refresh_macro_targets()
     def _mouse_move_pos_mode(self) -> str:
         mode = self.mouse_pos_mode_combo.currentData()
         return str(mode or "absolute")
@@ -6496,6 +6516,39 @@ class ActionEditDialog(QtWidgets.QDialog):
             current_idx = self.goto_combo.count() - 1
         self.goto_combo.setCurrentIndex(current_idx)
         self.goto_combo.blockSignals(False)
+    def _refresh_macro_targets(self, preserve: str | None = None):
+        current = preserve if preserve is not None else self.macro_target_combo.currentData()
+        current_text = str(current or "").strip()
+        self.macro_target_combo.blockSignals(True)
+        self.macro_target_combo.clear()
+        self.macro_target_combo.addItem("매크로를 선택하세요", "")
+        items: list[str] = []
+        try:
+            if callable(self._macro_list_provider):
+                items = self._macro_list_provider() or []
+        except Exception:
+            items = []
+        uniq: list[str] = []
+        seen = set()
+        for name in items:
+            text = str(name or "").strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(text)
+        current_idx = 0
+        for name in uniq:
+            self.macro_target_combo.addItem(name, name)
+            if current_text and name == current_text:
+                current_idx = self.macro_target_combo.count() - 1
+        if current_text and current_idx == 0 and current_text.lower() not in seen:
+            self.macro_target_combo.addItem(f"{current_text} (삭제됨)", current_text)
+            current_idx = self.macro_target_combo.count() - 1
+        self.macro_target_combo.setCurrentIndex(current_idx)
+        self.macro_target_combo.blockSignals(False)
     def _current_type(self) -> str:
         return self.type_combo.currentData()
     def _sync_fields(self):
@@ -6513,6 +6566,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_sound_repeat = show_sound and sound_wait_mode == "repeat"
         show_label = typ == "label"
         show_goto = typ == "goto"
+        show_macro_target = typ == "macro_cycle"
         show_var = typ == "set_var"
         show_telegram = typ == "telegram_message"
         show_timer = typ == "timer"
@@ -6556,6 +6610,10 @@ class ActionEditDialog(QtWidgets.QDialog):
             self._refresh_goto_targets()
         self._set_field_visible(self.goto_combo, show_goto)
         self.goto_combo.setEnabled(show_goto)
+        if show_macro_target:
+            self._refresh_macro_targets()
+        self._set_field_visible(self.macro_target_combo, show_macro_target)
+        self.macro_target_combo.setEnabled(show_macro_target)
         self._set_field_visible(self.var_name_edit, show_var)
         self._set_field_visible(self.var_value_edit, show_var)
         for w in (self.var_name_edit, self.var_value_edit):
@@ -6680,6 +6738,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.sound_repeat_spin.setValue(1)
         self.label_edit.setText(act.label or "")
         self._refresh_goto_targets(act.goto_label or "")
+        self._refresh_macro_targets(getattr(act, "macro_target", None) or "")
         raw_region = act.pixel_region_raw or ",".join(str(v) for v in (act.pixel_region or []))
         base_txt, offset_txt = _split_region_offset(raw_region) if raw_region else ("", "")
         self.region_edit.setText(base_txt)
@@ -6860,6 +6919,11 @@ class ActionEditDialog(QtWidgets.QDialog):
             if not goto_val:
                 raise ValueError("점프할 라벨을 선택하세요.")
             act.goto_label = str(goto_val).strip()
+        elif typ == "macro_cycle":
+            macro_target = str(self.macro_target_combo.currentData() or "").strip()
+            if not macro_target:
+                raise ValueError("실행할 매크로를 선택하세요.")
+            act.macro_target = macro_target
         elif typ == "set_var":
             var_name = self.var_name_edit.text().strip()
             if not var_name:
@@ -7889,6 +7953,7 @@ class MacroDialog(QtWidgets.QDialog):
             pattern_provider=self._pattern_names,
             open_pattern_manager=self._open_pattern_manager,
             trigger_keys_provider=self._current_trigger_keys,
+            macro_list_provider=self._macro_list_provider,
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -8147,11 +8212,12 @@ class MacroDialog(QtWidgets.QDialog):
                 save_image_viewer_state=self._save_image_viewer_state,
                 open_screenshot_dialog=self._open_screenshot_dialog_fn,
                 screenshot_hotkeys_provider=self._screenshot_hotkeys_provider,
-            screenshot_manager=self._screenshot_manager,
-            pattern_provider=self._pattern_names,
-            open_pattern_manager=self._open_pattern_manager,
-            trigger_keys_provider=self._current_trigger_keys,
-        )
+                screenshot_manager=self._screenshot_manager,
+                pattern_provider=self._pattern_names,
+                open_pattern_manager=self._open_pattern_manager,
+                trigger_keys_provider=self._current_trigger_keys,
+                macro_list_provider=self._macro_list_provider,
+            )
             if _run_dialog_non_modal(dlg):
                 try:
                     new_act = dlg.get_action()
@@ -8239,6 +8305,7 @@ class MacroDialog(QtWidgets.QDialog):
             pattern_provider=self._pattern_names,
             open_pattern_manager=self._open_pattern_manager,
             trigger_keys_provider=self._current_trigger_keys,
+            macro_list_provider=self._macro_list_provider,
         )
         if _run_dialog_non_modal(dlg):
             try:

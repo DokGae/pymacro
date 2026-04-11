@@ -48,6 +48,7 @@ ActionType = Literal[
     "mouse_move",
     "sleep",
     "sound_alert",
+    "macro_cycle",
     "macro_stop",
     "if",
     "label",
@@ -899,6 +900,7 @@ class Action:
     else_actions: List["Action"] = field(default_factory=list)
     label: Optional[str] = None
     goto_label: Optional[str] = None
+    macro_target: Optional[str] = None
     mouse_button: Optional[str] = None
     mouse_pos: Optional[tuple[int, int]] = None
     mouse_pos_raw: Optional[str] = None
@@ -1171,6 +1173,7 @@ class Action:
             else_actions=else_actions,
             label=data.get("label"),
             goto_label=data.get("goto_label"),
+            macro_target=data.get("macro_target", data.get("macro_name")),
             mouse_button=data.get("mouse_button") or data.get("button"),
             mouse_pos=mouse_pos,
             mouse_pos_raw=mouse_pos_raw,
@@ -1212,6 +1215,7 @@ class Action:
             "condition": self.condition.to_dict() if self.condition else None,
             "label": self.label,
             "goto_label": self.goto_label,
+            "macro_target": self.macro_target,
             "mouse_button": self.mouse_button,
             "mouse_pos": list(self.mouse_pos) if self.mouse_pos is not None else None,
             "mouse_pos_raw": self.mouse_pos_raw,
@@ -2104,6 +2108,8 @@ class MacroRunner:
         self._start_cycle = 0
         self._release_inputs_on_stop = True
         self._terminal_status: str = "idle"
+        root_stack_key = f"{self.index}:{self._macro_identifier()}" if self.index is not None else self._macro_identifier()
+        self._macro_call_stack: Tuple[str, ...] = (root_stack_key,)
 
     def _has_force_first_action(self, actions: List[Action]) -> bool:
         for act in actions:
@@ -2208,6 +2214,8 @@ class MacroRunner:
             }
         if action.type == "timer":
             detail["timer"] = {"slot": action.timer_index, "value": action.timer_value}
+        if action.type == "macro_cycle":
+            detail["macro_cycle"] = {"target": getattr(action, "macro_target", None)}
         if action.type == "sound_alert":
             sound_path = str(getattr(action, "sound_file", "") or "").strip()
             wait_mode = str(getattr(action, "sound_wait_mode", "once") or "once").strip().lower()
@@ -2358,6 +2366,27 @@ class MacroRunner:
 
     def terminal_status(self) -> str:
         return str(getattr(self, "_terminal_status", "unknown") or "unknown")
+
+    def _release_new_nested_holds(self, held_keys_before: Set[str], held_mouse_before: Set[str]):
+        with self._held_lock:
+            new_keys = [key for key in list(self._held_keys) if key not in held_keys_before]
+            new_mouse = [button for button in list(self._held_mouse) if button not in held_mouse_before]
+            for key in new_keys:
+                self._held_keys.discard(key)
+                self._held_key_policy.pop(key, None)
+            for button in new_mouse:
+                self._held_mouse.discard(button)
+                self._held_mouse_policy.pop(button, None)
+        for key in new_keys:
+            try:
+                self.engine._send_key("up", key, hold_ms=0)
+            except Exception:
+                pass
+        for button in new_mouse:
+            try:
+                self.engine._send_mouse("mouse_up", button, hold_ms=0)
+            except Exception:
+                pass
 
     def _run_stop_actions(self):
         if self._stop_actions_run:
@@ -2774,6 +2803,79 @@ class MacroRunner:
                 self._sleep_with_condition_poll(gap_delay, allow_condition=False)
             return end_result()
 
+        if action.type == "macro_cycle":
+            target_ref = str(getattr(action, "macro_target", "") or "").strip()
+            if not target_ref:
+                self.engine._emit_log("실행할 매크로가 선택되지 않았습니다.")
+                return end_result(status="error", error="missing_macro_target")
+            resolved = self.engine._resolve_macro_reference(target_ref, exclude_idx=self.index)
+            if not resolved:
+                self.engine._emit_log(f"실행 대상 매크로를 찾을 수 없습니다: {target_ref}")
+                return end_result(status="error", error="macro_target_not_found", macro_target=target_ref)
+            target_idx, target_macro = resolved
+            target_label = self.engine._macro_display_name(target_macro, target_idx)
+            target_id = self.engine._macro_identifier(target_macro, target_idx)
+            target_stack_key = f"{target_idx}:{target_id}" if target_idx is not None else target_id
+            if target_stack_key in getattr(self, "_macro_call_stack", ()):
+                self.engine._emit_log(f"재귀 매크로 호출 차단: {target_label}")
+                return end_result(status="error", error="macro_target_recursive", macro_target=target_label)
+
+            prev_macro = self.macro
+            prev_index = self.index
+            prev_seq_map = self._seq_map
+            prev_seq_counter = self._seq_counter
+            prev_if_false_streaks = self._if_false_streaks
+            prev_cond_key_states = self._cond_key_states
+            prev_cycle = getattr(self, "_current_cycle", 0)
+            prev_call_stack = getattr(self, "_macro_call_stack", ())
+            held_keys_before, held_mouse_before = self.snapshot_held_inputs()
+
+            nested_labels = self._label_index(target_macro.actions)
+            self.macro = target_macro
+            self.index = target_idx
+            self._seq_map = {}
+            self._seq_counter = 1
+            self._build_seq_map(target_macro.actions, [])
+            self._if_false_streaks = {}
+            self._cond_key_states = {}
+            self._current_cycle = 0
+            self._macro_call_stack = prev_call_stack + (target_stack_key,)
+
+            try:
+                nested_result = self._run_actions(
+                    target_macro.actions,
+                    nested_labels,
+                    root=True,
+                    path=path + [f"macro_cycle:{target_label}"],
+                    idx_path=[],
+                )
+            finally:
+                self._release_new_nested_holds(held_keys_before, held_mouse_before)
+                self.macro = prev_macro
+                self.index = prev_index
+                self._seq_map = prev_seq_map
+                self._seq_counter = prev_seq_counter
+                self._if_false_streaks = prev_if_false_streaks
+                self._cond_key_states = prev_cond_key_states
+                self._current_cycle = prev_cycle
+                self._macro_call_stack = prev_call_stack
+
+            if self._stop_event.is_set() and not self._running_stop_actions:
+                return end_result(signal="break", status="stopped", macro_target=target_label)
+            if nested_result.signal == "goto":
+                self.engine._emit_log(f"하위 매크로 점프 실패: {target_label} -> {nested_result.goto_label}")
+                return end_result(
+                    status="error",
+                    error="macro_target_goto_not_found",
+                    macro_target=target_label,
+                    goto_label=nested_result.goto_label,
+                )
+            return end_result(
+                status="macro_cycle",
+                macro_target=target_label,
+                condition_hit=getattr(nested_result, "condition_hit", False),
+            )
+
         if action.type == "label":
             return end_result(status="label")
 
@@ -2791,6 +2893,23 @@ class MacroRunner:
 
         if action.type == "macro_stop":
             # 현재 매크로를 즉시 중단한다.
+            if len(getattr(self, "_macro_call_stack", ())) > 1:
+                stop_actions = getattr(self.macro, "stop_actions", []) or []
+                if stop_actions and not self._running_stop_actions:
+                    stop_labels = self._label_index(stop_actions)
+                    prev_running_stop_actions = self._running_stop_actions
+                    self._running_stop_actions = True
+                    try:
+                        self._run_actions(
+                            copy.deepcopy(stop_actions),
+                            stop_labels,
+                            root=True,
+                            path=path + [f"{self._macro_label()}-on_stop"],
+                            idx_path=[],
+                        )
+                    finally:
+                        self._running_stop_actions = prev_running_stop_actions
+                return end_result(signal="break", status="macro_stop")
             self._terminal_status = "macro_stop"
             self.stop()
             return end_result(signal="break", status="macro_stop")
@@ -3200,6 +3319,57 @@ class MacroEngine:
         if key:
             return key.lower()
         return f"macro-{idx}" if idx is not None else "macro-unknown"
+
+    def _macro_display_name(self, macro: Macro, idx: Optional[int]) -> str:
+        if getattr(macro, "name", None):
+            try:
+                name = str(macro.name).strip()
+            except Exception:
+                name = ""
+            if name:
+                return name
+        try:
+            trigger = str(macro.trigger_label(include_mode=False)).strip()
+        except Exception:
+            trigger = ""
+        if trigger:
+            return trigger
+        try:
+            key = str(getattr(macro, "trigger_key", "") or "").strip()
+        except Exception:
+            key = ""
+        if key:
+            return key
+        return f"macro-{idx}" if idx is not None else "macro-unknown"
+
+    def _resolve_macro_reference(self, target: str, *, exclude_idx: Optional[int] = None) -> Optional[Tuple[int, Macro]]:
+        key = str(target or "").strip().lower()
+        if not key:
+            return None
+        exact_display: list[Tuple[int, Macro]] = []
+        other_matches: list[Tuple[int, Macro]] = []
+        for idx, macro in enumerate(list(getattr(self._profile, "macros", []) or [])):
+            if exclude_idx is not None and idx == exclude_idx:
+                continue
+            display = self._macro_display_name(macro, idx).strip().lower()
+            ident = self._macro_identifier(macro, idx).strip().lower()
+            trigger_key = ""
+            try:
+                trigger_key = str(getattr(macro, "trigger_key", "") or "").strip().lower()
+            except Exception:
+                trigger_key = ""
+            if display and display == key:
+                exact_display.append((idx, macro))
+                continue
+            if key and key in {ident, trigger_key}:
+                other_matches.append((idx, macro))
+        if len(exact_display) == 1:
+            return exact_display[0]
+        if len(exact_display) > 1:
+            return None
+        if len(other_matches) == 1:
+            return other_matches[0]
+        return None
 
     def set_debug_image_override(self, frame: Optional[np.ndarray], *, label: str | None = None):
         self._debug_image_override = frame
