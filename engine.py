@@ -22,7 +22,7 @@ from urllib import request as urllib_request
 import numpy as np
 from PIL import Image
 
-from lib.interception import Interception, KeyFilter, KeyState
+from lib.interception import Interception, KeyFilter, KeyState, MouseFilter, MouseState
 from lib.input_backend import InterceptionBackend, KeyboardBackendStatus, KeyDelayConfig, SoftwareBackend
 from lib.keyboard import get_interception, get_keystate, to_scan_code
 from lib.pixel import (
@@ -77,6 +77,23 @@ _TRIGGER_MOD_ALIASES = {
     "win": {"win", "lwin", "rwin", "super", "meta", "cmd", "command", "windows"},
 }
 _TRIGGER_MOD_KEYS = set(_TRIGGER_MOD_ALIASES.keys())
+_MOUSE_TRIGGER_ALIASES = {
+    "mouse1": "mouse1",
+    "lmb": "mouse1",
+    "mouse_left": "mouse1",
+    "mouse2": "mouse2",
+    "rmb": "mouse2",
+    "mouse_right": "mouse2",
+    "mouse3": "mouse3",
+    "mmb": "mouse3",
+    "mouse_middle": "mouse3",
+    "mouse4": "mouse4",
+    "mb4": "mouse4",
+    "x1": "mouse4",
+    "mouse5": "mouse5",
+    "mb5": "mouse5",
+    "x2": "mouse5",
+}
 
 PATTERN_DIR = Path(__file__).parent / "pattern"
 PATTERN_FILE = PATTERN_DIR / "patterns.json"
@@ -116,6 +133,10 @@ def _mci_send_string(command: str, *, return_length: int = 0) -> tuple[int, str]
         return code, str(buf.value or "")
     code = int(winmm.mciSendStringW(command, None, 0, None))
     return code, ""
+
+
+def _normalize_mouse_trigger_key(key: str) -> str:
+    return _MOUSE_TRIGGER_ALIASES.get(str(key or "").strip().lower(), "")
 
 
 def _close_mci_alias(alias: str):
@@ -426,18 +447,20 @@ def parse_trigger_keys(trigger_key: str) -> List[str]:
     """'ctrl+shift+w' -> ['ctrl', 'shift', 'w']; invalid 부분은 무시."""
     if not trigger_key:
         return []
-    mouse_names = {"mouse1", "mouse2", "mouse3", "mouse4", "mouse5", "lmb", "rmb", "mmb", "mb4", "mb5", "x1", "x2", "mouse_left", "mouse_right", "mouse_middle"}
     ordered_keys: List[str] = []
     seen: Set[str] = set()
     for raw in re.split(r"[+]", str(trigger_key)):
         norm = _normalize_trigger_part(raw)
         if not norm:
             continue
+        mouse_key = _normalize_mouse_trigger_key(norm)
+        if mouse_key:
+            norm = mouse_key
         try:
             sc = to_scan_code(norm)
         except Exception:
             sc = 0
-        if sc <= 0 and norm not in mouse_names:
+        if sc <= 0 and not mouse_key:
             continue
         if norm in seen:
             continue
@@ -1932,17 +1955,65 @@ class KeySwallower:
         self._stop = threading.Event()
         self._enabled = False
         self._keys: Set[int] = set()
-        self._pressed: Set[int] = set()
-        self._pressed_ts: Dict[int, float] = {}
+        self._mouse_buttons: Set[str] = set()
+        self._pressed_keys: Set[int] = set()
+        self._pressed_mouse: Set[str] = set()
+        self._pressed_key_ts: Dict[int, float] = {}
+        self._pressed_mouse_ts: Dict[str, float] = {}
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         # 가능한 한 전역 Interception 인스턴스를 재사용해 필터 적용이 동일한 디바이스에
         # 걸리도록 한다.
         self._inter: Optional[Interception] = inter
 
+    @staticmethod
+    def _mouse_filter(buttons: Set[str]) -> MouseFilter:
+        if not buttons:
+            return MouseFilter(0)
+        mapping = {
+            "mouse1": int(MouseFilter.LeftButtonDown) | int(MouseFilter.LeftButtonUp),
+            "mouse2": int(MouseFilter.RightButtonDown) | int(MouseFilter.RightButtonUp),
+            "mouse3": int(getattr(MouseFilter, "MiddleButtonDown", 0)) | int(MouseFilter.MiddleButtonUp),
+            "mouse4": int(MouseFilter.XButton1Down) | int(MouseFilter.XButton1Up),
+            "mouse5": int(MouseFilter.XButton2Down) | int(MouseFilter.XButton2Up),
+        }
+        filt = 0
+        for button in buttons:
+            filt |= mapping.get(button, 0)
+        return MouseFilter(filt)
+
+    @staticmethod
+    def _mouse_event(state_raw: int, buttons: Set[str]) -> tuple[Optional[str], bool, bool]:
+        middle_down = int(getattr(MouseState, "MiddleButtonDown", getattr(MouseState, "MuddleButtonDown", 0)))
+        mapping = {
+            "mouse1": (int(MouseState.LeftButtonDown), int(MouseState.LeftButtonUp)),
+            "mouse2": (int(MouseState.RightButtonDown), int(MouseState.RightButtonUp)),
+            "mouse3": (middle_down, int(MouseState.MiddleButtonUp)),
+            "mouse4": (int(MouseState.XButton1Down), int(MouseState.XButton1Up)),
+            "mouse5": (int(MouseState.XButton2Down), int(MouseState.XButton2Up)),
+        }
+        for button in buttons:
+            down_state, up_state = mapping.get(button, (0, 0))
+            if state_raw == down_state:
+                return button, True, False
+            if state_raw == up_state:
+                return button, False, True
+        return None, False, False
+
+    def _clear_pressed_state(self):
+        self._pressed_keys.clear()
+        self._pressed_mouse.clear()
+        self._pressed_key_ts.clear()
+        self._pressed_mouse_ts.clear()
+
     def set_keys(self, keys: List[str]):
         scs: Set[int] = set()
+        mouse_buttons: Set[str] = set()
         for k in keys:
+            mouse_key = _normalize_mouse_trigger_key(k)
+            if mouse_key:
+                mouse_buttons.add(mouse_key)
+                continue
             try:
                 sc = to_scan_code(k)
             except Exception:
@@ -1950,18 +2021,17 @@ class KeySwallower:
             if sc > 0:
                 scs.add(sc)
         with self._lock:
-            if scs == self._keys:
+            if scs == self._keys and mouse_buttons == self._mouse_buttons:
                 return
             self._keys = scs
-            self._pressed.clear()
-            self._pressed_ts.clear()
+            self._mouse_buttons = mouse_buttons
+            self._clear_pressed_state()
 
     def set_enabled(self, enabled: bool):
         with self._lock:
             self._enabled = enabled
             if not enabled:
-                self._pressed.clear()
-                self._pressed_ts.clear()
+                self._clear_pressed_state()
 
     def is_enabled(self) -> bool:
         with self._lock:
@@ -1972,6 +2042,10 @@ class KeySwallower:
         return bool(t and t.is_alive())
 
     def is_tracked(self, key: str) -> bool:
+        mouse_key = _normalize_mouse_trigger_key(key)
+        if mouse_key:
+            with self._lock:
+                return mouse_key in self._mouse_buttons
         try:
             sc = to_scan_code(key)
         except Exception:
@@ -1980,29 +2054,45 @@ class KeySwallower:
             return sc > 0 and sc in self._keys
 
     def is_pressed(self, key: str, *, max_age: Optional[float] = None) -> bool:
+        mouse_key = _normalize_mouse_trigger_key(key)
+        if mouse_key:
+            with self._lock:
+                if mouse_key not in self._pressed_mouse:
+                    return False
+                if max_age is not None:
+                    ts = self._pressed_mouse_ts.get(mouse_key)
+                    if ts is None or (time.monotonic() - ts) > max_age:
+                        self._pressed_mouse.discard(mouse_key)
+                        self._pressed_mouse_ts.pop(mouse_key, None)
+                        return False
+                return True
         try:
             sc = to_scan_code(key)
         except Exception:
             return False
         with self._lock:
-            if sc not in self._pressed:
+            if sc not in self._pressed_keys:
                 return False
             if max_age is not None:
-                ts = self._pressed_ts.get(sc)
+                ts = self._pressed_key_ts.get(sc)
                 if ts is None or (time.monotonic() - ts) > max_age:
                     # up 이벤트를 놓친 경우를 대비해 일정 시간 지나면 강제로 해제
-                    self._pressed.discard(sc)
-                    self._pressed_ts.pop(sc, None)
+                    self._pressed_keys.discard(sc)
+                    self._pressed_key_ts.pop(sc, None)
                     return False
             return True
 
     def last_pressed_at(self, key: str) -> Optional[float]:
+        mouse_key = _normalize_mouse_trigger_key(key)
+        if mouse_key:
+            with self._lock:
+                return self._pressed_mouse_ts.get(mouse_key)
         try:
             sc = to_scan_code(key)
         except Exception:
             return None
         with self._lock:
-            return self._pressed_ts.get(sc)
+            return self._pressed_key_ts.get(sc)
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -2016,11 +2106,14 @@ class KeySwallower:
         if self._thread and threading.current_thread() is not self._thread:
             self._thread.join(timeout=1.0)
         with self._lock:
-            self._pressed.clear()
-            self._pressed_ts.clear()
+            self._clear_pressed_state()
         if self._inter:
             try:
                 self._inter.set_keyboard_filter(KeyFilter(0))
+            except Exception:
+                pass
+            try:
+                self._inter.set_mouse_filter(MouseFilter(0))
             except Exception:
                 pass
             self._inter = None
@@ -2031,21 +2124,32 @@ class KeySwallower:
         except Exception:
             return
         self._inter = inter
-        current_enabled = None
+        current_keyboard_filter: Optional[KeyFilter] = None
+        current_mouse_filter: Optional[MouseFilter] = None
         while not self._stop.is_set():
             try:
                 with self._lock:
                     enabled = self._enabled
                     codes = set(self._keys)
+                    mouse_buttons = set(self._mouse_buttons)
 
-                if enabled != current_enabled:
+                desired_keyboard_filter = KeyFilter.All if (enabled and codes) else KeyFilter(0)
+                desired_mouse_filter = self._mouse_filter(mouse_buttons) if enabled else MouseFilter(0)
+
+                if desired_keyboard_filter != current_keyboard_filter:
                     try:
-                        inter.set_keyboard_filter(KeyFilter.All if enabled else KeyFilter(0))
+                        inter.set_keyboard_filter(desired_keyboard_filter)
                     except Exception:
                         pass
-                    current_enabled = enabled
+                    current_keyboard_filter = desired_keyboard_filter
+                if desired_mouse_filter != current_mouse_filter:
+                    try:
+                        inter.set_mouse_filter(desired_mouse_filter)
+                    except Exception:
+                        pass
+                    current_mouse_filter = desired_mouse_filter
 
-                if not enabled:
+                if not enabled or (not codes and not mouse_buttons):
                     time.sleep(0.05)
                     continue
 
@@ -2054,29 +2158,45 @@ class KeySwallower:
                     continue
                 stroke = device.stroke
                 tracked_key = device.is_keyboard and stroke.code in codes
+                tracked_mouse = False
                 if tracked_key:
                     is_down = stroke.state in (KeyState.Down, KeyState.E0Down, KeyState.E1Down)
                     is_up = stroke.state in (KeyState.Up, KeyState.E0Up, KeyState.E1Up)
                     now = time.monotonic()
                     with self._lock:
                         if is_down:
-                            self._pressed.add(stroke.code)
-                            self._pressed_ts[stroke.code] = now
+                            self._pressed_keys.add(stroke.code)
+                            self._pressed_key_ts[stroke.code] = now
                         elif is_up:
-                            self._pressed.discard(stroke.code)
-                            self._pressed_ts.pop(stroke.code, None)
+                            self._pressed_keys.discard(stroke.code)
+                            self._pressed_key_ts.pop(stroke.code, None)
+                elif device.is_mouse:
+                    mouse_key, is_down, is_up = self._mouse_event(int(getattr(stroke, "state", 0) or 0), mouse_buttons)
+                    if mouse_key:
+                        tracked_mouse = True
+                        now = time.monotonic()
+                        with self._lock:
+                            if is_down:
+                                self._pressed_mouse.add(mouse_key)
+                                self._pressed_mouse_ts[mouse_key] = now
+                            elif is_up:
+                                self._pressed_mouse.discard(mouse_key)
+                                self._pressed_mouse_ts.pop(mouse_key, None)
 
-                swallow = tracked_key
+                swallow = tracked_key or tracked_mouse
                 if not swallow:
                     device.send()
             except Exception:
                 # 예외 발생 시 필터를 해제하고 종료
                 with self._lock:
                     self._enabled = False
-                    self._pressed.clear()
-                    self._pressed_ts.clear()
+                    self._clear_pressed_state()
                 try:
                     inter.set_keyboard_filter(KeyFilter(0))
+                except Exception:
+                    pass
+                try:
+                    inter.set_mouse_filter(MouseFilter(0))
                 except Exception:
                     pass
                 break
@@ -4127,8 +4247,9 @@ class MacroEngine:
         sw_pressed = False
         sw_age: Optional[float] = None
         os_pressed = False
+        mouse_key = _normalize_mouse_trigger_key(key)
         if sw_enabled:
-            sw_pressed = self._swallower.is_pressed(key, max_age=self._swallow_stale_sec)
+            sw_pressed = self._swallower.is_pressed(key, max_age=None if mouse_key else self._swallow_stale_sec)
             ts = self._swallower.last_pressed_at(key)
             if ts is not None:
                 sw_age = time.monotonic() - ts
@@ -4142,7 +4263,7 @@ class MacroEngine:
             "sw_enabled": sw_enabled,
             "sw_pressed": sw_pressed,
             "sw_age": sw_age,
-            "sw_stale": sw_age is not None and sw_age > self._swallow_stale_sec,
+            "sw_stale": bool(sw_age is not None and not mouse_key and sw_age > self._swallow_stale_sec),
             "os_pressed": os_pressed,
         }
         return pressed, detail
