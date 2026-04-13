@@ -236,6 +236,14 @@ DEFAULT_PROFILE = MacroProfile(
     pixel_color=(255, 0, 0),
     pixel_tolerance=0,
 )
+VARIABLE_CATEGORY_INFO: tuple[tuple[str, str], ...] = (
+    ("region", "Region"),
+    ("color", "Color"),
+    ("key", "Key"),
+    ("sleep", "Sleep"),
+    ("var", "Value"),
+)
+VARIABLE_CATEGORY_KEYS: tuple[str, ...] = tuple(key for key, _label in VARIABLE_CATEGORY_INFO)
 HEX_CHARS = set("0123456789abcdefABCDEF")
 _RECORDER_RESERVED_KEYS = {"pgup", "pageup", "pgdown", "pagedown"}
 
@@ -14942,6 +14950,699 @@ class KeyboardSettingsDialog(QtWidgets.QDialog):
     def closeEvent(self, event: QtGui.QCloseEvent):
         self._stop_activity_monitor()
         return super().closeEvent(event)
+
+
+class LiveSearchLineEdit(QtWidgets.QLineEdit):
+    liveTextChanged = QtCore.pyqtSignal(object)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._preedit_text = ""
+        self._handling_input_method = False
+        self.textChanged.connect(self._on_text_changed)
+
+    def inputMethodEvent(self, event: QtGui.QInputMethodEvent):
+        base_text = self.text()
+        cursor = max(0, min(len(base_text), self.cursorPosition()))
+        preedit = str(event.preeditString() or "")
+        commit = str(event.commitString() or "")
+        replace_start = event.replacementStart()
+        replace_length = event.replacementLength()
+        if replace_start < 0:
+            replace_start = cursor
+        replace_start = max(0, min(len(base_text), replace_start))
+        replace_end = max(replace_start, min(len(base_text), replace_start + max(0, replace_length)))
+        live_text = base_text[:replace_start] + commit + preedit + base_text[replace_end:]
+        self._preedit_text = preedit
+        self._handling_input_method = True
+        try:
+            super().inputMethodEvent(event)
+        finally:
+            self._handling_input_method = False
+        self.liveTextChanged.emit(live_text)
+
+    def _on_text_changed(self, text: str):
+        if self._preedit_text:
+            return
+        self.liveTextChanged.emit(str(text or ""))
+
+
+class VariableManagerDialog(QtWidgets.QDialog):
+    _changed_cell_brush = QtGui.QBrush(QtGui.QColor("#ffe9b3"))
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        items: dict[str, list[dict[str, str]]] | None = None,
+        usage_lookup=None,
+        name_sort_key=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("전역 변수 관리")
+        self.setModal(False)
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        try:
+            self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, False)
+        except Exception:
+            pass
+        self.resize(1180, 680)
+        self._usage_lookup = usage_lookup
+        self._name_sort_key = name_sort_key or (lambda name: str(name or "").casefold())
+        self._next_track_id = 1
+        self._items = self._normalize_dialog_items(items)
+        self._initial_items: dict[str, list[dict[str, str]]] = {
+            key: [dict(item) for item in self._items.get(key, [])]
+            for key in VARIABLE_CATEGORY_KEYS
+        }
+        self._initial_item_lookup = self._build_initial_item_lookup()
+        self._row_map: list[int] = []
+        self._search_text = ""
+        self._editing_identity: tuple[str, str] | None = None
+        self._syncing_editor = False
+        self._syncing_table = False
+        self._allow_close_without_prompt = False
+        self._build_ui()
+        self._refresh_category_list()
+        initial_category = next((key for key in VARIABLE_CATEGORY_KEYS if self._items.get(key)), VARIABLE_CATEGORY_KEYS[0])
+        self._set_current_category(initial_category)
+        self._start_new_item()
+
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        header = QtWidgets.QLabel(
+            "카테고리를 고르고 항목을 선택한 뒤, 오른쪽에서 이름/값/설명을 수정하세요. "
+            "수정 후에는 '변경 적용' 또는 '저장하고 닫기'를 누르면 됩니다."
+        )
+        header.setWordWrap(True)
+        header.setStyleSheet("color: #666;")
+        layout.addWidget(header)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        layout.addWidget(splitter, 1)
+
+        left = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+        left_layout.addWidget(QtWidgets.QLabel("카테고리"))
+        self.category_list = QtWidgets.QListWidget()
+        self.category_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        left_layout.addWidget(self.category_list, 1)
+        splitter.addWidget(left)
+
+        center = QtWidgets.QWidget()
+        center_layout = QtWidgets.QVBoxLayout(center)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(8)
+        search_row = QtWidgets.QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        search_row.setSpacing(6)
+        self.search_edit = LiveSearchLineEdit()
+        self.search_edit.setPlaceholderText("이름, 값, 설명 검색")
+        self.sort_btn = QtWidgets.QPushButton("정렬")
+        search_row.addWidget(self.search_edit, 1)
+        search_row.addWidget(self.sort_btn)
+        center_layout.addLayout(search_row)
+        self.table = QtWidgets.QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["이름", "값", "설명"])
+        for col in (1, 2):
+            header_item = self.table.horizontalHeaderItem(col)
+            if header_item is not None:
+                header_item.setTextAlignment(
+                    int(QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter)
+                )
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked
+            | QtWidgets.QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        self.table.verticalHeader().setVisible(False)
+        table_header = self.table.horizontalHeader()
+        table_header.setMinimumSectionSize(80)
+        table_header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        table_header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        table_header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        center_layout.addWidget(self.table, 1)
+        table_btn_row = QtWidgets.QHBoxLayout()
+        table_btn_row.setContentsMargins(0, 0, 0, 0)
+        table_btn_row.setSpacing(6)
+        self.add_btn = QtWidgets.QPushButton("새 항목")
+        self.delete_btn = QtWidgets.QPushButton("삭제")
+        table_btn_row.addWidget(self.add_btn)
+        table_btn_row.addWidget(self.delete_btn)
+        table_btn_row.addStretch()
+        center_layout.addLayout(table_btn_row)
+        splitter.addWidget(center)
+
+        right = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+        right_layout.addWidget(QtWidgets.QLabel("편집"))
+        form = QtWidgets.QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(8)
+        form.setVerticalSpacing(8)
+        self.category_combo = QtWidgets.QComboBox()
+        for key, label in VARIABLE_CATEGORY_INFO:
+            self.category_combo.addItem(label, key)
+        self.name_edit = QtWidgets.QLineEdit()
+        self.value_edit = QtWidgets.QLineEdit()
+        self.description_edit = QtWidgets.QLineEdit()
+        self.description_edit.setPlaceholderText("선택 사항")
+        form.addRow("카테고리", self.category_combo)
+        form.addRow("이름", self.name_edit)
+        form.addRow("값", self.value_edit)
+        form.addRow("설명", self.description_edit)
+        right_layout.addLayout(form)
+        right_hint = QtWidgets.QLabel(
+            "예: sleep은 100 또는 100-200, region은 x,y,w,h, color는 RRGGBB, key는 키 이름, value는 자유 문자열"
+        )
+        right_hint.setWordWrap(True)
+        right_hint.setStyleSheet("color: #666;")
+        right_layout.addWidget(right_hint)
+        form_btn_row = QtWidgets.QHBoxLayout()
+        form_btn_row.setContentsMargins(0, 0, 0, 0)
+        form_btn_row.setSpacing(6)
+        self.reset_btn = QtWidgets.QPushButton("입력 초기화")
+        self.apply_btn = QtWidgets.QPushButton("변경 적용")
+        form_btn_row.addWidget(self.reset_btn)
+        form_btn_row.addStretch()
+        form_btn_row.addWidget(self.apply_btn)
+        right_layout.addLayout(form_btn_row)
+        right_layout.addStretch(1)
+        splitter.addWidget(right)
+        splitter.setSizes([180, 650, 320])
+
+        self.button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.NoButton
+        )
+        self.footer_status_label = QtWidgets.QLabel("")
+        self.footer_status_label.setStyleSheet("color: #666;")
+        self.close_btn = self.button_box.addButton("닫기", QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
+        self.cancel_btn = self.button_box.addButton("취소", QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
+        self.save_close_btn = self.button_box.addButton("저장하고 닫기", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
+        footer_row = QtWidgets.QHBoxLayout()
+        footer_row.setContentsMargins(0, 0, 0, 0)
+        footer_row.setSpacing(8)
+        footer_row.addWidget(self.footer_status_label, 1)
+        footer_row.addWidget(self.button_box)
+        layout.addLayout(footer_row)
+
+        self.category_list.currentRowChanged.connect(self._on_category_changed)
+        self.search_edit.liveTextChanged.connect(self._on_live_search_text)
+        self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        self.table.itemChanged.connect(self._on_table_item_changed)
+        self.category_combo.currentIndexChanged.connect(self._update_action_state)
+        self.name_edit.textChanged.connect(self._update_action_state)
+        self.value_edit.textChanged.connect(self._update_action_state)
+        self.description_edit.textChanged.connect(self._update_action_state)
+        self.add_btn.clicked.connect(self._start_new_item)
+        self.delete_btn.clicked.connect(self._delete_selected_item)
+        self.sort_btn.clicked.connect(self._sort_current_category)
+        self.reset_btn.clicked.connect(self._reset_editor)
+        self.apply_btn.clicked.connect(self._apply_editor_changes)
+        self.close_btn.clicked.connect(self._close_without_prompt)
+        self.cancel_btn.clicked.connect(self._close_without_prompt)
+        self.save_close_btn.clicked.connect(self._accept_with_pending_changes)
+        self._update_action_state()
+
+    def get_items(self) -> dict[str, list[dict[str, str]]]:
+        return {
+            key: [self._public_item_copy(item) for item in self._items.get(key, [])]
+            for key in VARIABLE_CATEGORY_KEYS
+        }
+
+    def _new_track_id(self) -> str:
+        track_id = f"variable-item-{self._next_track_id}"
+        self._next_track_id += 1
+        return track_id
+
+    def _normalize_dialog_items(
+        self,
+        items: dict[str, list[dict[str, str]]] | None,
+    ) -> dict[str, list[dict[str, str]]]:
+        result: dict[str, list[dict[str, str]]] = {}
+        source = items or {}
+        for key in VARIABLE_CATEGORY_KEYS:
+            result[key] = [self._normalize_dialog_item(item) for item in source.get(key, [])]
+        return result
+
+    def _normalize_dialog_item(self, item: dict[str, str] | None) -> dict[str, str]:
+        raw = dict(item or {})
+        track_id = str(raw.get("_track_id", "") or "").strip() or self._new_track_id()
+        return {
+            "_track_id": track_id,
+            "name": str(raw.get("name", "") or ""),
+            "value": str(raw.get("value", "") or ""),
+            "description": str(raw.get("description", "") or ""),
+        }
+
+    def _public_item_copy(self, item: dict[str, str]) -> dict[str, str]:
+        return {
+            "name": str(item.get("name", "") or ""),
+            "value": str(item.get("value", "") or ""),
+            "description": str(item.get("description", "") or ""),
+        }
+
+    def _track_id_for_item(self, item: dict[str, str] | None) -> str:
+        return str((item or {}).get("_track_id", "") or "").strip()
+
+    def _build_initial_item_lookup(self) -> dict[str, dict[str, str]]:
+        lookup: dict[str, dict[str, str]] = {}
+        for category in VARIABLE_CATEGORY_KEYS:
+            for item in self._initial_items.get(category, []):
+                track_id = self._track_id_for_item(item)
+                if not track_id:
+                    continue
+                lookup[track_id] = {
+                    "category": category,
+                    "name": str(item.get("name", "") or ""),
+                    "value": str(item.get("value", "") or ""),
+                    "description": str(item.get("description", "") or ""),
+                }
+        return lookup
+
+    def _cell_is_changed(self, item: dict[str, str], field: str) -> bool:
+        track_id = self._track_id_for_item(item)
+        initial = self._initial_item_lookup.get(track_id)
+        current_value = str(item.get(field, "") or "")
+        if initial is None:
+            return bool(current_value)
+        return current_value != str(initial.get(field, "") or "")
+
+    def _has_any_text_in_editor(self) -> bool:
+        return any(
+            bool(str(val or "").strip())
+            for val in (
+                self.name_edit.text(),
+                self.value_edit.text(),
+                self.description_edit.text(),
+            )
+        )
+
+    def _editor_has_pending_changes(self) -> bool:
+        target_category = self.category_combo.currentData()
+        if not isinstance(target_category, str) or not target_category:
+            target_category = self._current_category_key()
+        name = self.name_edit.text().strip()
+        value = self.value_edit.text().strip()
+        description = self.description_edit.text().strip()
+        idx, item = self._entry_for_identity(self._editing_identity)
+        if item is not None and self._editing_identity is not None:
+            return (
+                target_category != self._editing_identity[0]
+                or name != str(item.get("name", "") or "")
+                or value != str(item.get("value", "") or "")
+                or description != str(item.get("description", "") or "")
+            )
+        return bool(name or value or description)
+
+    def _is_dialog_dirty(self) -> bool:
+        return self._items != self._initial_items or self._editor_has_pending_changes()
+
+    def _update_action_state(self):
+        dirty = self._is_dialog_dirty()
+        editor_pending = self._editor_has_pending_changes()
+        self.close_btn.setVisible(not dirty)
+        self.cancel_btn.setVisible(dirty)
+        self.save_close_btn.setVisible(dirty)
+        self.apply_btn.setEnabled(editor_pending)
+        self.reset_btn.setEnabled(editor_pending or self._has_any_text_in_editor())
+        if dirty:
+            self.footer_status_label.setText("변경 사항 있음")
+            self.footer_status_label.setStyleSheet("color: #1d4ed8; font-weight: 600;")
+            self.save_close_btn.setDefault(True)
+        else:
+            self.footer_status_label.setText("변경 사항 없음")
+            self.footer_status_label.setStyleSheet("color: #666;")
+            self.close_btn.setDefault(True)
+
+    def _close_without_prompt(self):
+        self._allow_close_without_prompt = True
+        try:
+            super().reject()
+        finally:
+            self._allow_close_without_prompt = False
+
+    def _refresh_category_list(self):
+        current_key = self._current_category_key()
+        self.category_list.blockSignals(True)
+        self.category_list.clear()
+        for key, label in VARIABLE_CATEGORY_INFO:
+            count = len(self._items.get(key, []))
+            item = QtWidgets.QListWidgetItem(f"{label} ({count})")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, key)
+            self.category_list.addItem(item)
+        self.category_list.blockSignals(False)
+        if current_key:
+            self._set_current_category(current_key)
+
+    def _set_current_category(self, category: str):
+        for row in range(self.category_list.count()):
+            item = self.category_list.item(row)
+            if item and item.data(QtCore.Qt.ItemDataRole.UserRole) == category:
+                self.category_list.setCurrentRow(row)
+                return
+        if self.category_list.count():
+            self.category_list.setCurrentRow(0)
+
+    def _current_category_key(self) -> str:
+        item = self.category_list.currentItem()
+        if item:
+            key = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            if isinstance(key, str) and key:
+                return key
+        return VARIABLE_CATEGORY_KEYS[0]
+
+    def _filtered_rows(self, category: str) -> list[tuple[int, dict[str, str]]]:
+        query = self._search_text.strip().lower()
+        result: list[tuple[int, dict[str, str]]] = []
+        for idx, item in enumerate(self._items.get(category, [])):
+            if not query:
+                result.append((idx, item))
+                continue
+            haystack = " ".join(
+                [
+                    str(item.get("name", "")),
+                    str(item.get("value", "")),
+                    str(item.get("description", "")),
+                ]
+            ).lower()
+            if query in haystack:
+                result.append((idx, item))
+        return result
+
+    def _refresh_table(self):
+        category = self._current_category_key()
+        selected_name = self._editing_identity[1] if self._editing_identity and self._editing_identity[0] == category else None
+        rows = self._filtered_rows(category)
+        self._row_map = [idx for idx, _item in rows]
+        self._syncing_table = True
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(len(rows))
+            for row, (_idx, item) in enumerate(rows):
+                values = [
+                    str(item.get("name", "") or ""),
+                    str(item.get("value", "") or ""),
+                    str(item.get("description", "") or ""),
+                ]
+                field_names = ("name", "value", "description")
+                for col, value in enumerate(values):
+                    cell = QtWidgets.QTableWidgetItem(value)
+                    if col in (1, 2):
+                        cell.setTextAlignment(
+                            int(QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter)
+                        )
+                    if self._cell_is_changed(item, field_names[col]):
+                        cell.setBackground(self._changed_cell_brush)
+                    else:
+                        cell.setBackground(QtGui.QBrush())
+                    if col == 2 and not value:
+                        cell.setForeground(QtGui.QBrush(QtGui.QColor("#888888")))
+                    self.table.setItem(row, col, cell)
+        finally:
+            self.table.blockSignals(False)
+            self._syncing_table = False
+        selected_row = -1
+        if selected_name:
+            for row, (_idx, item) in enumerate(rows):
+                if str(item.get("name", "")) == selected_name:
+                    selected_row = row
+                    break
+        if selected_row >= 0:
+            self.table.selectRow(selected_row)
+        elif rows:
+            self.table.selectRow(0)
+        else:
+            self._editing_identity = None
+            self._reset_editor(clear_identity=False)
+
+    def _on_live_search_text(self, text: str):
+        self._search_text = str(text or "")
+        self._refresh_table()
+
+    def _on_category_changed(self, _row: int):
+        self._refresh_table()
+        if self.table.rowCount() <= 0:
+            self._start_new_item(category=self._current_category_key(), clear_selection=False)
+
+    def _selected_identity(self) -> tuple[str, str] | None:
+        row = self.table.currentRow()
+        category = self._current_category_key()
+        if row < 0 or row >= len(self._row_map):
+            return None
+        idx = self._row_map[row]
+        items = self._items.get(category, [])
+        if 0 <= idx < len(items):
+            name = str(items[idx].get("name", "") or "").strip()
+            if name:
+                return (category, name)
+        return None
+
+    def _entry_for_identity(self, identity: tuple[str, str] | None) -> tuple[int, dict[str, str]] | tuple[None, None]:
+        if not identity:
+            return None, None
+        category, name = identity
+        for idx, item in enumerate(self._items.get(category, [])):
+            if str(item.get("name", "") or "").strip() == name:
+                return idx, item
+        return None, None
+
+    def _on_table_selection_changed(self):
+        identity = self._selected_identity()
+        idx, item = self._entry_for_identity(identity)
+        if item is None:
+            self._update_action_state()
+            return
+        self._editing_identity = identity
+        self._syncing_editor = True
+        try:
+            cat_idx = self.category_combo.findData(identity[0])
+            if cat_idx >= 0:
+                self.category_combo.setCurrentIndex(cat_idx)
+            self.name_edit.setText(str(item.get("name", "") or ""))
+            self.value_edit.setText(str(item.get("value", "") or ""))
+            self.description_edit.setText(str(item.get("description", "") or ""))
+        finally:
+            self._syncing_editor = False
+        self._update_action_state()
+
+    def _on_table_item_changed(self, item: QtWidgets.QTableWidgetItem | None):
+        if item is None or self._syncing_table:
+            return
+        row = item.row()
+        if row < 0 or row >= len(self._row_map):
+            return
+        category = self._current_category_key()
+        idx = self._row_map[row]
+        items = self._items.get(category, [])
+        if idx < 0 or idx >= len(items):
+            return
+        entry = items[idx]
+        field_map = {0: "name", 1: "value", 2: "description"}
+        field = field_map.get(item.column())
+        if not field:
+            return
+        old_value = str(entry.get(field, "") or "")
+        new_value = item.text().strip()
+        if new_value == old_value:
+            return
+        if field == "name":
+            if not new_value:
+                QtWidgets.QMessageBox.warning(self, "입력 오류", "변수 이름은 비울 수 없습니다.")
+                self._restore_table_item(item, old_value)
+                return
+            for other_idx, other_item in enumerate(items):
+                if other_idx == idx:
+                    continue
+                if str(other_item.get("name", "") or "").strip() == new_value:
+                    QtWidgets.QMessageBox.warning(self, "중복 이름", f"{category} 변수 '{new_value}'가 이미 있습니다.")
+                    self._restore_table_item(item, old_value)
+                    return
+        entry[field] = new_value
+        if field == "name" and self._editing_identity and self._editing_identity[0] == category and self._editing_identity[1] == old_value:
+            self._editing_identity = (category, new_value)
+        if field == "description" and not new_value:
+            item.setForeground(QtGui.QBrush(QtGui.QColor("#888888")))
+        else:
+            item.setForeground(QtGui.QBrush())
+        if self.table.currentRow() == row:
+            self._syncing_editor = True
+            try:
+                if field == "name":
+                    self.name_edit.setText(new_value)
+                elif field == "value":
+                    self.value_edit.setText(new_value)
+                elif field == "description":
+                    self.description_edit.setText(new_value)
+            finally:
+                self._syncing_editor = False
+        self._refresh_table()
+        self._update_action_state()
+
+    def _restore_table_item(self, item: QtWidgets.QTableWidgetItem, value: str):
+        self._syncing_table = True
+        self.table.blockSignals(True)
+        try:
+            item.setText(value)
+        finally:
+            self.table.blockSignals(False)
+            self._syncing_table = False
+
+    def _reset_editor(self, *, clear_identity: bool = True):
+        category = self._current_category_key()
+        self._syncing_editor = True
+        try:
+            cat_idx = self.category_combo.findData(category)
+            if cat_idx >= 0:
+                self.category_combo.setCurrentIndex(cat_idx)
+            self.name_edit.clear()
+            self.value_edit.clear()
+            self.description_edit.clear()
+        finally:
+            self._syncing_editor = False
+        if clear_identity:
+            self._editing_identity = None
+        self._update_action_state()
+
+    def _start_new_item(self, *, category: str | None = None, clear_selection: bool = True):
+        if category:
+            cat_idx = self.category_combo.findData(category)
+            if cat_idx >= 0:
+                self.category_combo.setCurrentIndex(cat_idx)
+        if clear_selection:
+            self.table.clearSelection()
+        self._reset_editor()
+        self.name_edit.setFocus()
+        self._update_action_state()
+
+    def _sort_current_category(self):
+        category = self._current_category_key()
+        self._items[category].sort(key=lambda item: self._name_sort_key(item.get("name", "")))
+        self._refresh_table()
+        self._refresh_category_list()
+        self._update_action_state()
+
+    def _apply_editor_changes(self) -> bool:
+        target_category = self.category_combo.currentData()
+        if not isinstance(target_category, str) or not target_category:
+            target_category = self._current_category_key()
+        name = self.name_edit.text().strip()
+        value = self.value_edit.text().strip()
+        description = self.description_edit.text().strip()
+        if not name:
+            QtWidgets.QMessageBox.warning(self, "입력 오류", "변수 이름을 입력하세요.")
+            self.name_edit.setFocus()
+            return False
+        original = self._editing_identity
+        original_idx, _original_item = self._entry_for_identity(original)
+        for idx, item in enumerate(self._items.get(target_category, [])):
+            item_name = str(item.get("name", "") or "").strip()
+            if item_name != name:
+                continue
+            if not original or original[0] != target_category or idx != original_idx:
+                QtWidgets.QMessageBox.warning(self, "중복 이름", f"{target_category} 변수 '{name}'가 이미 있습니다.")
+                self.name_edit.setFocus()
+                return False
+        track_id = self._track_id_for_item(_original_item) if _original_item is not None else self._new_track_id()
+        payload = {
+            "_track_id": track_id,
+            "name": name,
+            "value": value,
+            "description": description,
+        }
+        if original and original_idx is not None:
+            original_category = original[0]
+            if target_category == original_category:
+                self._items[original_category][original_idx] = payload
+            else:
+                self._items[original_category].pop(original_idx)
+                self._items[target_category].append(payload)
+        else:
+            self._items[target_category].append(payload)
+        self._editing_identity = (target_category, name)
+        self._refresh_category_list()
+        self._set_current_category(target_category)
+        self._refresh_table()
+        self._update_action_state()
+        return True
+
+    def _delete_selected_item(self):
+        identity = self._selected_identity() or self._editing_identity
+        idx, item = self._entry_for_identity(identity)
+        if identity is None or idx is None or item is None:
+            QtWidgets.QMessageBox.information(self, "선택 없음", "삭제할 변수를 선택하세요.")
+            return
+        category, name = identity
+        if callable(self._usage_lookup):
+            usages = self._usage_lookup([(category, name)]) or {}
+            if usages:
+                lines = [f"{category}:{name} -> {', '.join(macros)}" for (_key, _name), macros in usages.items()]
+                message = "다음 변수가 매크로에서 사용 중입니다. 삭제하면 참조가 끊어집니다.\n\n"
+                message += "\n".join(lines)
+                message += "\n\n그래도 삭제하시겠습니까?"
+                res = QtWidgets.QMessageBox.question(
+                    self,
+                    "변수 사용 중",
+                    message,
+                    QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                    QtWidgets.QMessageBox.StandardButton.No,
+                )
+                if res != QtWidgets.QMessageBox.StandardButton.Yes:
+                    return
+        self._items[category].pop(idx)
+        self._editing_identity = None
+        self._refresh_category_list()
+        self._set_current_category(category)
+        self._refresh_table()
+        self._start_new_item(category=category, clear_selection=False)
+        self._update_action_state()
+
+    def _accept_with_pending_changes(self):
+        name = self.name_edit.text().strip()
+        value = self.value_edit.text().strip()
+        description = self.description_edit.text().strip()
+        idx, item = self._entry_for_identity(self._editing_identity)
+        if item is not None:
+            current_category = self.category_combo.currentData() if isinstance(self.category_combo.currentData(), str) else self._current_category_key()
+            changed = (
+                current_category != self._editing_identity[0]
+                or name != str(item.get("name", "") or "")
+                or value != str(item.get("value", "") or "")
+                or description != str(item.get("description", "") or "")
+            )
+            if changed and not self._apply_editor_changes():
+                return
+        elif name or value or description:
+            if not self._apply_editor_changes():
+                return
+        self.accept()
+
+    def reject(self):
+        if self._allow_close_without_prompt or not self._is_dialog_dirty():
+            return super().reject()
+        res = QtWidgets.QMessageBox.question(
+            self,
+            "변경 사항 있음",
+            "변경한 내용이 있습니다.\n저장하고 닫으시겠습니까?",
+            QtWidgets.QMessageBox.StandardButton.Save
+            | QtWidgets.QMessageBox.StandardButton.Discard
+            | QtWidgets.QMessageBox.StandardButton.Cancel,
+            QtWidgets.QMessageBox.StandardButton.Save,
+        )
+        if res == QtWidgets.QMessageBox.StandardButton.Save:
+            self._accept_with_pending_changes()
+            return
+        if res == QtWidgets.QMessageBox.StandardButton.Discard:
+            self._close_without_prompt()
+            return
 class MacroWindow(QtWidgets.QMainWindow):
     def __init__(self, engine: MacroEngine, profile: MacroProfile | None = None):
         super().__init__()
@@ -14986,6 +15687,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._image_viewer_dialog: ImageViewerDialog | None = None
         self._color_calc_dialog: ColorToleranceDialog | None = None
         self._keyboard_settings_dialog: KeyboardSettingsDialog | None = None
+        self._variable_manager_dialog: VariableManagerDialog | None = None
         self._last_backend_state: dict | None = None
         pixel_state = self._state.get("pixel_test", {}) if isinstance(self._state, dict) else {}
         self._pixel_test_defaults = {
@@ -15019,6 +15721,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             max_queue_size=screenshot_state.get("queue_size", MAX_QUEUE_SIZE),
         )
         self._theme = self._compute_theme_colors()
+        self._variable_items: dict[str, list[dict[str, str]]] = {key: [] for key in VARIABLE_CATEGORY_KEYS}
+        self._variable_provider = lambda category: []
         hotkey_start = _sanitize_screenshot_hotkey(screenshot_state.get("hotkey_start"), allow_reserved=False)
         hotkey_stop = _sanitize_screenshot_hotkey(screenshot_state.get("hotkey_stop"), allow_reserved=False)
         hotkey_capture = _sanitize_screenshot_hotkey(screenshot_state.get("hotkey_capture"))
@@ -15040,7 +15744,10 @@ class MacroWindow(QtWidgets.QMainWindow):
         loaded = self._load_last_session()
         if not loaded:
             self._refresh_macros()
-            self._set_variable_fields(self.profile.variables)
+            self._set_variable_fields(
+                self.profile.variables,
+                getattr(self.profile, "variable_descriptions", MacroVariables()),
+            )
             self._refresh_pixel_defaults(self.profile)
             self._mark_dirty(False)
         self._connect_signals()
@@ -15109,17 +15816,15 @@ class MacroWindow(QtWidgets.QMainWindow):
         header_layout.addWidget(self._build_profile_strip())
         layout.addWidget(header)
         macro_group = self._build_macro_group()
-        variable_group = self._build_variable_group()
         log_group = self._build_log_group()
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         splitter.addWidget(macro_group)
-        splitter.addWidget(variable_group)
         splitter.addWidget(log_group)
-        splitter.setSizes([400, 260, 200])
+        splitter.setSizes([560, 220])
         self.main_splitter = splitter
         layout.addWidget(splitter, stretch=1)
         layout.setStretch(0, 0)  # header
-        layout.setStretch(1, 1)  # splitter with macro/variable/log
+        layout.setStretch(1, 1)  # splitter with macro/log
     def _build_menu(self):
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("파일(&F)")
@@ -15150,6 +15855,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         pattern_action = QtGui.QAction("픽셀 패턴 관리", self)
         pattern_action.triggered.connect(lambda: self._open_pattern_manager())
         feature_menu.addAction(pattern_action)
+        variable_manager_action = QtGui.QAction("전역 변수 관리...", self)
+        variable_manager_action.triggered.connect(self._open_variable_manager_dialog)
+        feature_menu.addAction(variable_manager_action)
         preset_transfer_action = QtGui.QAction("프리셋 옮기기...", self)
         preset_transfer_action.triggered.connect(self._open_preset_transfer_dialog)
         feature_menu.addAction(preset_transfer_action)
@@ -15342,6 +16050,41 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._pixel_test_dialog.show()
         self._pixel_test_dialog.raise_()
         self._pixel_test_dialog.activateWindow()
+    def _open_variable_manager_dialog(self):
+        dlg = self._variable_manager_dialog
+        if dlg is not None:
+            try:
+                dlg.show()
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+            except RuntimeError:
+                self._variable_manager_dialog = None
+        dlg = VariableManagerDialog(
+            self,
+            items=copy.deepcopy(self._variable_items),
+            usage_lookup=self._find_variable_usages,
+            name_sort_key=self._name_sort_key,
+        )
+        dlg.finished.connect(
+            lambda result, dialog=dlg: self._finish_variable_manager_dialog(dialog, result)
+        )
+        self._variable_manager_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+    def _finish_variable_manager_dialog(self, dialog: VariableManagerDialog, result: int):
+        try:
+            if result == int(QtWidgets.QDialog.DialogCode.Accepted):
+                new_items = dialog.get_items()
+                if new_items != self._variable_items:
+                    self._variable_items = new_items
+                    self._refresh_variable_completers()
+                    self._mark_dirty()
+        finally:
+            if self._variable_manager_dialog is dialog:
+                self._variable_manager_dialog = None
+            dialog.deleteLater()
     def _open_preset_transfer_dialog(self):
         try:
             base_res = self._current_base_resolution()
@@ -15775,11 +16518,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.edit_macro_btn = QtWidgets.QPushButton("편집")
         self.clone_macro_btn = QtWidgets.QPushButton("복제")
         self.del_macro_btn = QtWidgets.QPushButton("삭제")
+        self.variable_manager_btn = QtWidgets.QPushButton("전역 변수 관리...")
         btn_row.addWidget(self.add_macro_btn)
         btn_row.addWidget(self.edit_macro_btn)
         btn_row.addWidget(self.clone_macro_btn)
         btn_row.addWidget(self.del_macro_btn)
         btn_row.addStretch()
+        btn_row.addWidget(self.variable_manager_btn)
         layout.addLayout(btn_row)
         return group
     def _build_variable_group(self):
@@ -15891,6 +16636,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.edit_macro_btn.clicked.connect(self._edit_macro)
         self.clone_macro_btn.clicked.connect(self._clone_macro)
         self.del_macro_btn.clicked.connect(self._delete_macro)
+        if hasattr(self, "variable_manager_btn"):
+            self.variable_manager_btn.clicked.connect(self._open_variable_manager_dialog)
         self.macro_table.doubleClicked.connect(lambda _: self._edit_macro())
         self.macro_table.customContextMenuRequested.connect(self._macro_context_menu)
     # 정렬/키 헬퍼 ---------------------------------------------------------
@@ -16087,52 +16834,80 @@ class MacroWindow(QtWidgets.QMainWindow):
             return
         pairs.pop()
         self._set_variable_pairs(table, pairs)
+    def _empty_variable_items(self) -> dict[str, list[dict[str, str]]]:
+        return {key: [] for key in VARIABLE_CATEGORY_KEYS}
+    def _normalize_variable_items(
+        self,
+        variables: MacroVariables,
+        descriptions: MacroVariables | None = None,
+    ) -> dict[str, list[dict[str, str]]]:
+        result = self._empty_variable_items()
+        description_maps = descriptions if isinstance(descriptions, MacroVariables) else MacroVariables()
+        for category in VARIABLE_CATEGORY_KEYS:
+            value_map = getattr(variables, category, {}) or {}
+            desc_map = getattr(description_maps, category, {}) or {}
+            items: list[dict[str, str]] = []
+            for name, value in self._sort_pairs_by_name([(str(k), str(v)) for k, v in value_map.items()]):
+                desc = str(desc_map.get(name, "") or "")
+                items.append({"name": str(name), "value": str(value), "description": desc})
+            result[category] = items
+        return result
     def _variable_names(self, category: str) -> List[str]:
-        table = self.variable_tables.get(category)
-        if not table:
-            return []
         names: List[str] = []
-        for name, _ in self._variable_pairs_from_table(table):
+        for item in self._variable_items.get(category, []):
+            name = str(item.get("name", "") or "").strip()
             if name:
                 names.append(name)
         return names
     def _ensure_variable(self, category: str, name: str, default_value: str = "") -> bool:
-        table = self.variable_tables.get(category)
         name = (name or "").strip()
-        if not table or not name:
+        if category not in VARIABLE_CATEGORY_KEYS or not name:
             return False
         if category == "color" and not default_value:
             default_value = "000000"
-        existing_names = {n for n, _ in self._variable_pairs_from_table(table)}
+        existing_names = {str(item.get("name", "") or "").strip() for item in self._variable_items.get(category, [])}
         if name in existing_names:
             return True
-        self._append_variable_pair(table, name, default_value)
+        self._variable_items.setdefault(category, []).append(
+            {"name": name, "value": str(default_value or ""), "description": ""}
+        )
+        self._variable_items[category].sort(key=lambda item: self._name_sort_key(item.get("name", "")))
+        self._refresh_variable_completers()
+        if not self._loading_profile:
+            self._mark_dirty()
         return True
     def _collect_variables(self) -> MacroVariables:
-        buckets = {cat: {} for cat in ("sleep", "region", "color", "key", "var")}
-        for cat, table in self.variable_tables.items():
-            bucket = buckets.setdefault(cat, {})
-            for idx, (name, val) in enumerate(self._variable_pairs_from_table(table)):
-                if not name and not val:
+        buckets = {cat: {} for cat in VARIABLE_CATEGORY_KEYS}
+        for category in VARIABLE_CATEGORY_KEYS:
+            bucket = buckets.setdefault(category, {})
+            for idx, item in enumerate(self._variable_items.get(category, [])):
+                name = str(item.get("name", "") or "").strip()
+                value = str(item.get("value", "") or "").strip()
+                if not name and not value:
                     continue
                 if not name:
-                    raise ValueError(f"{cat} 변수 이름이 비어 있습니다. (순번 {idx + 1})")
+                    raise ValueError(f"{category} 변수 이름이 비어 있습니다. (순번 {idx + 1})")
                 if name in bucket:
-                    raise ValueError(f"{cat} 변수 '{name}'가 중복되었습니다.")
-                bucket[name] = val
+                    raise ValueError(f"{category} 변수 '{name}'가 중복되었습니다.")
+                bucket[name] = value
         return MacroVariables(**buckets)
-    def _set_variable_fields(self, variables: MacroVariables):
-        self._updating_variables = True
-        try:
-            for cat, table in self.variable_tables.items():
-                data = getattr(variables, cat, {}) or {}
-                pairs = self._sort_pairs_by_name(list(data.items()))
-                table.clearContents()
-                table.setRowCount(0)
-                self._set_variable_pairs(table, pairs)
-        finally:
-            self._updating_variables = False
-            self._refresh_variable_completers()
+    def _collect_variable_descriptions(self) -> MacroVariables:
+        buckets = {cat: {} for cat in VARIABLE_CATEGORY_KEYS}
+        for category in VARIABLE_CATEGORY_KEYS:
+            bucket = buckets.setdefault(category, {})
+            for item in self._variable_items.get(category, []):
+                name = str(item.get("name", "") or "").strip()
+                description = str(item.get("description", "") or "").strip()
+                if name and description:
+                    bucket[name] = description
+        return MacroVariables(**buckets)
+    def _set_variable_fields(
+        self,
+        variables: MacroVariables,
+        descriptions: MacroVariables | None = None,
+    ):
+        self._variable_items = self._normalize_variable_items(variables, descriptions)
+        self._refresh_variable_completers()
     def _refresh_variable_completers(self):
         names = {cat: self._variable_names(cat) for cat in ("region", "color", "key", "var")}
         dlg = self._pixel_test_dialog
@@ -16186,6 +16961,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         resolver = self._build_variable_resolver()
         macros = self._collect_macros(resolver)
         variables = self._collect_variables()
+        variable_descriptions = self._collect_variable_descriptions()
         region_raw = self.profile.pixel_region_raw or ",".join(str(v) for v in self.profile.pixel_region or [])
         color_raw = self.profile.pixel_color_raw or _rgb_to_hex(self.profile.pixel_color or (255, 0, 0))
         pixel_region = _parse_region(region_raw, resolver=resolver)
@@ -16215,6 +16991,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             key_delay=key_delay if isinstance(key_delay, KeyDelayConfig) else KeyDelayConfig.from_dict(key_delay),
             mouse_delay=mouse_delay if isinstance(mouse_delay, KeyDelayConfig) else KeyDelayConfig.from_dict(mouse_delay),
             variables=variables,
+            variable_descriptions=variable_descriptions,
             base_resolution=base_resolution,
             base_scale_percent=base_scale,
             transform_matrix=getattr(self.profile, "transform_matrix", None),
@@ -16836,7 +17613,10 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._persist_last_profile_path(None)
         self._loading_profile = True
         self._refresh_macros()
-        self._set_variable_fields(self.profile.variables)
+        self._set_variable_fields(
+            self.profile.variables,
+            getattr(self.profile, "variable_descriptions", MacroVariables()),
+        )
         self._refresh_pixel_defaults(self.profile)
         self.engine.update_profile(self.profile)
         try:
@@ -16867,7 +17647,10 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._persist_last_profile_path(path)
         self._loading_profile = True
         self._refresh_macros()
-        self._set_variable_fields(self.profile.variables)
+        self._set_variable_fields(
+            self.profile.variables,
+            getattr(self.profile, "variable_descriptions", MacroVariables()),
+        )
         self._refresh_pixel_defaults(self.profile)
         self.engine.update_profile(self.profile)
         try:

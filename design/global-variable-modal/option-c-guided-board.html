@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A-3 List + Form</title>
+  <style>
+    :root {
+      --bg: #f4f4f5;
+      --panel: #ffffff;
+      --line: #d4d4d8;
+      --text: #18181b;
+      --muted: #71717a;
+      --accent: #2563eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+      padding: 16px;
+    }
+    .dialog {
+      max-width: 1260px;
+      margin: 0 auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .bar, .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      background: #fafafa;
+      border-bottom: 1px solid var(--line);
+    }
+    .footer {
+      border-bottom: 0;
+      border-top: 1px solid var(--line);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .btn {
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .btn.primary {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: var(--accent);
+    }
+    .body {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr) 320px;
+      min-height: 620px;
+    }
+    .left, .center, .right { min-width: 0; }
+    .left {
+      border-right: 1px solid var(--line);
+      background: #fafafa;
+      padding: 12px;
+    }
+    .group-title {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    .cat, .item {
+      width: 100%;
+      text-align: left;
+      padding: 9px 10px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+    .cat.active, .item.active {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .center {
+      padding: 12px;
+      border-right: 1px solid var(--line);
+    }
+    .search-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    input, select {
+      height: 34px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 13px;
+      background: #fff;
+    }
+    .search-row input { flex: 1; }
+    .list {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .list-head, .list-row {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    .list-head {
+      background: #fafafa;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .list-row.active {
+      background: #f5f9ff;
+    }
+    .right {
+      padding: 12px;
+      background: #fafafa;
+    }
+    .form {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 12px;
+    }
+    .field {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .field label {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    @media (max-width: 980px) {
+      .body { grid-template-columns: 1fr; }
+      .left, .center { border-right: 0; border-bottom: 1px solid var(--line); }
+      .bar, .footer { flex-direction: column; align-items: stretch; }
+    }
+  </style>
+</head>
+<body>
+  <div class="dialog">
+    <div class="bar">
+      <div>
+        <h1>전역 변수 관리</h1>
+        <p>한 항목씩 선택해서 오른쪽 폼에서 바로 수정하는 구조</p>
+      </div>
+      <button class="btn">닫기</button>
+    </div>
+
+    <div class="body">
+      <aside class="left">
+        <p class="group-title">카테고리</p>
+        <button class="cat active">Region</button>
+        <button class="cat">Sleep</button>
+        <button class="cat">Color</button>
+        <button class="cat">Key</button>
+        <button class="cat">Value</button>
+      </aside>
+
+      <section class="center">
+        <div class="search-row">
+          <input type="search" placeholder="검색">
+          <button class="btn">정렬</button>
+          <button class="btn primary">추가</button>
+        </div>
+
+        <div class="list">
+          <div class="list-head">
+            <div>이름</div>
+            <div>값</div>
+          </div>
+          <div class="list-row active">
+            <div>safe_region</div>
+            <div>1032,1323,220,84</div>
+          </div>
+          <div class="list-row">
+            <div>loot_area</div>
+            <div>900,1220,320,110</div>
+          </div>
+          <div class="list-row">
+            <div>popup_area</div>
+            <div>120,240,400,180</div>
+          </div>
+          <div class="list-row">
+            <div>hp_check</div>
+            <div>40,980,180,22</div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="right">
+        <div class="form">
+          <div class="field">
+            <label>카테고리</label>
+            <select>
+              <option>Region</option>
+              <option>Sleep</option>
+              <option>Color</option>
+              <option>Key</option>
+              <option>Value</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>이름</label>
+            <input type="text" value="safe_region">
+          </div>
+          <div class="field">
+            <label>값</label>
+            <input type="text" value="1032,1323,220,84">
+          </div>
+          <div class="field">
+            <label>설명</label>
+            <input type="text" placeholder="없어도 됨">
+          </div>
+          <div class="actions">
+            <button class="btn">삭제</button>
+            <button class="btn">새로 만들기</button>
+            <button class="btn primary">수정 저장</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <div class="footer">
+      <p>정보 패널은 없애고, 오른쪽도 순수 편집 폼만 두는 버전</p>
+      <div class="actions">
+        <button class="btn">취소</button>
+        <button class="btn">적용</button>
+        <button class="btn primary">저장</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

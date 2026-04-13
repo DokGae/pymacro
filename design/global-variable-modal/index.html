@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>전역 변수 모달 샘플</title>
+  <style>
+    :root {
+      --bg: #f3f4f6;
+      --panel: #ffffff;
+      --line: #d4d4d8;
+      --text: #18181b;
+      --muted: #71717a;
+      --accent: #2563eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .hero, .card, .compare {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+    .hero, .compare {
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    h1, h2, h3 { margin: 0; }
+    .hero p, .card p, .compare p, td {
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 14px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .card {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .badge.recommended {
+      color: var(--accent);
+      border-color: #bfdbfe;
+      background: #eff6ff;
+    }
+    iframe {
+      width: 100%;
+      height: 360px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .button {
+      display: inline-block;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .button.primary {
+      border-color: #bfdbfe;
+      background: #eff6ff;
+      color: var(--accent);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 8px;
+      border-top: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    @media (max-width: 1100px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>전역변수/프리셋 모달 샘플</h1>
+      <p>장식은 줄이고, PyQt6 기본 위젯으로 바로 옮기기 쉬운 구조만 남겼습니다. 공통 기준은 `빠른 수정`, `짧은 저장 동선`, `구현 난이도 낮음`입니다.</p>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <div>
+          <span class="badge recommended">추천</span>
+          <h2 style="margin-top:8px;">A-1 Split + Quick Edit</h2>
+          <p>좌측 카테고리, 중앙 목록, 하단 빠른 편집 영역. 가장 무난하고 실제 Qt 구현이 쉽습니다.</p>
+        </div>
+        <iframe src="./option-a-command-center.html" title="A-1"></iframe>
+        <div class="actions">
+          <a class="button primary" href="./option-a-command-center.html">A-1 열기</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <div>
+          <span class="badge">단순형</span>
+          <h2 style="margin-top:8px;">A-2 Tabs + Table</h2>
+          <p>상단 탭으로 카테고리 전환, 중앙 표, 하단 저장. UI가 가장 단순합니다.</p>
+        </div>
+        <iframe src="./option-b-power-grid.html" title="A-2"></iframe>
+        <div class="actions">
+          <a class="button" href="./option-b-power-grid.html">A-2 열기</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <div>
+          <span class="badge">폼중심</span>
+          <h2 style="margin-top:8px;">A-3 List + Form</h2>
+          <p>왼쪽 목록을 고르면 오른쪽에서 이름/값만 바로 수정하는 구조입니다.</p>
+        </div>
+        <iframe src="./option-c-guided-board.html" title="A-3"></iframe>
+        <div class="actions">
+          <a class="button" href="./option-c-guided-board.html">A-3 열기</a>
+        </div>
+      </article>
+    </section>
+
+    <section class="compare" style="margin-top:16px;">
+      <h3>빠른 비교</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>안</th>
+            <th>장점</th>
+            <th>단점</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A-1</td>
+            <td>균형이 가장 좋고 Qt 모달로 옮기기 쉽습니다.</td>
+            <td>아주 대량 편집에는 A-2보다 약간 느릴 수 있습니다.</td>
+          </tr>
+          <tr>
+            <td>A-2</td>
+            <td>구조가 가장 단순해서 배우기 쉽습니다.</td>
+            <td>카테고리 사이를 자주 왔다 갔다 하면 덜 빠를 수 있습니다.</td>
+          </tr>
+          <tr>
+            <td>A-3</td>
+            <td>한 항목씩 정확히 수정하기 편합니다.</td>
+            <td>여러 개를 연속 편집할 때는 덜 효율적입니다.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+</body>
+</html>

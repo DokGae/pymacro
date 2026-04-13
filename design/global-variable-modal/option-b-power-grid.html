@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A-2 Tabs + Table</title>
+  <style>
+    :root {
+      --bg: #f4f4f5;
+      --panel: #ffffff;
+      --line: #d4d4d8;
+      --text: #18181b;
+      --muted: #71717a;
+      --accent: #2563eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+      padding: 16px;
+    }
+    .dialog {
+      max-width: 1240px;
+      margin: 0 auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .bar, .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      background: #fafafa;
+      border-bottom: 1px solid var(--line);
+    }
+    .footer {
+      border-bottom: 0;
+      border-top: 1px solid var(--line);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .btn {
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .btn.primary {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: var(--accent);
+    }
+    .tabs {
+      display: flex;
+      gap: 6px;
+      padding: 12px 14px 0;
+      background: #fff;
+    }
+    .tab {
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      border-radius: 8px 8px 0 0;
+      background: #f4f4f5;
+      font-size: 13px;
+    }
+    .tab.active {
+      background: #fff;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .content {
+      padding: 0 14px 14px;
+    }
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 0;
+      border-top: 1px solid var(--line);
+    }
+    .toolbar-left, .toolbar-right, .footer-actions, .row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    input {
+      height: 34px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .search { width: 260px; max-width: 100%; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+    }
+    th {
+      background: #fafafa;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .quick-add {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fafafa;
+    }
+    .quick-add .row { margin-bottom: 8px; }
+    .quick-add .row:last-child { margin-bottom: 0; }
+    @media (max-width: 900px) {
+      .bar, .toolbar, .footer { flex-direction: column; align-items: stretch; }
+    }
+  </style>
+</head>
+<body>
+  <div class="dialog">
+    <div class="bar">
+      <div>
+        <h1>전역 변수 관리</h1>
+        <p>가장 단순한 탭형 구조</p>
+      </div>
+      <button class="btn">닫기</button>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active">Sleep</button>
+      <button class="tab">Region</button>
+      <button class="tab">Color</button>
+      <button class="tab">Key</button>
+      <button class="tab">Value</button>
+    </div>
+
+    <div class="content">
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <input class="search" type="search" placeholder="검색">
+          <button class="btn">정렬</button>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn">삭제</button>
+          <button class="btn primary">행 추가</button>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width:60px;">#</th>
+            <th style="width:260px;">이름</th>
+            <th>값</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>human_gap</td>
+            <td>80-150</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>loot_wait</td>
+            <td>240</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>retry_sleep</td>
+            <td>1200</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>safe_pause</td>
+            <td>500-700</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>idle_delay</td>
+            <td>50</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="quick-add">
+        <div class="row">
+          <input type="text" placeholder="이름">
+          <input type="text" placeholder="값" style="flex:1; min-width:240px;">
+          <button class="btn primary">추가</button>
+        </div>
+        <p>선택한 행은 표에서 바로 수정하거나, 아래 입력으로 새 항목을 빠르게 넣는 방식</p>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>구조가 가장 단순해서 구현도 가장 쉽지만, 카테고리 사이를 자주 오갈 때는 A-1보다 덜 편할 수 있음</p>
+      <div class="footer-actions">
+        <button class="btn">취소</button>
+        <button class="btn">적용</button>
+        <button class="btn primary">저장</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

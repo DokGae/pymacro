@@ -1721,6 +1721,7 @@ class MacroProfile:
     key_delay: KeyDelayConfig = field(default_factory=KeyDelayConfig)
     mouse_delay: KeyDelayConfig = field(default_factory=KeyDelayConfig)
     variables: MacroVariables = field(default_factory=MacroVariables)
+    variable_descriptions: MacroVariables = field(default_factory=MacroVariables)
     base_resolution: tuple[int, int] = DEFAULT_BASE_RESOLUTION
     base_scale_percent: float = DEFAULT_BASE_SCALE
     transform_matrix: Optional[Dict[str, Any]] = None
@@ -1773,6 +1774,7 @@ class MacroProfile:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MacroProfile":
         variables = MacroVariables.from_dict(data.get("variables", {}) or {})
+        variable_descriptions = MacroVariables.from_dict(data.get("variable_descriptions", {}) or {})
         resolver = VariableResolver(variables)
         base_resolution = cls._parse_resolution(data.get("base_resolution"), DEFAULT_BASE_RESOLUTION)
         base_scale = cls._parse_scale_percent(data.get("base_scale_percent"), DEFAULT_BASE_SCALE)
@@ -1871,6 +1873,7 @@ class MacroProfile:
             key_delay=KeyDelayConfig.from_dict(data.get("key_delay", {}) if isinstance(data, dict) else {}),
             mouse_delay=KeyDelayConfig.from_dict(data.get("mouse_delay", {}) if isinstance(data, dict) else {}),
             variables=variables,
+            variable_descriptions=variable_descriptions,
             base_resolution=base_resolution,
             base_scale_percent=base_scale,
             transform_matrix=transform_meta,
@@ -1905,6 +1908,15 @@ class MacroProfile:
             "base_resolution": [int(v) for v in base_res],
             "base_scale_percent": float(base_scale),
         }
+        try:
+            has_variable_descriptions = any(
+                bool(getattr(self.variable_descriptions, cat, {}) or {})
+                for cat in ("sleep", "region", "color", "key", "var")
+            )
+        except Exception:
+            has_variable_descriptions = False
+        if has_variable_descriptions:
+            data["variable_descriptions"] = self.variable_descriptions.to_dict()
         if self.transform_matrix:
             try:
                 data["transform_matrix"] = copy.deepcopy(self.transform_matrix)
