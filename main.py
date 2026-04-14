@@ -15644,6 +15644,8 @@ class VariableManagerDialog(QtWidgets.QDialog):
             self._close_without_prompt()
             return
 class MacroWindow(QtWidgets.QMainWindow):
+    _macro_clipboard: list[Macro] | None = None
+
     def __init__(self, engine: MacroEngine, profile: MacroProfile | None = None):
         super().__init__()
         self.engine = engine
@@ -16516,11 +16518,15 @@ class MacroWindow(QtWidgets.QMainWindow):
         btn_row = QtWidgets.QHBoxLayout()
         self.add_macro_btn = QtWidgets.QPushButton("매크로 추가")
         self.edit_macro_btn = QtWidgets.QPushButton("편집")
+        self.copy_macro_btn = QtWidgets.QPushButton("복사")
+        self.paste_macro_btn = QtWidgets.QPushButton("붙여넣기")
         self.clone_macro_btn = QtWidgets.QPushButton("복제")
         self.del_macro_btn = QtWidgets.QPushButton("삭제")
         self.variable_manager_btn = QtWidgets.QPushButton("전역 변수 관리...")
         btn_row.addWidget(self.add_macro_btn)
         btn_row.addWidget(self.edit_macro_btn)
+        btn_row.addWidget(self.copy_macro_btn)
+        btn_row.addWidget(self.paste_macro_btn)
         btn_row.addWidget(self.clone_macro_btn)
         btn_row.addWidget(self.del_macro_btn)
         btn_row.addStretch()
@@ -16634,6 +16640,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             self.keyboard_install_btn.clicked.connect(self._run_interception_installer)
         self.add_macro_btn.clicked.connect(self._add_macro)
         self.edit_macro_btn.clicked.connect(self._edit_macro)
+        self.copy_macro_btn.clicked.connect(self._copy_macro)
+        self.paste_macro_btn.clicked.connect(self._paste_macro)
         self.clone_macro_btn.clicked.connect(self._clone_macro)
         self.del_macro_btn.clicked.connect(self._delete_macro)
         if hasattr(self, "variable_manager_btn"):
@@ -17448,6 +17456,11 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _get_selected_row(self) -> int:
         selected = self.macro_table.selectionModel().selectedRows()
         return selected[0].row() if selected else -1
+    def _selected_macro_rows(self) -> list[int]:
+        selection = self.macro_table.selectionModel()
+        if not selection:
+            return []
+        return sorted({idx.row() for idx in selection.selectedRows()})
     def _macro_from_row(self, row: int) -> Macro:
         item = self.macro_table.item(row, 0)
         stored = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
@@ -17464,6 +17477,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         menu = QtWidgets.QMenu(self)
         add_act = menu.addAction("매크로 추가")
         edit_act = menu.addAction("편집")
+        copy_act = menu.addAction("복사")
+        paste_act = menu.addAction("붙여넣기")
         clone_act = menu.addAction("복제")
         del_act = menu.addAction("삭제")
         action = menu.exec(self.macro_table.viewport().mapToGlobal(pos))
@@ -17471,6 +17486,10 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._add_macro()
         elif action == edit_act:
             self._edit_macro()
+        elif action == copy_act:
+            self._copy_macro()
+        elif action == paste_act:
+            self._paste_macro()
         elif action == clone_act:
             self._clone_macro()
         elif action == del_act:
@@ -17570,6 +17589,43 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._set_macro_row(insert_row, cloned)
         self._renumber_macro_rows()
         self.macro_table.selectRow(insert_row)
+        if not self._loading_profile:
+            self._mark_dirty()
+    def _copy_macro(self):
+        rows = self._selected_macro_rows()
+        if not rows:
+            QtWidgets.QMessageBox.information(self, "선택 없음", "복사할 매크로를 선택하세요.")
+            return
+        copied: list[Macro] = []
+        for row in rows:
+            macro = self._macro_from_row(row)
+            if isinstance(macro, Macro):
+                copied.append(copy.deepcopy(macro))
+        if not copied:
+            QtWidgets.QMessageBox.information(self, "대상 없음", "복사할 매크로를 찾지 못했습니다.")
+            return
+        MacroWindow._macro_clipboard = copied
+    def _paste_macro(self):
+        clipboard = getattr(MacroWindow, "_macro_clipboard", None)
+        if not clipboard:
+            QtWidgets.QMessageBox.information(self, "복사본 없음", "먼저 복사할 매크로를 선택해 복사하세요.")
+            return
+        rows = self._selected_macro_rows()
+        if self.macro_table.rowCount() > 0 and not rows:
+            QtWidgets.QMessageBox.information(self, "선택 없음", "붙여넣을 위치를 선택하세요.")
+            return
+        insert_row = (rows[-1] + 1) if rows else self.macro_table.rowCount()
+        pasted_rows: list[int] = []
+        for macro in clipboard:
+            cloned = copy.deepcopy(macro)
+            self.macro_table.insertRow(insert_row)
+            self._set_macro_row(insert_row, cloned)
+            pasted_rows.append(insert_row)
+            insert_row += 1
+        self._renumber_macro_rows()
+        if pasted_rows:
+            self.macro_table.clearSelection()
+            self.macro_table.selectRow(pasted_rows[-1])
         if not self._loading_profile:
             self._mark_dirty()
     def _delete_macro(self):
