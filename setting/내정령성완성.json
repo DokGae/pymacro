@@ -539,7 +539,7 @@
           "actions": [
             {
               "type": "if",
-              "name": "프리셋3번아닐때",
+              "name": "프리셋2",
               "description": null,
               "enabled": true,
               "once_per_macro": false,
@@ -763,7 +763,7 @@
         },
         {
           "type": "if",
-          "name": "프리셋1번",
+          "name": "프리셋2아닐때",
           "description": null,
           "enabled": true,
           "once_per_macro": false,
@@ -802,7 +802,7 @@
                 "var_name": null,
                 "var_value_raw": null,
                 "var_operator": "eq",
-                "region": "/프리셋1일때",
+                "region": "/프리셋2일때",
                 "color": "ffffff",
                 "pixel_pattern": null,
                 "tolerance": 5,
@@ -5757,7 +5757,7 @@
           "type": "if",
           "name": "프리셋1번",
           "description": null,
-          "enabled": true,
+          "enabled": false,
           "once_per_macro": false,
           "force_first_run": false,
           "key": null,
@@ -5784,7 +5784,7 @@
             "timer_index": null,
             "timer_value": null,
             "timer_operator": "ge",
-            "enabled": true,
+            "enabled": false,
             "conditions": [
               {
                 "type": "pixel",
@@ -11014,41 +11014,6 @@
       "interaction_outgoing_mode": "none",
       "interaction_targets": [],
       "interaction_exclude_targets": [],
-      "interaction_incoming_allow": [],
-      "interaction_incoming_block": [],
-      "scope": "app",
-      "app_targets": [
-        {
-          "name": "Aion2.exe",
-          "path": "C:/Program Files (x86)/NCSOFT/AION2_KR/Aion2/Binaries/Win64/Aion2.exe"
-        }
-      ]
-    },
-    {
-      "trigger_key": "mouse2",
-      "mode": "hold",
-      "hold_press_seconds": null,
-      "triggers": [
-        {
-          "key": "mouse2",
-          "mode": "hold",
-          "hold_press_seconds": null
-        }
-      ],
-      "name": "우클릭중지",
-      "description": null,
-      "suppress_trigger": false,
-      "enabled": true,
-      "cycle_count": null,
-      "actions": [],
-      "stop_actions": [],
-      "stop_others_on_trigger": true,
-      "suspend_others_while_running": false,
-      "interaction_outgoing_mode": "stop",
-      "interaction_targets": [],
-      "interaction_exclude_targets": [
-        "어비스 닥사"
-      ],
       "interaction_incoming_allow": [],
       "interaction_incoming_block": [],
       "scope": "app",

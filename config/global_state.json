@@ -1,13 +1,13 @@
 {
-  "last_profile_path": "D:\\Ion\\macro\\setting\\내궁성완성.json",
+  "last_profile_path": "D:\\Ion\\macro\\setting\\내검성완성.json",
   "profile_history": {
     "recent": [
-      "D:\\Ion\\macro\\setting\\내궁성완성.json",
+      "D:\\Ion\\macro\\setting\\내검성완성.json",
       "D:\\Ion\\macro\\setting\\내마도성완성.json",
       "D:\\Ion\\macro\\setting\\내정령성완성.json",
+      "D:\\Ion\\macro\\setting\\내궁성완성.json",
       "D:\\Ion\\macro\\setting\\내치유성완성.json",
       "D:\\Ion\\macro\\setting\\내호법성완성.json",
-      "D:\\Ion\\macro\\setting\\내검성완성.json",
       "D:\\Ion\\macro\\setting\\살성(에즈카페).json",
       "D:\\Ion\\macro\\setting\\내살성완성(에즈).json",
       "D:\\Ion\\macro\\setting\\슈고페스타.json",
@@ -55,8 +55,8 @@
     "jpeg_quality": 80,
     "png_compress_level": 0,
     "queue_size": 120,
-    "hotkey_start": "home",
-    "hotkey_stop": "end",
+    "hotkey_start": null,
+    "hotkey_stop": null,
     "hotkey_capture": "f10",
     "hotkey_enabled": true
   },
@@ -72,7 +72,7 @@
       ]
     },
     "fav_group": "기본",
-    "last_file": "D:\\Ion\\macro\\screenshot\\000083_20260413_020508_108976.png",
+    "last_file": null,
     "sort_col": 3,
     "sort_order": "asc"
   }
