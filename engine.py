@@ -1994,9 +1994,11 @@ class KeySwallower:
         }
         for button in buttons:
             down_state, up_state = mapping.get(button, (0, 0))
-            if state_raw == down_state:
+            # Interception mouse state can carry extra bits together with the button event,
+            # so exact equality can miss XButton up/down transitions and leave hold state stuck.
+            if down_state and (state_raw & down_state) == down_state:
                 return button, True, False
-            if state_raw == up_state:
+            if up_state and (state_raw & up_state) == up_state:
                 return button, False, True
         return None, False, False
 

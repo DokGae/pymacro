@@ -5365,11 +5365,39 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
     def paintEvent(self, event: QtGui.QPaintEvent):
         super().paintEvent(event)
         self._paint_drop_feedback()
-    def _drag_default_action(self) -> QtCore.Qt.DropAction:
-        modifiers = QtWidgets.QApplication.keyboardModifiers()
-        return QtCore.Qt.DropAction.CopyAction if modifiers & QtCore.Qt.KeyboardModifier.AltModifier else QtCore.Qt.DropAction.MoveAction
+    def _drag_modifiers(self, event=None) -> QtCore.Qt.KeyboardModifiers:
+        if event is not None:
+            getter = getattr(event, "keyboardModifiers", None)
+            if callable(getter):
+                try:
+                    mods = getter()
+                    if mods:
+                        return mods
+                except Exception:
+                    pass
+            getter = getattr(event, "modifiers", None)
+            if callable(getter):
+                try:
+                    mods = getter()
+                    if mods:
+                        return mods
+                except Exception:
+                    pass
+        try:
+            mods = QtGui.QGuiApplication.queryKeyboardModifiers()
+            if mods:
+                return mods
+        except Exception:
+            pass
+        return QtWidgets.QApplication.keyboardModifiers()
+    def _copy_drag_requested(self, event=None) -> bool:
+        modifiers = self._drag_modifiers(event)
+        copy_mods = QtCore.Qt.KeyboardModifier.AltModifier | QtCore.Qt.KeyboardModifier.ControlModifier
+        return bool(modifiers & copy_mods)
+    def _drag_default_action(self, event=None) -> QtCore.Qt.DropAction:
+        return QtCore.Qt.DropAction.CopyAction if self._copy_drag_requested(event) else QtCore.Qt.DropAction.MoveAction
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent):
-        event.setDropAction(self._drag_default_action())
+        event.setDropAction(self._drag_default_action(event))
         super().dragEnterEvent(event)
         self._update_drop_feedback(event)
     def startDrag(self, supported_actions: QtCore.Qt.DropActions):
@@ -5385,7 +5413,7 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         self._drag_pixmap_mode = None
         self._clear_drop_feedback()
     def dragMoveEvent(self, event: QtGui.QDragMoveEvent):
-        event.setDropAction(self._drag_default_action())
+        event.setDropAction(self._drag_default_action(event))
         super().dragMoveEvent(event)
         self._update_drop_feedback(event)
     def dragLeaveEvent(self, event: QtGui.QDragLeaveEvent):
@@ -5777,7 +5805,7 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             clone.addChild(self._clone_tree_item(item.child(idx)))
         return clone
     def dropEvent(self, event: QtGui.QDropEvent):
-        modifiers = QtWidgets.QApplication.keyboardModifiers()
+        copy_requested = self._copy_drag_requested(event)
         pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         target = self.itemAt(pos)
         indicator = self.dropIndicatorPosition()
@@ -5818,7 +5846,7 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             if insert_at < 0:
                 insert_at = self.topLevelItemCount()
             return parent_item, insert_at
-        if modifiers & QtCore.Qt.KeyboardModifier.AltModifier and event.source() in (self, self.viewport()):
+        if copy_requested and event.source() in (self, self.viewport()):
             selected = self._top_level_selected(self.selectedItems())
             if not selected:
                 event.ignore()
