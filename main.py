@@ -45,6 +45,7 @@ from engine import (
     DEFAULT_BASE_SCALE,
     normalize_trigger_key,
     parse_trigger_keys,
+    _infer_time_unit_from_text,
     _send_telegram_message,
 )
 from lib import keyboard as kbutil
@@ -290,6 +291,24 @@ SOUND_WAIT_MODE_OPTIONS = [
     ("지정 시간 재생 후 다음 액션", "duration"),
     ("지정 횟수 재생 후 다음 액션", "repeat"),
 ]
+TIME_UNIT_OPTIONS = [
+    ("밀리초 (ms)", "ms"),
+    ("초 (s)", "sec"),
+    ("분 (min)", "min"),
+    ("시 (h)", "hour"),
+]
+
+
+def _add_time_unit_items(combo: QtWidgets.QComboBox):
+    for label, value in TIME_UNIT_OPTIONS:
+        combo.addItem(label, value)
+
+
+def _set_combo_data(combo: QtWidgets.QComboBox, value: Any, *, fallback: str = ""):
+    idx = combo.findData(value)
+    if idx < 0 and fallback:
+        idx = combo.findData(fallback)
+    combo.setCurrentIndex(idx if idx >= 0 else 0)
 
 
 def _format_sound_wait_suffix(wait_mode: Any, duration_sec: Any, repeat_count: Any) -> str:
@@ -1377,7 +1396,15 @@ def _actions_from_table(table: QtWidgets.QTableWidget, resolver=None) -> List[St
                 sleep_ms, sleep_range = Step.parse_sleep(resolved)
             except ValueError as exc:
                 raise ValueError(f"sleep 값이 잘못되었습니다 (행 {row + 1}): {exc}")
-            steps.append(Step(type="sleep", sleep_ms=sleep_ms, sleep_range=sleep_range, sleep_raw=val))
+            steps.append(
+                Step(
+                    type="sleep",
+                    sleep_ms=sleep_ms,
+                    sleep_range=sleep_range,
+                    sleep_raw=val,
+                    sleep_unit=_infer_time_unit_from_text(val) or "ms",
+                )
+            )
         else:
             if not val:
                 continue
@@ -1478,11 +1505,7 @@ def _condition_brief(cond: Condition) -> str:
         op_map = {"ge": ">=", "gt": ">", "le": "<=", "lt": "<", "eq": "==", "ne": "!="}
         op = op_map.get(getattr(cond, "timer_operator", "ge"), ">=")
         slot = getattr(cond, "timer_index", None)
-        target_val = getattr(cond, "timer_value", None)
-        if isinstance(target_val, (int, float)):
-            target = f"{float(target_val):.3f}".rstrip("0").rstrip(".")
-        else:
-            target = target_val
+        target = cond.timer_value_text() if hasattr(cond, "timer_value_text") else getattr(cond, "timer_value", None)
         slot_text = f"타이머{slot}" if slot else "타이머"
         target_text = target if target is not None else "?"
         return f"{slot_text} {op} {target_text}{suffix}"
@@ -1605,11 +1628,20 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.timer_slot_combo = QtWidgets.QComboBox()
         for i in range(1, 21):
             self.timer_slot_combo.addItem(f"타이머{i}", i)
-        self.timer_value_spin = QtWidgets.QDoubleSpinBox()
-        self.timer_value_spin.setRange(0.0, 999999.0)
-        self.timer_value_spin.setDecimals(3)
-        self.timer_value_spin.setSingleStep(0.1)
-        self.timer_value_spin.setSuffix(" 초")
+        self.timer_value_edit = QtWidgets.QLineEdit("0")
+        self.timer_value_edit.setPlaceholderText("예: 500, 3, 1.5, /변수")
+        self.timer_value_edit.setToolTip("숫자를 입력하고 오른쪽에서 단위를 선택하세요. 예: 500ms, 3초, 1.5분, 0.5시")
+        self.timer_unit_combo = QtWidgets.QComboBox()
+        _add_time_unit_items(self.timer_unit_combo)
+        _set_combo_data(self.timer_unit_combo, "sec", fallback="sec")
+        timer_value_row = QtWidgets.QHBoxLayout()
+        timer_value_row.setContentsMargins(0, 0, 0, 0)
+        timer_value_row.setSpacing(6)
+        timer_value_row.addWidget(self.timer_value_edit, 1)
+        timer_value_row.addWidget(self.timer_unit_combo)
+        self.timer_value_wrap = QtWidgets.QWidget()
+        self.timer_value_wrap.setLayout(timer_value_row)
+        self._install_var_completer(self.timer_value_edit, "var")
         self.timer_op_combo = QtWidgets.QComboBox()
         self.timer_op_combo.addItem("이상이면 참 (>=)", "ge")
         self.timer_op_combo.addItem("초과일 때 참 (>)", "gt")
@@ -1662,7 +1694,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.form.addRow("변수 값", self.var_value_edit)
         self.form.addRow("비교 방식", self.var_op_combo)
         self.form.addRow("타이머 슬롯(1~20)", self.timer_slot_combo)
-        self.form.addRow("타이머 값(초)", self.timer_value_spin)
+        self.form.addRow("타이머 값", self.timer_value_wrap)
         self.form.addRow("타이머 비교", self.timer_op_combo)
         self.form.addRow(self.group_hint)
         layout.addLayout(self.form)
@@ -1737,7 +1769,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         else:
             self.color_wrap.setVisible(False)
         _toggle((self.var_name_edit, self.var_value_edit, self.var_op_combo), visible=is_var, enabled=is_var)
-        _toggle((self.timer_slot_combo, self.timer_value_spin, self.timer_op_combo), visible=is_timer, enabled=is_timer)
+        _toggle((self.timer_slot_combo, self.timer_value_wrap, self.timer_op_combo), visible=is_timer, enabled=is_timer)
         self.group_hint.setVisible(is_group)
     def _load(self, cond: Condition):
         self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(cond.type)))
@@ -1782,7 +1814,10 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             idx = self.timer_slot_combo.findData(getattr(cond, "timer_index", 1))
             if idx >= 0:
                 self.timer_slot_combo.setCurrentIndex(idx)
-            self.timer_value_spin.setValue(max(0.0, float(getattr(cond, "timer_value", 0) or 0)))
+            self.timer_value_edit.setText(
+                cond.timer_input_text() if hasattr(cond, "timer_input_text") else str(getattr(cond, "timer_value", 0) or 0)
+            )
+            _set_combo_data(self.timer_unit_combo, getattr(cond, "timer_unit", "sec"), fallback="sec")
             op_idx = self.timer_op_combo.findData(getattr(cond, "timer_operator", "ge"))
             if op_idx >= 0:
                 self.timer_op_combo.setCurrentIndex(op_idx)
@@ -1842,11 +1877,22 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             return Condition(type="var", name=name, var_name=var_name, var_value_raw=value_raw or None, var_operator=op)
         if typ == "timer":
             slot = int(self.timer_slot_combo.currentData() or 0)
-            value = float(self.timer_value_spin.value())
+            raw_value = self.timer_value_edit.text().strip()
+            unit = self.timer_unit_combo.currentData() or "sec"
+            resolved_value = self._resolver.resolve(raw_value, "var") if self._resolver and raw_value else raw_value
+            value = Condition.parse_timer_value(resolved_value, default_unit=unit)
             op = self.timer_op_combo.currentData() or "ge"
             if slot < 1 or slot > 20:
                 raise ValueError("타이머 슬롯은 1~20 사이여야 합니다.")
-            return Condition(type="timer", name=name, timer_index=slot, timer_value=value, timer_operator=op)
+            return Condition(
+                type="timer",
+                name=name,
+                timer_index=slot,
+                timer_value=value,
+                timer_value_raw=raw_value or None,
+                timer_unit=unit,
+                timer_operator=op,
+            )
         group = Condition(type=typ, name=name, conditions=copy.deepcopy(self._child_conditions))
         return group
     def _toggle_pixel_test(self):
@@ -5546,12 +5592,8 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             return mode + suffix
         if act.type == "timer":
             slot = act.timer_index or "?"
-            value = act.timer_value if act.timer_value is not None else "?"
-            if isinstance(value, (int, float)):
-                val_text = f"{float(value):.3f}".rstrip("0").rstrip(".")
-            else:
-                val_text = str(value)
-            return f"타이머{slot}={val_text}초" + suffix
+            val_text = act.timer_value_text() if hasattr(act, "timer_value_text") else str(act.timer_value if act.timer_value is not None else "?")
+            return f"타이머{slot}={val_text}" + suffix
         return suffix.strip()
     def _format_desc(self, act: Action) -> str:
         return getattr(act, "description", "") or ""
@@ -6103,6 +6145,23 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_move_duration_spin.setSuffix(" ms")
         self.mouse_move_duration_spin.setToolTip("0이면 즉시 이동, 0보다 크면 해당 시간 동안 부드럽게 이동합니다.")
         self.sleep_edit = QtWidgets.QLineEdit("0")
+        self.sleep_edit.setPlaceholderText("예: 500, 1-3, 500~1500, /변수")
+        self.sleep_edit.setToolTip("숫자/범위를 입력하고 오른쪽에서 단위를 선택하세요. 예: 500ms, 1-3, 0.5~1분, 0.25시")
+        self.sleep_unit_combo = QtWidgets.QComboBox()
+        _add_time_unit_items(self.sleep_unit_combo)
+        _set_combo_data(self.sleep_unit_combo, "ms", fallback="ms")
+        sleep_row = QtWidgets.QHBoxLayout()
+        sleep_row.setContentsMargins(0, 0, 0, 0)
+        sleep_row.setSpacing(6)
+        sleep_row.addWidget(self.sleep_edit, 1)
+        sleep_row.addWidget(self.sleep_unit_combo)
+        self.sleep_wrap = QtWidgets.QWidget()
+        self.sleep_wrap.setLayout(sleep_row)
+        self.sleep_hint_label = QtWidgets.QLabel(
+            "숫자 하나면 고정 대기, `1-3` 또는 `1~3`처럼 입력하면 실행할 때마다 해당 범위에서 랜덤값을 사용합니다. 단위는 ms/초/분/시를 선택할 수 있습니다."
+        )
+        self.sleep_hint_label.setWordWrap(True)
+        self.sleep_hint_label.setStyleSheet("color: #666;")
         self.sound_file_edit = QtWidgets.QLineEdit()
         self.sound_file_edit.setPlaceholderText("비우면 시스템 알림음 사용")
         self.sound_file_browse_btn = QtWidgets.QPushButton("파일 선택...")
@@ -6153,6 +6212,22 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.macro_target_combo.showPopup = _show_macro_popup
         self.var_name_edit = QtWidgets.QLineEdit()
         self.var_value_edit = QtWidgets.QLineEdit()
+        self.timer_slot_combo = QtWidgets.QComboBox()
+        for i in range(1, 21):
+            self.timer_slot_combo.addItem(f"타이머{i}", i)
+        self.timer_value_edit = QtWidgets.QLineEdit("0")
+        self.timer_value_edit.setPlaceholderText("예: 500, 3, 1.5, /변수")
+        self.timer_value_edit.setToolTip("숫자를 입력하고 오른쪽에서 단위를 선택하세요. 예: 500ms, 3초, 1.5분, 0.5시")
+        self.timer_unit_combo = QtWidgets.QComboBox()
+        _add_time_unit_items(self.timer_unit_combo)
+        _set_combo_data(self.timer_unit_combo, "sec", fallback="sec")
+        timer_value_row = QtWidgets.QHBoxLayout()
+        timer_value_row.setContentsMargins(0, 0, 0, 0)
+        timer_value_row.setSpacing(6)
+        timer_value_row.addWidget(self.timer_value_edit, 1)
+        timer_value_row.addWidget(self.timer_unit_combo)
+        self.timer_value_wrap = QtWidgets.QWidget()
+        self.timer_value_wrap.setLayout(timer_value_row)
         self.telegram_token_edit = QtWidgets.QLineEdit()
         self.telegram_token_edit.setPlaceholderText("봇 토큰 (예: 123456789:AA...)")
         self.telegram_chat_id_edit = QtWidgets.QLineEdit()
@@ -6210,6 +6285,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         delay_layout.addWidget(self.override_gap_edit, 2, 1)
         delay_layout.addWidget(self.override_preset_btn, 1, 2, 2, 1)
         self._install_var_completer(self.sleep_edit, "sleep")
+        self._install_var_completer(self.timer_value_edit, "var")
         self._install_var_completer(self.region_edit, "region")
         self._install_var_completer(self.var_value_edit, "var")
         self._install_var_completer(self.telegram_token_edit, "var")
@@ -6243,7 +6319,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("마우스 이동 시간", self.mouse_move_duration_spin)
         form.addRow("반복 횟수", self.repeat_edit)
         form.addRow("일시중지 시 유지", self.pause_keep_check)
-        form.addRow("Sleep(ms 또는 범위)", self.sleep_edit)
+        form.addRow("Sleep 값", self.sleep_wrap)
+        form.addRow("", self.sleep_hint_label)
         form.addRow("사운드 파일(선택)", self.sound_file_wrap)
         form.addRow("사운드 재생 방식", self.sound_wait_mode_combo)
         form.addRow("사운드 재생 시간", self.sound_duration_spin)
@@ -6257,16 +6334,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("텔레그램 챗 ID", self.telegram_chat_id_edit)
         form.addRow("텔레그램 메시지", self.telegram_message_edit)
         form.addRow("텔레그램 테스트", self.telegram_test_btn)
-        self.timer_slot_combo = QtWidgets.QComboBox()
-        for i in range(1, 21):
-            self.timer_slot_combo.addItem(f"타이머{i}", i)
-        self.timer_value_spin = QtWidgets.QDoubleSpinBox()
-        self.timer_value_spin.setRange(0.0, 999999.0)
-        self.timer_value_spin.setDecimals(3)
-        self.timer_value_spin.setSingleStep(0.1)
-        self.timer_value_spin.setSuffix(" 초")
         form.addRow("타이머 슬롯(1~20)", self.timer_slot_combo)
-        form.addRow("타이머 값(초)", self.timer_value_spin)
+        form.addRow("타이머 값", self.timer_value_wrap)
         form.addRow("픽셀 좌표 x,y,w,h", self.region_edit)
         form.addRow("추가 +dx,dy,dw,dh (선택)", self.region_offset_edit)
         form.addRow("픽셀 변수명", self.pixel_target_edit)
@@ -6629,8 +6698,10 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.repeat_edit.setEnabled(show_repeat)
         self._set_field_visible(self.pause_keep_check, show_pause_keep)
         self.pause_keep_check.setEnabled(show_pause_keep)
-        self._set_field_visible(self.sleep_edit, show_sleep)
-        self.sleep_edit.setEnabled(show_sleep)
+        self._set_field_visible(self.sleep_wrap, show_sleep)
+        self._set_field_visible(self.sleep_hint_label, show_sleep)
+        for w in (self.sleep_edit, self.sleep_unit_combo):
+            w.setEnabled(show_sleep)
         self._set_field_visible(self.sound_file_wrap, show_sound)
         for w in (self.sound_file_edit, self.sound_file_browse_btn, self.sound_file_clear_btn):
             w.setEnabled(show_sound)
@@ -6661,8 +6732,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         for w in (self.telegram_token_edit, self.telegram_chat_id_edit, self.telegram_message_edit, self.telegram_test_btn):
             w.setEnabled(show_telegram)
         self._set_field_visible(self.timer_slot_combo, show_timer)
-        self._set_field_visible(self.timer_value_spin, show_timer)
-        for w in (self.timer_slot_combo, self.timer_value_spin):
+        self._set_field_visible(self.timer_value_wrap, show_timer)
+        for w in (self.timer_slot_combo, self.timer_value_edit, self.timer_unit_combo):
             w.setEnabled(show_timer)
         self._set_field_visible(self.region_edit, show_pixel_get)
         self._set_field_visible(self.region_offset_edit, show_pixel_get)
@@ -6759,7 +6830,8 @@ class ActionEditDialog(QtWidgets.QDialog):
                 self.mouse_pos_edit.setText(f"{x},{y}")
             else:
                 self.mouse_pos_edit.clear()
-        self.sleep_edit.setText(act.sleep_value_text() if hasattr(act, "sleep_value_text") else "")
+        self.sleep_edit.setText(act.sleep_input_text() if hasattr(act, "sleep_input_text") else "")
+        _set_combo_data(self.sleep_unit_combo, getattr(act, "sleep_unit", "ms"), fallback="ms")
         self.sound_file_edit.setText(str(getattr(act, "sound_file", "") or ""))
         sound_wait_mode = str(getattr(act, "sound_wait_mode", "once") or "once").strip().lower()
         idx_sound_mode = self.sound_wait_mode_combo.findData(sound_wait_mode)
@@ -6809,7 +6881,10 @@ class ActionEditDialog(QtWidgets.QDialog):
             idx = self.timer_slot_combo.findData(getattr(act, "timer_index", 1))
             if idx >= 0:
                 self.timer_slot_combo.setCurrentIndex(idx)
-            self.timer_value_spin.setValue(max(0.0, float(getattr(act, "timer_value", 0) or 0)))
+            self.timer_value_edit.setText(
+                act.timer_input_text() if hasattr(act, "timer_input_text") else str(getattr(act, "timer_value", 0) or 0)
+            )
+            _set_combo_data(self.timer_unit_combo, getattr(act, "timer_unit", "sec"), fallback="sec")
         self.delay_override_check.setChecked(getattr(act, "key_delay_override_enabled", False))
         override_cfg = getattr(act, "key_delay_override", None)
         if isinstance(override_cfg, KeyDelayConfig):
@@ -6930,9 +7005,11 @@ class ActionEditDialog(QtWidgets.QDialog):
             else:
                 act.key_delay_override = None
         elif typ == "sleep":
-            act.sleep_raw = self.sleep_edit.text().strip()
+            act.sleep_raw = self.sleep_edit.text().strip() or None
+            act.sleep_unit = self.sleep_unit_combo.currentData() or "ms"
             act.sleep_ms, act.sleep_range = Action.parse_sleep(
-                self._resolver.resolve(act.sleep_raw, "sleep") if self._resolver and act.sleep_raw else act.sleep_raw
+                self._resolver.resolve(act.sleep_raw, "sleep") if self._resolver and act.sleep_raw else act.sleep_raw,
+                default_unit=act.sleep_unit,
             )
         elif typ == "sound_alert":
             act.sound_file = self.sound_file_edit.text().strip() or None
@@ -6989,7 +7066,14 @@ class ActionEditDialog(QtWidgets.QDialog):
             if slot < 1 or slot > 20:
                 raise ValueError("타이머 슬롯은 1~20 사이여야 합니다.")
             act.timer_index = slot
-            act.timer_value = float(self.timer_value_spin.value())
+            act.timer_value_raw = self.timer_value_edit.text().strip() or None
+            act.timer_unit = self.timer_unit_combo.currentData() or "sec"
+            resolved_timer = (
+                self._resolver.resolve(act.timer_value_raw, "var")
+                if self._resolver and act.timer_value_raw
+                else act.timer_value_raw
+            )
+            act.timer_value = Action.parse_timer_value(resolved_timer, default_unit=act.timer_unit)
         elif typ == "pixel_get":
             region_raw = _compose_region_raw(self.region_edit.text(), self.region_offset_edit.text())
             if not region_raw:
@@ -10670,7 +10754,9 @@ class DebuggerDialog(QtWidgets.QDialog):
         if cond_type == "timer":
             t = detail.get("timer") or {}
             op_txt = t.get("operator") or "ge"
-            return f"타이머{t.get('slot')} {op_txt} {t.get('expected')} (현재={t.get('actual')})"
+            expected = t.get("expected_text", t.get("expected"))
+            actual = t.get("actual_text", t.get("actual"))
+            return f"타이머{t.get('slot')} {op_txt} {expected} (현재={actual})"
         if cond_type in ("all", "any"):
             grp = detail.get("group") or {}
             return f"{grp.get('mode', cond_type)} {grp.get('count', 0)}개"
@@ -15149,7 +15235,7 @@ class VariableManagerDialog(QtWidgets.QDialog):
         form.addRow("설명", self.description_edit)
         right_layout.addLayout(form)
         right_hint = QtWidgets.QLabel(
-            "예: sleep은 100 또는 100-200, region은 x,y,w,h, color는 RRGGBB, key는 키 이름, value는 자유 문자열"
+            "예: sleep은 100, 1-3, 100~200, 2초, 0.5분, 1시처럼 입력할 수 있고, 범위는 실행마다 랜덤값을 사용합니다. region은 x,y,w,h, color는 RRGGBB, key는 키 이름, value는 자유 문자열"
         )
         right_hint.setWordWrap(True)
         right_hint.setStyleSheet("color: #666;")
@@ -16600,7 +16686,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.variable_tabs.addTab(make_tab("Value", "var"), "Value")
         layout.addWidget(
             QtWidgets.QLabel(
-                "이름에 영문/숫자/_ 사용, 값은 해당 타입 포맷 (예: sleep은 100~200, region은 x,y,w,h, color는 RRGGBB, key는 키 이름 또는 스캔코드, value는 자유 문자열)."
+                "이름에 영문/숫자/_ 사용, 값은 해당 타입 포맷 (예: sleep은 100, 1-3, 100~200, 2초, 0.5분, 1시처럼 입력 가능하며 범위는 실행마다 랜덤값, region은 x,y,w,h, color는 RRGGBB, key는 키 이름 또는 스캔코드, value는 자유 문자열)."
             )
         )
         layout.addWidget(self.variable_tabs)

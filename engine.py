@@ -65,6 +65,7 @@ ActionType = Literal[
 ]
 GroupMode = Literal["all", "first_true", "first_true_continue", "first_true_return", "while", "repeat_n"]
 SoundWaitMode = Literal["once", "duration", "repeat"]
+TimeUnit = Literal["ms", "sec", "min", "hour"]
 StepType = Literal["press", "down", "up", "sleep", "if", "loop_while"]  # legacy 호환용
 MacroMode = Literal["hold", "toggle", "once"]
 VarCategory = Literal["sleep", "region", "color", "key", "var"]
@@ -94,9 +95,201 @@ _MOUSE_TRIGGER_ALIASES = {
     "mb5": "mouse5",
     "x2": "mouse5",
 }
+_TIME_UNIT_SECONDS: dict[str, float] = {
+    "ms": 0.001,
+    "sec": 1.0,
+    "min": 60.0,
+    "hour": 3600.0,
+}
+_TIME_UNIT_DISPLAY: dict[str, str] = {
+    "ms": "ms",
+    "sec": "초",
+    "min": "분",
+    "hour": "시",
+}
+_TIME_UNIT_ALIASES: dict[str, TimeUnit] = {
+    "ms": "ms",
+    "msec": "ms",
+    "millisecond": "ms",
+    "milliseconds": "ms",
+    "밀리초": "ms",
+    "s": "sec",
+    "sec": "sec",
+    "secs": "sec",
+    "second": "sec",
+    "seconds": "sec",
+    "초": "sec",
+    "m": "min",
+    "min": "min",
+    "mins": "min",
+    "minute": "min",
+    "minutes": "min",
+    "분": "min",
+    "h": "hour",
+    "hr": "hour",
+    "hrs": "hour",
+    "hour": "hour",
+    "hours": "hour",
+    "시간": "hour",
+    "시": "hour",
+}
 
 PATTERN_DIR = Path(__file__).parent / "pattern"
 PATTERN_FILE = PATTERN_DIR / "patterns.json"
+
+
+def _normalize_time_unit(raw: Any, *, default: TimeUnit = "sec") -> TimeUnit:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return default
+    return _TIME_UNIT_ALIASES.get(text, default)
+
+
+def _extract_time_unit_suffix(text: Any) -> tuple[str, Optional[TimeUnit]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return "", None
+    lowered = raw.lower()
+    for alias in sorted(_TIME_UNIT_ALIASES.keys(), key=len, reverse=True):
+        if lowered.endswith(alias):
+            body = raw[: len(raw) - len(alias)].strip()
+            if body:
+                return body, _TIME_UNIT_ALIASES[alias]
+    return raw, None
+
+
+def _infer_time_unit_from_text(text: Any) -> Optional[TimeUnit]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    for sep in ("~", "-"):
+        if sep in raw:
+            parts = [p.strip() for p in raw.split(sep) if p.strip()]
+            if parts:
+                for part in reversed(parts):
+                    _, unit = _extract_time_unit_suffix(part)
+                    if unit:
+                        return unit
+            return None
+    _, unit = _extract_time_unit_suffix(raw)
+    return unit
+
+
+def _time_text_is_dynamic(text: Any) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    return any(token in raw for token in ("/", "$", "@"))
+
+
+def _convert_time_value(value: float, *, from_unit: TimeUnit, to_unit: TimeUnit) -> float:
+    seconds = float(value) * _TIME_UNIT_SECONDS[from_unit]
+    return seconds / _TIME_UNIT_SECONDS[to_unit]
+
+
+def _format_time_number(value: float, *, unit: TimeUnit) -> str:
+    if unit == "ms":
+        return str(max(0, int(round(float(value)))))
+    text = f"{float(value):.9f}".rstrip("0").rstrip(".")
+    return text if text else "0"
+
+
+def _append_time_unit_text(text: Any, unit: TimeUnit) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    if _infer_time_unit_from_text(raw):
+        return raw
+    if _time_text_is_dynamic(raw):
+        return f"{raw} ({_TIME_UNIT_DISPLAY[unit]})"
+    return f"{raw}{_TIME_UNIT_DISPLAY[unit]}"
+
+
+def _format_time_value_from_base(value: Any, *, from_unit: TimeUnit, to_unit: TimeUnit, include_unit: bool = False) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        converted = _convert_time_value(float(value), from_unit=from_unit, to_unit=to_unit)
+    except Exception:
+        return str(value)
+    text = _format_time_number(converted, unit=to_unit)
+    return _append_time_unit_text(text, to_unit) if include_unit else text
+
+
+def _format_time_range_from_base(
+    low: Any,
+    high: Any,
+    *,
+    from_unit: TimeUnit,
+    to_unit: TimeUnit,
+    include_unit: bool = False,
+) -> str:
+    try:
+        low_text = _format_time_value_from_base(low, from_unit=from_unit, to_unit=to_unit, include_unit=False)
+        high_text = _format_time_value_from_base(high, from_unit=from_unit, to_unit=to_unit, include_unit=False)
+    except Exception:
+        return ""
+    text = f"{low_text}~{high_text}"
+    return _append_time_unit_text(text, to_unit) if include_unit else text
+
+
+def _time_value_for_export(value: Any, *, from_unit: TimeUnit, to_unit: TimeUnit) -> int | float | None:
+    if value in (None, ""):
+        return None
+    try:
+        converted = _convert_time_value(float(value), from_unit=from_unit, to_unit=to_unit)
+    except Exception:
+        return None
+    if to_unit == "ms":
+        return max(0, int(round(converted)))
+    return max(0.0, float(converted))
+
+
+def _parse_time_part(raw_part: Any, *, default_unit: TimeUnit, target_unit: TimeUnit, label: str) -> float:
+    text = str(raw_part or "").strip()
+    if not text:
+        raise ValueError(f"{label} 값이 비어 있습니다.")
+    number_text, explicit_unit = _extract_time_unit_suffix(text)
+    unit = explicit_unit or default_unit
+    try:
+        if unit == "ms":
+            if not re.fullmatch(r"[+]?\d+", number_text):
+                raise ValueError
+            numeric = float(int(number_text))
+        else:
+            numeric = float(number_text)
+    except Exception as exc:
+        raise ValueError(f"{label}은 숫자여야 합니다. 예: 500ms, 3초, 1.5분, 0.5시") from exc
+    numeric = max(0.0, numeric)
+    return _convert_time_value(numeric, from_unit=unit, to_unit=target_unit)
+
+
+def _parse_time_value(
+    raw: Any,
+    *,
+    default_unit: TimeUnit,
+    target_unit: TimeUnit,
+    label: str,
+    allow_range: bool = False,
+) -> tuple[float, Optional[tuple[float, float]]]:
+    text = str(raw).strip() if raw is not None else ""
+    if text == "":
+        return 0.0, None
+    for sep in ("~", "-"):
+        if sep in text:
+            parts = [p.strip() for p in text.split(sep)]
+            if len(parts) != 2 or any(not p for p in parts):
+                raise ValueError(f"{label} 범위 형식이 잘못되었습니다. 예: 500~1500, 1-3, 0.5~1.2초")
+            if not allow_range:
+                raise ValueError(f"{label}은 범위를 사용할 수 없습니다.")
+            first = _parse_time_part(parts[0], default_unit=default_unit, target_unit=target_unit, label=label)
+            second = _parse_time_part(parts[1], default_unit=default_unit, target_unit=target_unit, label=label)
+            low, high = sorted((max(0.0, first), max(0.0, second)))
+            if abs(low - high) < 1e-9:
+                return low, None
+            return low, (low, high)
+    value = _parse_time_part(text, default_unit=default_unit, target_unit=target_unit, label=label)
+    return max(0.0, value), None
 
 
 def _sound_path_text(raw: Any) -> str:
@@ -706,6 +899,8 @@ class Condition:
     on_false: List["Condition"] = field(default_factory=list)
     timer_index: Optional[int] = None
     timer_value: Optional[float] = None
+    timer_value_raw: Optional[str] = None
+    timer_unit: TimeUnit = "sec"
     timer_operator: str = "ge"
 
     @classmethod
@@ -757,6 +952,43 @@ class Condition:
         except Exception as exc:
             raise ValueError(f"색상 파싱 실패: {raw}") from exc
 
+    @staticmethod
+    def parse_timer_value(raw: Any, *, default_unit: TimeUnit = "sec") -> float:
+        timer_value, _timer_range = _parse_time_value(
+            raw,
+            default_unit=default_unit,
+            target_unit="sec",
+            label="타이머 값",
+            allow_range=False,
+        )
+        return max(0.0, float(timer_value or 0.0))
+
+    def timer_input_text(self) -> str:
+        raw = str(self.timer_value_raw or "").strip()
+        if raw and _time_text_is_dynamic(raw):
+            return raw
+        return _format_time_value_from_base(
+            self.timer_value,
+            from_unit="sec",
+            to_unit=_normalize_time_unit(getattr(self, "timer_unit", "sec"), default="sec"),
+            include_unit=False,
+        )
+
+    def timer_value_text(self) -> str:
+        raw = str(self.timer_value_raw or "").strip()
+        unit = _normalize_time_unit(getattr(self, "timer_unit", "sec"), default="sec")
+        if raw and _time_text_is_dynamic(raw):
+            return _append_time_unit_text(raw, unit)
+        return _format_time_value_from_base(self.timer_value, from_unit="sec", to_unit=unit, include_unit=True)
+
+    def timer_value_for_export(self) -> float | str | None:
+        raw = str(self.timer_value_raw or "").strip()
+        if raw and _time_text_is_dynamic(raw):
+            return raw
+        if self.timer_value is None:
+            return None
+        return max(0.0, float(self.timer_value))
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "Condition":
         ctype = data.get("type", "key")
@@ -799,15 +1031,24 @@ class Condition:
             pixel_min_count = max(1, int(min_count_raw))
         except Exception:
             pixel_min_count = 1
-        timer_value_raw = data.get("timer_value")
+        timer_value_raw = data.get("timer_value_raw", data.get("timer_value"))
+        timer_unit = _normalize_time_unit(data.get("timer_unit"), default="sec")
+        if isinstance(timer_value_raw, str) and not data.get("timer_unit"):
+            inferred_timer_unit = _infer_time_unit_from_text(timer_value_raw)
+            if inferred_timer_unit:
+                timer_unit = inferred_timer_unit
         timer_value: Optional[float] = None
         if timer_value_raw not in (None, ""):
             try:
-                resolved = resolver.resolve(str(timer_value_raw), "var") if resolver and isinstance(timer_value_raw, str) else timer_value_raw
-                timer_value = float(resolved)
+                resolved = (
+                    resolver.resolve(str(timer_value_raw), "var")
+                    if resolver and isinstance(timer_value_raw, str)
+                    else timer_value_raw
+                )
+                timer_value = cls.parse_timer_value(resolved, default_unit=timer_unit)
             except Exception:
                 try:
-                    timer_value = float(timer_value_raw)
+                    timer_value = cls.parse_timer_value(timer_value_raw, default_unit=timer_unit)
                 except Exception:
                     timer_value = None
         timer_op_raw = str(data.get("timer_operator", data.get("timer_op", "ge"))).lower()
@@ -839,6 +1080,8 @@ class Condition:
             on_false=false_branch,
             timer_index=timer_index,
             timer_value=timer_value,
+            timer_value_raw=str(timer_value_raw) if timer_value_raw is not None else None,
+            timer_unit=timer_unit,
             timer_operator=timer_operator,
             enabled=enabled_val,
         )
@@ -860,7 +1103,9 @@ class Condition:
             "pixel_min_count": self.pixel_min_count,
             "pixel_exists": self.pixel_exists,
             "timer_index": self.timer_index,
-            "timer_value": self.timer_value,
+            "timer_value": self.timer_value_for_export(),
+            "timer_value_raw": self.timer_value_raw,
+            "timer_unit": _normalize_time_unit(getattr(self, "timer_unit", "sec"), default="sec"),
             "timer_operator": self.timer_operator,
             "enabled": getattr(self, "enabled", True),
         }
@@ -917,6 +1162,7 @@ class Action:
     sleep_ms: int = 0
     sleep_range: Optional[tuple[int, int]] = None
     sleep_raw: Optional[str] = None
+    sleep_unit: TimeUnit = "ms"
     condition: Optional[Condition] = None
     elif_blocks: List[tuple[Condition, List["Action"], str | None]] = field(default_factory=list)
     actions: List["Action"] = field(default_factory=list)
@@ -936,6 +1182,8 @@ class Action:
     hold_keep_on_pause: bool = False
     timer_index: Optional[int] = None
     timer_value: Optional[float] = None
+    timer_value_raw: Optional[str] = None
+    timer_unit: TimeUnit = "sec"
     sound_file: Optional[str] = None
     sound_wait_mode: SoundWaitMode = "once"
     sound_duration_sec: Optional[float] = None
@@ -947,29 +1195,33 @@ class Action:
     key_delay_override: Optional[KeyDelayConfig] = None
 
     @staticmethod
-    def parse_sleep(raw: Any) -> tuple[int, Optional[tuple[int, int]]]:
-        text = str(raw).strip() if raw is not None else ""
-        if text == "":
-            return 0, None
-        if "~" in text:
-            parts = [p.strip() for p in text.split("~")]
-            if len(parts) != 2 or any(not p for p in parts):
-                raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.")
-            try:
-                first, second = (int(parts[0]), int(parts[1]))
-            except Exception as exc:
-                raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.") from exc
-            low, high = sorted((first, second))
-            low = max(0, low)
-            high = max(0, high)
-            if low == high:
-                return low, None
-            return low, (low, high)
-        try:
-            val = int(text)
-        except Exception as exc:
-            raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.") from exc
-        return max(0, val), None
+    def parse_sleep(raw: Any, *, default_unit: TimeUnit = "ms") -> tuple[int, Optional[tuple[int, int]]]:
+        sleep_value, sleep_range = _parse_time_value(
+            raw,
+            default_unit=default_unit,
+            target_unit="ms",
+            label="sleep",
+            allow_range=True,
+        )
+        sleep_ms = max(0, int(round(float(sleep_value or 0.0))))
+        if not sleep_range:
+            return sleep_ms, None
+        low = max(0, int(round(float(sleep_range[0]))))
+        high = max(0, int(round(float(sleep_range[1]))))
+        if low == high:
+            return low, None
+        return low, (low, high)
+
+    @staticmethod
+    def parse_timer_value(raw: Any, *, default_unit: TimeUnit = "sec") -> float:
+        timer_value, _timer_range = _parse_time_value(
+            raw,
+            default_unit=default_unit,
+            target_unit="sec",
+            label="타이머 값",
+            allow_range=False,
+        )
+        return max(0.0, float(timer_value or 0.0))
 
     @staticmethod
     def parse_repeat(raw: Any) -> tuple[int, Optional[tuple[int, int]], Optional[str]]:
@@ -1004,27 +1256,62 @@ class Action:
             raise ValueError("반복은 1 이상의 정수 또는 범위(예: 1~3)여야 합니다.")
         return val, None, None
 
-    def sleep_value_text(self) -> str:
+    def sleep_input_text(self) -> str:
+        raw = str(self.sleep_raw or "").strip()
+        unit = _normalize_time_unit(getattr(self, "sleep_unit", "ms"), default="ms")
+        if raw and _time_text_is_dynamic(raw):
+            return raw
         if self.sleep_range:
             low, high = self.sleep_range
-            return f"{low}~{high}"
-        if self.sleep_raw is not None:
-            return self.sleep_raw
-        return str(self.sleep_ms)
+            return _format_time_range_from_base(low, high, from_unit="ms", to_unit=unit, include_unit=False)
+        return _format_time_value_from_base(self.sleep_ms, from_unit="ms", to_unit=unit, include_unit=False)
 
-    def sleep_value_for_export(self) -> int | str:
+    def sleep_value_text(self) -> str:
+        raw = str(self.sleep_raw or "").strip()
+        unit = _normalize_time_unit(getattr(self, "sleep_unit", "ms"), default="ms")
+        if raw and _time_text_is_dynamic(raw):
+            return _append_time_unit_text(raw, unit)
+        if self.sleep_range:
+            low, high = self.sleep_range
+            return _format_time_range_from_base(low, high, from_unit="ms", to_unit=unit, include_unit=True)
+        return _format_time_value_from_base(self.sleep_ms, from_unit="ms", to_unit=unit, include_unit=True)
+
+    def sleep_value_for_export(self) -> int | float | str:
+        raw = str(self.sleep_raw or "").strip()
+        if raw and _time_text_is_dynamic(raw):
+            return raw
         if self.sleep_range:
             low, high = self.sleep_range
             return f"{low}~{high}"
-        if self.sleep_raw is not None:
-            return self.sleep_raw
-        return self.sleep_ms
+        return max(0, int(self.sleep_ms or 0))
 
     def resolve_sleep_ms(self) -> int:
         if self.sleep_range:
             low, high = self.sleep_range
             return random.randint(low, high)
         return max(0, int(self.sleep_ms or 0))
+
+    def timer_input_text(self) -> str:
+        raw = str(self.timer_value_raw or "").strip()
+        unit = _normalize_time_unit(getattr(self, "timer_unit", "sec"), default="sec")
+        if raw and _time_text_is_dynamic(raw):
+            return raw
+        return _format_time_value_from_base(self.timer_value, from_unit="sec", to_unit=unit, include_unit=False)
+
+    def timer_value_text(self) -> str:
+        raw = str(self.timer_value_raw or "").strip()
+        unit = _normalize_time_unit(getattr(self, "timer_unit", "sec"), default="sec")
+        if raw and _time_text_is_dynamic(raw):
+            return _append_time_unit_text(raw, unit)
+        return _format_time_value_from_base(self.timer_value, from_unit="sec", to_unit=unit, include_unit=True)
+
+    def timer_value_for_export(self) -> float | str | None:
+        raw = str(self.timer_value_raw or "").strip()
+        if raw and _time_text_is_dynamic(raw):
+            return raw
+        if self.timer_value is None:
+            return None
+        return max(0.0, float(self.timer_value))
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "Action":
@@ -1048,13 +1335,18 @@ class Action:
                 elif_blocks.append((econd, eacts, desc))
             except Exception:
                 continue
-        sleep_ms_raw = data.get("sleep_ms", data.get("sleep", 0))
+        sleep_ms_raw = data.get("sleep_raw", data.get("sleep_ms", data.get("sleep", 0)))
         sleep_raw: Optional[str] = None
+        sleep_unit = _normalize_time_unit(data.get("sleep_unit"), default="ms")
+        if isinstance(sleep_ms_raw, str) and not data.get("sleep_unit"):
+            inferred_sleep_unit = _infer_time_unit_from_text(sleep_ms_raw)
+            if inferred_sleep_unit:
+                sleep_unit = inferred_sleep_unit
         sleep_value_for_parse = sleep_ms_raw
         if isinstance(sleep_ms_raw, str):
             sleep_raw = sleep_ms_raw.strip()
             sleep_value_for_parse = resolver.resolve(sleep_raw, "sleep") if resolver else sleep_raw
-        sleep_ms, sleep_range = cls.parse_sleep(sleep_value_for_parse)
+        sleep_ms, sleep_range = cls.parse_sleep(sleep_value_for_parse, default_unit=sleep_unit)
         region_raw = data.get("pixel_region_raw")
         region_val = data.get("pixel_region")
         region = None
@@ -1078,15 +1370,24 @@ class Action:
             timer_index = None
         if timer_index is not None and (timer_index < 1 or timer_index > 20):
             timer_index = None
-        timer_value_raw = data.get("timer_value")
+        timer_value_raw = data.get("timer_value_raw", data.get("timer_value"))
+        timer_unit = _normalize_time_unit(data.get("timer_unit"), default="sec")
+        if isinstance(timer_value_raw, str) and not data.get("timer_unit"):
+            inferred_timer_unit = _infer_time_unit_from_text(timer_value_raw)
+            if inferred_timer_unit:
+                timer_unit = inferred_timer_unit
         timer_value: Optional[float] = None
         if timer_value_raw not in (None, ""):
             try:
-                resolved_timer_val = resolver.resolve(str(timer_value_raw), "var") if resolver and isinstance(timer_value_raw, str) else timer_value_raw
-                timer_value = float(resolved_timer_val)
+                resolved_timer_val = (
+                    resolver.resolve(str(timer_value_raw), "var")
+                    if resolver and isinstance(timer_value_raw, str)
+                    else timer_value_raw
+                )
+                timer_value = cls.parse_timer_value(resolved_timer_val, default_unit=timer_unit)
             except Exception:
                 try:
-                    timer_value = float(timer_value_raw)
+                    timer_value = cls.parse_timer_value(timer_value_raw, default_unit=timer_unit)
                 except Exception:
                     timer_value = None
         confirm_raw = data.get("confirm_fails", 1)
@@ -1190,6 +1491,7 @@ class Action:
             sleep_ms=sleep_ms,
             sleep_range=sleep_range,
             sleep_raw=sleep_raw,
+            sleep_unit=sleep_unit,
             condition=cond,
             elif_blocks=elif_blocks,
             actions=actions,
@@ -1209,6 +1511,8 @@ class Action:
             hold_keep_on_pause=bool(data.get("hold_keep_on_pause", False)),
             timer_index=timer_index,
             timer_value=timer_value,
+            timer_value_raw=str(timer_value_raw) if timer_value_raw is not None else None,
+            timer_unit=timer_unit,
             sound_file=str(sound_file) if sound_file is not None else None,
             sound_wait_mode=sound_wait_mode,
             sound_duration_sec=sound_duration_sec,
@@ -1235,6 +1539,8 @@ class Action:
             "var_value_raw": self.var_value_raw if self.var_value_raw is not None else self.var_value,
             "confirm_fails": self.confirm_fails,
             "sleep_ms": self.sleep_value_for_export(),
+            "sleep_raw": self.sleep_raw,
+            "sleep_unit": _normalize_time_unit(getattr(self, "sleep_unit", "ms"), default="ms"),
             "condition": self.condition.to_dict() if self.condition else None,
             "label": self.label,
             "goto_label": self.goto_label,
@@ -1250,7 +1556,9 @@ class Action:
             "group_repeat": self.group_repeat,
             "hold_keep_on_pause": getattr(self, "hold_keep_on_pause", False),
             "timer_index": self.timer_index,
-            "timer_value": self.timer_value,
+            "timer_value": self.timer_value_for_export(),
+            "timer_value_raw": self.timer_value_raw,
+            "timer_unit": _normalize_time_unit(getattr(self, "timer_unit", "sec"), default="sec"),
             "sound_file": self.sound_file,
             "sound_wait_mode": getattr(self, "sound_wait_mode", "once"),
             "sound_duration_sec": self.sound_duration_sec,
@@ -1287,50 +1595,57 @@ class Step:
     sleep_ms: int = 0
     sleep_range: Optional[tuple[int, int]] = None
     sleep_raw: Optional[str] = None
+    sleep_unit: TimeUnit = "ms"
     condition: Optional[Condition] = None
     steps: List["Step"] = field(default_factory=list)
     else_steps: List["Step"] = field(default_factory=list)
 
     @staticmethod
-    def parse_sleep(raw: Any) -> tuple[int, Optional[tuple[int, int]]]:
-        text = str(raw).strip() if raw is not None else ""
-        if text == "":
-            return 0, None
-        if "~" in text:
-            parts = [p.strip() for p in text.split("~")]
-            if len(parts) != 2 or any(not p for p in parts):
-                raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.")
-            try:
-                first, second = (int(parts[0]), int(parts[1]))
-            except Exception as exc:
-                raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.") from exc
-            low, high = sorted((first, second))
-            low = max(0, low)
-            high = max(0, high)
-            if low == high:
-                return low, None
-            return low, (low, high)
-        try:
-            val = int(text)
-        except Exception as exc:
-            raise ValueError("sleep은 정수 또는 범위(예: 1000~2000)여야 합니다.") from exc
-        return max(0, val), None
+    def parse_sleep(raw: Any, *, default_unit: TimeUnit = "ms") -> tuple[int, Optional[tuple[int, int]]]:
+        sleep_value, sleep_range = _parse_time_value(
+            raw,
+            default_unit=default_unit,
+            target_unit="ms",
+            label="sleep",
+            allow_range=True,
+        )
+        sleep_ms = max(0, int(round(float(sleep_value or 0.0))))
+        if not sleep_range:
+            return sleep_ms, None
+        low = max(0, int(round(float(sleep_range[0]))))
+        high = max(0, int(round(float(sleep_range[1]))))
+        if low == high:
+            return low, None
+        return low, (low, high)
+
+    def sleep_input_text(self) -> str:
+        raw = str(self.sleep_raw or "").strip()
+        unit = _normalize_time_unit(getattr(self, "sleep_unit", "ms"), default="ms")
+        if raw and _time_text_is_dynamic(raw):
+            return raw
+        if self.sleep_range:
+            low, high = self.sleep_range
+            return _format_time_range_from_base(low, high, from_unit="ms", to_unit=unit, include_unit=False)
+        return _format_time_value_from_base(self.sleep_ms, from_unit="ms", to_unit=unit, include_unit=False)
 
     def sleep_value_text(self) -> str:
+        raw = str(self.sleep_raw or "").strip()
+        unit = _normalize_time_unit(getattr(self, "sleep_unit", "ms"), default="ms")
+        if raw and _time_text_is_dynamic(raw):
+            return _append_time_unit_text(raw, unit)
         if self.sleep_range:
             low, high = self.sleep_range
-            return f"{low}~{high}"
-        if self.sleep_raw is not None:
-            return self.sleep_raw
-        return str(self.sleep_ms)
+            return _format_time_range_from_base(low, high, from_unit="ms", to_unit=unit, include_unit=True)
+        return _format_time_value_from_base(self.sleep_ms, from_unit="ms", to_unit=unit, include_unit=True)
 
-    def sleep_value_for_export(self) -> int | str:
+    def sleep_value_for_export(self) -> int | float | str:
+        raw = str(self.sleep_raw or "").strip()
+        if raw and _time_text_is_dynamic(raw):
+            return raw
         if self.sleep_range:
             low, high = self.sleep_range
             return f"{low}~{high}"
-        if self.sleep_raw is not None:
-            return self.sleep_raw
-        return self.sleep_ms
+        return max(0, int(self.sleep_ms or 0))
 
     def resolve_sleep_ms(self) -> int:
         if self.sleep_range:
@@ -1344,19 +1659,25 @@ class Step:
         cond = Condition.from_dict(cdata, resolver) if cdata else None
         steps = [Step.from_dict(s, resolver) for s in data.get("steps", [])]
         else_steps = [Step.from_dict(s, resolver) for s in data.get("else_steps", [])]
-        sleep_ms_raw = data.get("sleep_ms", 0)
+        sleep_ms_raw = data.get("sleep_raw", data.get("sleep_ms", 0))
         sleep_raw: Optional[str] = None
+        sleep_unit = _normalize_time_unit(data.get("sleep_unit"), default="ms")
+        if isinstance(sleep_ms_raw, str) and not data.get("sleep_unit"):
+            inferred_sleep_unit = _infer_time_unit_from_text(sleep_ms_raw)
+            if inferred_sleep_unit:
+                sleep_unit = inferred_sleep_unit
         sleep_value_for_parse = sleep_ms_raw
         if isinstance(sleep_ms_raw, str):
             sleep_raw = sleep_ms_raw.strip()
             sleep_value_for_parse = resolver.resolve(sleep_raw, "sleep") if resolver else sleep_raw
-        sleep_ms, sleep_range = cls.parse_sleep(sleep_value_for_parse)
+        sleep_ms, sleep_range = cls.parse_sleep(sleep_value_for_parse, default_unit=sleep_unit)
         return cls(
             type=data.get("type", "press"),
             key=data.get("key"),
             sleep_ms=sleep_ms,
             sleep_range=sleep_range,
             sleep_raw=sleep_raw,
+            sleep_unit=sleep_unit,
             condition=cond,
             steps=steps,
             else_steps=else_steps,
@@ -1367,6 +1688,8 @@ class Step:
             "type": self.type,
             "key": self.key,
             "sleep_ms": self.sleep_value_for_export(),
+            "sleep_raw": self.sleep_raw,
+            "sleep_unit": _normalize_time_unit(getattr(self, "sleep_unit", "ms"), default="ms"),
             "condition": self.condition.to_dict() if self.condition else None,
         }
         if self.steps:
@@ -2347,7 +2670,12 @@ class MacroRunner:
                 "target": action.pixel_target,
             }
         if action.type == "timer":
-            detail["timer"] = {"slot": action.timer_index, "value": action.timer_value}
+            detail["timer"] = {
+                "slot": action.timer_index,
+                "value": action.timer_value,
+                "value_text": action.timer_value_text(),
+                "unit": _normalize_time_unit(getattr(action, "timer_unit", "sec"), default="sec"),
+            }
         if action.type == "macro_cycle":
             detail["macro_cycle"] = {"target": getattr(action, "macro_target", None)}
         if action.type == "sound_alert":
@@ -3124,10 +3452,19 @@ class MacroRunner:
                 return end_result(status="error", error="invalid_timer_slot")
             if value < 0:
                 value = 0.0
+            display_value = action.timer_value_text() if hasattr(action, "timer_value_text") else f"{value:.3f}초"
             self.engine._set_timer(slot, value)
-            self.engine._emit_log(f"타이머{slot} = {value:.3f}초로 설정")
+            self.engine._emit_log(f"타이머{slot} = {display_value}로 설정")
             self.engine._emit_event(
-                {"type": "timer_update", "slot": slot, "value": value, "macro": self._macro_context(), "timestamp": time.time()}
+                {
+                    "type": "timer_update",
+                    "slot": slot,
+                    "value": value,
+                    "value_text": display_value,
+                    "unit": _normalize_time_unit(getattr(action, "timer_unit", "sec"), default="sec"),
+                    "macro": self._macro_context(),
+                    "timestamp": time.time(),
+                }
             )
             return end_result(status="timer", timer_slot=slot, timer_value=value)
 
@@ -5159,7 +5496,16 @@ class MacroEngine:
                 base_result = False
             else:
                 base_result = compare(float(actual_val), float(target_val))
-            detail["timer"] = {"slot": slot, "expected": target_val, "actual": actual_val, "operator": op}
+            timer_unit = _normalize_time_unit(getattr(cond, "timer_unit", "sec"), default="sec")
+            detail["timer"] = {
+                "slot": slot,
+                "expected": target_val,
+                "expected_text": cond.timer_value_text() if hasattr(cond, "timer_value_text") else target_val,
+                "actual": actual_val,
+                "actual_text": _format_time_value_from_base(actual_val, from_unit="sec", to_unit=timer_unit, include_unit=True),
+                "operator": op,
+                "unit": timer_unit,
+            }
         else:
             base_result = False
 
@@ -5380,7 +5726,16 @@ class MacroEngine:
                     base_result = False
                 else:
                     base_result = compare(float(actual_val), float(target_val))
-                detail["timer"] = {"slot": slot, "expected": target_val, "actual": actual_val, "operator": op}
+                timer_unit = _normalize_time_unit(getattr(cond, "timer_unit", "sec"), default="sec")
+                detail["timer"] = {
+                    "slot": slot,
+                    "expected": target_val,
+                    "expected_text": cond.timer_value_text() if hasattr(cond, "timer_value_text") else target_val,
+                    "actual": actual_val,
+                    "actual_text": _format_time_value_from_base(actual_val, from_unit="sec", to_unit=timer_unit, include_unit=True),
+                    "operator": op,
+                    "unit": timer_unit,
+                }
             else:
                 base_result = False
         except Exception as exc:
