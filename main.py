@@ -282,7 +282,15 @@ ACTION_TYPE_OPTIONS = [
     ("다른 매크로 1사이클 실행", "macro_cycle"),
     ("타이머 설정", "timer"),
     ("텔레그램 메시지", "telegram_message"),
+    ("컴퓨터 종료", "computer_shutdown"),
 ]
+MACRO_TABLE_COL_ORDER = 0
+MACRO_TABLE_COL_NAME = 1
+MACRO_TABLE_COL_TRIGGER = 2
+MACRO_TABLE_COL_MODE = 3
+MACRO_TABLE_COL_ENABLED = 4
+MACRO_TABLE_COL_SCOPE = 5
+MACRO_TABLE_COL_DESC = 6
 SOUND_FILE_DIALOG_FILTER = (
     "Audio Files (*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.wma *.mid *.midi);;All Files (*.*)"
 )
@@ -1425,7 +1433,15 @@ def _fill_action_table(table: QtWidgets.QTableWidget, steps: List[Step]):
         else:
             table.setItem(row, 1, QtWidgets.QTableWidgetItem(step.key or ""))
 def _condition_type_label(typ: str) -> str:
-    return {"all": "AND", "any": "OR", "pixel": "픽셀", "key": "키", "var": "변수", "timer": "타이머"}.get(typ, typ)
+    return {
+        "all": "AND",
+        "any": "OR",
+        "pixel": "픽셀",
+        "key": "키",
+        "var": "변수",
+        "timer": "타이머",
+        "schedule": "시간/날짜",
+    }.get(typ, typ)
 def _group_child_count(cond: Condition) -> int:
     if not isinstance(cond, Condition):
         return 0
@@ -1509,6 +1525,19 @@ def _condition_brief(cond: Condition) -> str:
         slot_text = f"타이머{slot}" if slot else "타이머"
         target_text = target if target is not None else "?"
         return f"{slot_text} {op} {target_text}{suffix}"
+    if cond.type == "schedule":
+        mode_text = {"daily": "매일", "date": "날짜", "datetime": "일시"}.get(
+            getattr(cond, "schedule_mode", "daily"),
+            "시간/날짜",
+        )
+        value_text = str(getattr(cond, "schedule_value_raw", "") or "").strip() or "?"
+        op = {"ge": ">=", "gt": ">", "le": "<=", "lt": "<", "eq": "==", "ne": "!="}.get(
+            getattr(cond, "schedule_operator", "eq"),
+            "==",
+        )
+        if "~" in value_text:
+            return f"{mode_text} {value_text}{suffix}"
+        return f"{mode_text} {op} {value_text}{suffix}"
     is_bundle, keys, mode = _key_bundle_info(cond)
     if is_bundle:
         mode_text = mode or ""
@@ -1582,6 +1611,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.type_combo.addItem("키/마우스", "key")
         self.type_combo.addItem("변수 값 비교", "var")
         self.type_combo.addItem("타이머", "timer")
+        self.type_combo.addItem("시간/날짜", "schedule")
         self.name_edit = QtWidgets.QLineEdit()
         self.key_edit = QtWidgets.QLineEdit()
         self.key_edit.setPlaceholderText("예: a, ctrl, mouse1")
@@ -1649,6 +1679,21 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.timer_op_combo.addItem("이하일 때 참 (<=)", "le")
         self.timer_op_combo.addItem("미만일 때 참 (<)", "lt")
         self.timer_op_combo.addItem("다를 때 참 (!=)", "ne")
+        self.schedule_mode_combo = QtWidgets.QComboBox()
+        self.schedule_mode_combo.addItem("매일 시각", "daily")
+        self.schedule_mode_combo.addItem("날짜", "date")
+        self.schedule_mode_combo.addItem("날짜+시간", "datetime")
+        self.schedule_value_edit = QtWidgets.QLineEdit()
+        self.schedule_op_combo = QtWidgets.QComboBox()
+        self.schedule_op_combo.addItem("같을 때 참 (==)", "eq")
+        self.schedule_op_combo.addItem("이상이면 참 (>=)", "ge")
+        self.schedule_op_combo.addItem("초과일 때 참 (>)", "gt")
+        self.schedule_op_combo.addItem("이하일 때 참 (<=)", "le")
+        self.schedule_op_combo.addItem("미만일 때 참 (<)", "lt")
+        self.schedule_op_combo.addItem("다를 때 참 (!=)", "ne")
+        self.schedule_hint_label = QtWidgets.QLabel("")
+        self.schedule_hint_label.setWordWrap(True)
+        self.schedule_hint_label.setStyleSheet("color: gray;")
         self.tol_spin = QtWidgets.QSpinBox()
         self.tol_spin.setRange(0, 255)
         self.tol_spin.setValue(10)
@@ -1696,6 +1741,10 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.form.addRow("타이머 슬롯(1~20)", self.timer_slot_combo)
         self.form.addRow("타이머 값", self.timer_value_wrap)
         self.form.addRow("타이머 비교", self.timer_op_combo)
+        self.form.addRow("시간/날짜 방식", self.schedule_mode_combo)
+        self.form.addRow("시간/날짜 값", self.schedule_value_edit)
+        self.form.addRow("시간/날짜 비교", self.schedule_op_combo)
+        self.form.addRow("", self.schedule_hint_label)
         self.form.addRow(self.group_hint)
         layout.addLayout(self.form)
         btn_row = QtWidgets.QHBoxLayout()
@@ -1711,6 +1760,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         self.type_combo.currentIndexChanged.connect(self._sync_type_visibility)
+        self.schedule_mode_combo.currentIndexChanged.connect(self._sync_schedule_hint)
         if cond:
             self._load(cond)
         else:
@@ -1719,9 +1769,27 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             else:
                 self.type_combo.setCurrentIndex(self.type_combo.findData("pixel"))
             self.key_mode_combo.setCurrentIndex(max(0, self.key_mode_combo.findData("hold")))
+            self._sync_schedule_hint()
             self._sync_type_visibility()
     def _current_type(self) -> str:
         return self.type_combo.currentData()
+    def _sync_schedule_hint(self):
+        mode = self.schedule_mode_combo.currentData() or "daily"
+        if mode == "date":
+            placeholder = "예: 2026-04-23 또는 2026-04-23~2026-04-30"
+            tooltip = "날짜를 입력하세요. 예: 2026-04-23, 2026/04/23, 2026-04-23~2026-04-30"
+            hint = "단일값은 날짜 비교(==, >=, <= 등), `~`를 쓰면 포함 범위 비교입니다."
+        elif mode == "datetime":
+            placeholder = "예: 2026-04-23 03:30 또는 2026-04-23 03:30~2026-04-23 05:00"
+            tooltip = "날짜+시간을 입력하세요. 예: 2026-04-23 03:30, 2026-04-23 03:30:15, 2026-04-23 03:30~2026-04-23 05:00"
+            hint = "단일값은 현재 일시와 비교하고, `~`를 쓰면 포함 범위 비교입니다. 초를 생략하면 분 단위로 판정합니다."
+        else:
+            placeholder = "예: 03:30 또는 23:00~01:00"
+            tooltip = "매일 반복되는 시각을 입력하세요. 예: 03:30, 03:30:15, 23:00~01:00"
+            hint = "단일값은 매일 같은 시각 비교이고, `~`를 쓰면 매일 그 시간대 범위를 뜻합니다. 자정을 넘는 범위도 가능합니다."
+        self.schedule_value_edit.setPlaceholderText(placeholder)
+        self.schedule_value_edit.setToolTip(tooltip)
+        self.schedule_hint_label.setText(hint)
     def _sync_type_visibility(self):
         typ = self._current_type()
         is_key = typ == "key"
@@ -1729,6 +1797,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         is_group = typ in ("all", "any")
         is_var = typ == "var"
         is_timer = typ == "timer"
+        is_schedule = typ == "schedule"
         def _toggle(widgets, *, visible: bool, enabled: bool):
             for w in widgets:
                 w.setEnabled(enabled)
@@ -1770,6 +1839,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             self.color_wrap.setVisible(False)
         _toggle((self.var_name_edit, self.var_value_edit, self.var_op_combo), visible=is_var, enabled=is_var)
         _toggle((self.timer_slot_combo, self.timer_value_wrap, self.timer_op_combo), visible=is_timer, enabled=is_timer)
+        _toggle((self.schedule_mode_combo, self.schedule_value_edit, self.schedule_op_combo, self.schedule_hint_label), visible=is_schedule, enabled=is_schedule)
         self.group_hint.setVisible(is_group)
     def _load(self, cond: Condition):
         self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(cond.type)))
@@ -1821,7 +1891,14 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             op_idx = self.timer_op_combo.findData(getattr(cond, "timer_operator", "ge"))
             if op_idx >= 0:
                 self.timer_op_combo.setCurrentIndex(op_idx)
+        elif cond.type == "schedule":
+            _set_combo_data(self.schedule_mode_combo, getattr(cond, "schedule_mode", "daily"), fallback="daily")
+            self.schedule_value_edit.setText(str(getattr(cond, "schedule_value_raw", "") or ""))
+            op_idx = self.schedule_op_combo.findData(getattr(cond, "schedule_operator", "eq"))
+            if op_idx >= 0:
+                self.schedule_op_combo.setCurrentIndex(op_idx)
         self.name_edit.setText(cond.name or "")
+        self._sync_schedule_hint()
         self._sync_type_visibility()
     def get_condition(self) -> Condition:
         typ = self._current_type()
@@ -1892,6 +1969,20 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 timer_value_raw=raw_value or None,
                 timer_unit=unit,
                 timer_operator=op,
+            )
+        if typ == "schedule":
+            mode = self.schedule_mode_combo.currentData() or "daily"
+            raw_value = self.schedule_value_edit.text().strip()
+            if not raw_value:
+                raise ValueError("시간/날짜 값을 입력하세요.")
+            Condition.parse_schedule_value(raw_value, mode=mode)
+            op = self.schedule_op_combo.currentData() or "eq"
+            return Condition(
+                type="schedule",
+                name=name,
+                schedule_mode=mode,
+                schedule_value_raw=raw_value,
+                schedule_operator=op,
             )
         group = Condition(type=typ, name=name, conditions=copy.deepcopy(self._child_conditions))
         return group
@@ -5583,6 +5674,8 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             if msg_preview:
                 return msg_preview + suffix
             return "텔레그램 전송" + suffix
+        if act.type == "computer_shutdown":
+            return "컴퓨터 종료" + suffix
         if act.type == "group":
             mode = act.group_mode or "all"
             if mode == "repeat_n":
@@ -6080,6 +6173,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("소리 알림", "sound_alert"),
             ("다른 매크로 1사이클 실행", "macro_cycle"),
             ("텔레그램 메시지", "telegram_message"),
+            ("컴퓨터 종료", "computer_shutdown"),
             ("현재 매크로 중지 (macro_stop)", "macro_stop"),
             ("변수 설정 (set_var)", "set_var"),
             ("타이머 설정 (timer)", "timer"),
@@ -9452,6 +9546,20 @@ class DebuggerDialog(QtWidgets.QDialog):
                 self._save_state_cb(self._collect_state())
             except Exception:
                 pass
+    def _condition_result_state(self, node: dict | None) -> bool | None:
+        if not isinstance(node, dict):
+            return None
+        result = node.get("result")
+        return result if result is True or result is False else None
+    def _condition_node_disabled(self, node: dict | None) -> bool:
+        if not isinstance(node, dict):
+            return False
+        if node.get("enabled") is False:
+            return True
+        detail = node.get("detail") or {}
+        return detail.get("enabled") is False or detail.get("excluded_reason") == "disabled"
+    def _condition_node_excluded(self, node: dict | None) -> bool:
+        return self._condition_result_state(node) is None
     def _collect_pixel_samples(self, tree: dict | None, *, only_failed: bool = False, dedup_by_coord: bool = False) -> list[str]:
         if not tree:
             return []
@@ -9468,7 +9576,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if only_failed and node.get("result") is True:
+                if only_failed and self._condition_result_state(node) is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -9508,7 +9616,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if only_failed and node.get("result") is True:
+                if only_failed and self._condition_result_state(node) is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -9564,7 +9672,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if node.get("result") is True:
+                if self._condition_result_state(node) is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -9616,7 +9724,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if node.get("result") is True:
+                if self._condition_result_state(node) is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -9703,7 +9811,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if node.get("result") is True:
+                if node.get("result") is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -9747,7 +9855,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                results.append(node.get("result"))
+                results.append(self._condition_result_state(node))
             for child in node.get("children") or []:
                 _walk(child)
             for child in node.get("on_true") or []:
@@ -9764,7 +9872,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if node.get("result") is True:
+                if self._condition_result_state(node) is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -9806,7 +9914,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if node.get("result") is True:
+                if self._condition_result_state(node) is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -9848,7 +9956,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return None
-            if node.get("type") == "pixel" and node.get("result") is not True:
+            if node.get("type") == "pixel" and self._condition_result_state(node) is False:
                 detail = node.get("detail", {}).get("pixel") or {}
                 data = detail.get("image_png")
                 region = detail.get("region")
@@ -9889,7 +9997,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if only_failed and node.get("result") is True:
+                if only_failed and self._condition_result_state(node) is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -9916,7 +10024,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if node.get("result") is True:
+                if self._condition_result_state(node) is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -9948,7 +10056,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return None
-            if node.get("type") == "pixel" and node.get("result") is not True:
+            if node.get("type") == "pixel" and self._condition_result_state(node) is False:
                 detail = node.get("detail", {}).get("pixel") or {}
                 data = detail.get("image_png")
                 region = detail.get("region")
@@ -10123,7 +10231,12 @@ class DebuggerDialog(QtWidgets.QDialog):
             self._refresh_capture_ui()
             return
         tree = self._last_condition_tree if isinstance(self._last_condition_tree, dict) else None
-        if isinstance(tree, dict) and tree.get("result") is True:
+        current_result = self._condition_result_state(tree)
+        if current_result is None:
+            self._stop_fail_capture_session()
+            self._refresh_capture_ui()
+            return
+        if current_result is True:
             self._stop_fail_capture_session()
             self._refresh_capture_ui()
             return
@@ -10149,7 +10262,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             if notify_user:
                 QtWidgets.QMessageBox.information(self, "실패 시 캡처", "조건 디버그 실행 중에만 사용할 수 있습니다.")
             return
-        current_result = bool(self._last_condition_tree.get("result")) if isinstance(self._last_condition_tree, dict) else None
+        current_result = self._condition_result_state(self._last_condition_tree)
         self._fail_capture_enabled = checked
         self._last_condition_result = current_result
         self._stop_fail_capture_session()
@@ -10300,8 +10413,14 @@ class DebuggerDialog(QtWidgets.QDialog):
             text = f"{lbl}: 오류"
             color = "orange"
         elif result is None:
-            text = f"{lbl}: 대기"
-            color = "gray"
+            tree = self._last_condition_tree if isinstance(self._last_condition_tree, dict) else None
+            if tree is None:
+                text = f"{lbl}: 대기"
+            elif self._condition_node_disabled(tree):
+                text = f"{lbl}: 비활성"
+            else:
+                text = f"{lbl}: 결과 제외"
+            color = "#9aa0a6"
         else:
             text = f"{lbl}: {'참' if result else '거짓'}"
             color = "limegreen" if result else "red"
@@ -10340,7 +10459,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         self.condition_fail_label.setText("실패 경로: -")
         self._last_condition_result = None
     def _maybe_capture_failure(self, tree: dict, *, label: str):
-        result_now = bool(tree.get("result"))
+        result_now = self._condition_result_state(tree)
         prev_result = self._last_condition_result
         self._last_condition_result = result_now
         if not self._fail_capture_enabled:
@@ -10348,6 +10467,9 @@ class DebuggerDialog(QtWidgets.QDialog):
             self._stop_fail_capture_session()
             return
         if not callable(self._fail_capture_cb):
+            self._stop_fail_capture_session()
+            return
+        if result_now is None:
             self._stop_fail_capture_session()
             return
         if result_now:
@@ -10381,7 +10503,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             return
         def _walk(node):
             results = []
-            if node.get("type") == "pixel":
+            if node.get("type") == "pixel" and self._condition_result_state(node) is not None:
                 detail = node.get("detail", {}).get("pixel") or {}
                 target = detail.get("color")
                 tol = detail.get("tolerance", 0)
@@ -10638,11 +10760,20 @@ class DebuggerDialog(QtWidgets.QDialog):
         cond_type = node.get("type") or getattr(cond, "type", "")
         name = getattr(cond, "name", None) or node.get("name") or ""
         label = _condition_brief(cond) if isinstance(cond, Condition) else _condition_type_label(cond_type) if cond_type else "(조건)"
-        result_bool = bool(node.get("result"))
+        result_state = self._condition_result_state(node)
         base_result = node.get("base_result")
-        result_text = "참" if result_bool else "거짓"
-        if base_result is not None and base_result != result_bool:
-            result_text += f" / base={'참' if base_result else '거짓'}"
+        base_state = base_result if base_result is True or base_result is False else None
+        is_disabled = self._condition_node_disabled(node)
+        if is_disabled:
+            result_text = "비활성 / 결과 제외"
+        elif result_state is True:
+            result_text = "참"
+        elif result_state is False:
+            result_text = "거짓"
+        else:
+            result_text = "결과 제외"
+        if base_state is not None and result_state is not None and base_state != result_state:
+            result_text += f" / base={'참' if base_state else '거짓'}"
         color_chip_html = ""
         tgt_hex = None
         tooltip_parts: list[str] = []
@@ -10655,7 +10786,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             tgt_hex = _rgb_to_hex(target) if isinstance(target, (list, tuple)) and len(target) == 3 else None
             if tgt_hex:
                 tooltip_parts.append(f"목표 색상: {tgt_hex}")
-            if compare_color and isinstance(target, (list, tuple)) and len(target) == 3:
+            if (not is_disabled) and compare_color and isinstance(target, (list, tuple)) and len(target) == 3:
                 diff = max(abs(int(target[i]) - int(compare_color[i])) for i in range(3))
                 match = diff <= tol
                 final = match if expect_exists else (not match)
@@ -10685,8 +10816,13 @@ class DebuggerDialog(QtWidgets.QDialog):
                 pass
         if tooltip_parts:
             item.setToolTip(2, "\n".join(tooltip_parts))
-        self._apply_condition_color(item, node.get("detail") or {}, result_bool)
+        self._apply_condition_color(item, node.get("detail") or {}, result_state)
         item.setData(0, QtCore.Qt.ItemDataRole.UserRole, node)
+        if is_disabled:
+            for col in range(item.columnCount()):
+                font = item.font(col)
+                font.setStrikeOut(True)
+                item.setFont(col, font)
         for child in node.get("children") or []:
             item.addChild(self._build_condition_item(child, compare_color=compare_color))
         if node.get("on_true"):
@@ -10717,9 +10853,11 @@ class DebuggerDialog(QtWidgets.QDialog):
                     compare_ok = any(child_compare_results)
                 item.setText(1, f"{item.text(1)} / 대조={'참' if compare_ok else '거짓'}")
         return item
-    def _apply_condition_color(self, item: QtWidgets.QTreeWidgetItem, detail: dict, result: bool):
+    def _apply_condition_color(self, item: QtWidgets.QTreeWidgetItem, detail: dict, result: bool | None):
         # 색상 대조 여부와 관계없이 실제 결과(result)로 색상을 결정한다.
-        if detail.get("error"):
+        if detail.get("enabled") is False or result is None:
+            color = "#9aa0a6"
+        elif detail.get("error"):
             color = "orange"
         else:
             color = "limegreen" if result else "red"
@@ -10729,6 +10867,8 @@ class DebuggerDialog(QtWidgets.QDialog):
     def _format_condition_detail(self, cond_type: str, detail: dict, cond: Condition | None) -> str:
         if not detail:
             return ""
+        if detail.get("enabled") is False:
+            return "비활성 조건 (전체 결과 제외)"
         if detail.get("error"):
             return f"오류: {detail.get('error')}"
         if cond_type == "pixel":
@@ -10757,17 +10897,28 @@ class DebuggerDialog(QtWidgets.QDialog):
             expected = t.get("expected_text", t.get("expected"))
             actual = t.get("actual_text", t.get("actual"))
             return f"타이머{t.get('slot')} {op_txt} {expected} (현재={actual})"
+        if cond_type == "schedule":
+            s = detail.get("schedule") or {}
+            mode = s.get("mode_text") or s.get("mode") or "시간/날짜"
+            op_txt = s.get("operator_text") or s.get("operator") or "=="
+            expected = s.get("expected_text") or "?"
+            actual = s.get("current_text") or s.get("current") or "?"
+            if s.get("operator") == "range":
+                return f"{mode} {expected} (현재={actual})"
+            return f"{mode} {op_txt} {expected} (현재={actual})"
         if cond_type in ("all", "any"):
             grp = detail.get("group") or {}
-            return f"{grp.get('mode', cond_type)} {grp.get('count', 0)}개"
+            return f"{grp.get('mode', cond_type)} 활성 {grp.get('count', 0)}/{grp.get('total', 0)}"
         if detail.get("key"):
             key_info = detail.get("key")
             return f"{key_info.get('key')} ({key_info.get('mode')}) pressed={key_info.get('pressed')} prev={key_info.get('prev')}"
         return ""
     def _find_first_failure_path(self, node: dict, prefix: list[str]) -> list[str]:
+        if self._condition_node_excluded(node):
+            return []
         label = node.get("name") or _condition_type_label(node.get("type", "") or "") or "(조건)"
         current_path = prefix + [label]
-        if not node.get("result", False):
+        if self._condition_result_state(node) is False:
             return current_path
         for child in (node.get("children") or []):
             fail = self._find_first_failure_path(child, current_path)
@@ -16618,8 +16769,8 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _build_macro_group(self):
         group = QtWidgets.QGroupBox("매크로 목록 (기본 액션 + 조건)")
         layout = QtWidgets.QVBoxLayout(group)
-        self.macro_table = QtWidgets.QTableWidget(0, 8)
-        self.macro_table.setHorizontalHeaderLabels(["순번", "이름", "트리거", "모드", "활성", "차단", "범위", "설명"])
+        self.macro_table = QtWidgets.QTableWidget(0, 7)
+        self.macro_table.setHorizontalHeaderLabels(["순번", "이름", "트리거", "모드", "활성", "범위", "설명"])
         header = self.macro_table.horizontalHeader()
         header.setDefaultSectionSize(90)
         header.setMinimumSectionSize(60)
@@ -16760,7 +16911,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.del_macro_btn.clicked.connect(self._delete_macro)
         if hasattr(self, "variable_manager_btn"):
             self.variable_manager_btn.clicked.connect(self._open_variable_manager_dialog)
-        self.macro_table.doubleClicked.connect(lambda _: self._edit_macro())
+        self.macro_table.cellClicked.connect(self._on_macro_table_clicked)
+        self.macro_table.doubleClicked.connect(self._on_macro_table_double_clicked)
         self.macro_table.customContextMenuRequested.connect(self._macro_context_menu)
     # 정렬/키 헬퍼 ---------------------------------------------------------
     def _name_sort_key(self, name: str):
@@ -17479,19 +17631,24 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _set_macro_row(self, row: int, macro: Macro):
         scope_text = self._macro_scope_text(macro)
         trigger_text, mode_text = self._macro_trigger_texts(macro)
+        is_enabled = bool(getattr(macro, "enabled", True))
+        disabled_bg = QtGui.QBrush(QtGui.QColor("#ffe8e8"))
         values = [
             str(row + 1),
             macro.name or "",
             trigger_text,
             mode_text,
-            "ON" if getattr(macro, "enabled", True) else "OFF",
-            "ON" if macro.suppress_trigger else "OFF",
+            "ON" if is_enabled else "OFF",
             scope_text,
             getattr(macro, "description", "") or "",
         ]
         for col, val in enumerate(values):
             item = QtWidgets.QTableWidgetItem(val)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, macro)
+            if col in (MACRO_TABLE_COL_ORDER, MACRO_TABLE_COL_MODE, MACRO_TABLE_COL_ENABLED, MACRO_TABLE_COL_SCOPE):
+                item.setTextAlignment(int(QtCore.Qt.AlignmentFlag.AlignCenter))
+            if not is_enabled:
+                item.setBackground(disabled_bg)
             self.macro_table.setItem(row, col, item)
     def _refresh_macros(self):
         self._loading_profile = True
@@ -17525,6 +17682,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             updated = True
         if updated and not self._loading_profile:
             self._mark_dirty()
+            self._sync_runtime_profile_from_macro_table()
     def _macro_summary(self, macro: Macro) -> str:
         cycles = f", {macro.cycle_count}회" if macro.cycle_count else ", 무한"
         return f"액션 {len(macro.actions)}{cycles}"
@@ -17579,6 +17737,25 @@ class MacroWindow(QtWidgets.QMainWindow):
         item = self.macro_table.item(row, 0)
         stored = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
         return stored if isinstance(stored, Macro) else None
+    def _toggle_macro_enabled_from_row(self, row: int):
+        macro = self._macro_from_row(row)
+        if not macro:
+            return
+        macro.enabled = not bool(getattr(macro, "enabled", True))
+        self._set_macro_row(row, macro)
+        self.macro_table.selectRow(row)
+        if not self._loading_profile:
+            self._mark_dirty()
+            self._sync_runtime_profile_from_macro_table()
+    def _on_macro_table_clicked(self, row: int, column: int):
+        if column == MACRO_TABLE_COL_ENABLED:
+            self._toggle_macro_enabled_from_row(row)
+    def _on_macro_table_double_clicked(self, index: QtCore.QModelIndex):
+        if not index.isValid():
+            return
+        if index.column() == MACRO_TABLE_COL_ENABLED:
+            return
+        self._edit_macro()
     def _renumber_macro_rows(self):
         for row in range(self.macro_table.rowCount()):
             item = self.macro_table.item(row, 0)
@@ -17618,6 +17795,22 @@ class MacroWindow(QtWidgets.QMainWindow):
                 else:
                     macros.append(macro)
         return macros
+    def _sync_runtime_profile_from_macro_table(self):
+        if self._loading_profile:
+            return
+        macros = [copy.deepcopy(m) for m in self._collect_macros() if isinstance(m, Macro)]
+        self.profile.macros = macros
+        try:
+            self.profile.variables = self._collect_variables()
+            self.profile.variable_descriptions = self._collect_variable_descriptions()
+        except Exception:
+            pass
+        try:
+            runtime_profile = self._build_profile_from_inputs()
+        except Exception:
+            runtime_profile = copy.deepcopy(self.profile)
+            runtime_profile.macros = [copy.deepcopy(m) for m in macros]
+        self.engine.update_profile(runtime_profile)
     def _add_macro(self):
         resolver = None
         try:
@@ -17648,6 +17841,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 return
             self._append_macro_row(macro)
             self._renumber_macro_rows()
+            self._sync_runtime_profile_from_macro_table()
     def _edit_macro(self):
         row = self._get_selected_row()
         if row < 0:
@@ -17687,6 +17881,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._set_macro_row(row, new_macro)
             if not self._loading_profile and old_snapshot != new_snapshot:
                 self._mark_dirty()
+                self._sync_runtime_profile_from_macro_table()
     def _clone_macro(self):
         row = self._get_selected_row()
         if row < 0:
@@ -17705,6 +17900,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.macro_table.selectRow(insert_row)
         if not self._loading_profile:
             self._mark_dirty()
+            self._sync_runtime_profile_from_macro_table()
     def _copy_macro(self):
         rows = self._selected_macro_rows()
         if not rows:
@@ -17742,6 +17938,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             self.macro_table.selectRow(pasted_rows[-1])
         if not self._loading_profile:
             self._mark_dirty()
+            self._sync_runtime_profile_from_macro_table()
     def _delete_macro(self):
         row = self._get_selected_row()
         if row < 0:
@@ -17751,6 +17948,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._renumber_macro_rows()
         if not self._loading_profile:
             self._mark_dirty()
+            self._sync_runtime_profile_from_macro_table()
     def _apply_profile(self, *, silent: bool = False) -> bool:
         try:
             profile = self._build_profile_from_inputs()
@@ -18525,7 +18723,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if node.get("result") is True:
+                if node.get("result") is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -18569,7 +18767,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                results.append(node.get("result"))
+                result = node.get("result")
+                results.append(result if result is True or result is False else None)
             for child in node.get("children") or []:
                 _walk(child)
             for child in node.get("on_true") or []:
@@ -18789,7 +18988,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if only_failed and node.get("result") is True:
+                if only_failed and node.get("result") is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -18829,7 +19028,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if only_failed and node.get("result") is True:
+                if only_failed and node.get("result") is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -18856,7 +19055,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             if not isinstance(node, dict):
                 return
             if node.get("type") == "pixel":
-                if node.get("result") is True:
+                if node.get("result") is not False:
                     pass
                 else:
                     detail = node.get("detail", {}).get("pixel") or {}
@@ -18888,7 +19087,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         def _walk(node: dict):
             if not isinstance(node, dict):
                 return None
-            if node.get("type") == "pixel" and node.get("result") is not True:
+            if node.get("type") == "pixel" and node.get("result") is False:
                 detail = node.get("detail", {}).get("pixel") or {}
                 data = detail.get("image_png")
                 region = detail.get("region")

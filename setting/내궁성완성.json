@@ -145,6 +145,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true
           },
           "label": null,
@@ -209,6 +212,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true,
                 "conditions": [
                   {
@@ -230,6 +236,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true,
                     "conditions": [
                       {
@@ -251,6 +260,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true
                       },
                       {
@@ -272,6 +284,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true
                       }
                     ]
@@ -430,6 +445,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": false,
                 "conditions": [
                   {
@@ -451,6 +469,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true,
                     "conditions": [
                       {
@@ -472,6 +493,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true
                       },
                       {
@@ -493,6 +517,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true
                       }
                     ]
@@ -651,6 +678,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": false,
                 "conditions": [
                   {
@@ -672,6 +702,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true,
                     "conditions": [
                       {
@@ -693,6 +726,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true
                       },
                       {
@@ -714,6 +750,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true
                       }
                     ]
@@ -874,6 +913,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": false,
             "conditions": [
               {
@@ -895,6 +937,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true,
                 "conditions": [
                   {
@@ -916,6 +961,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   },
                   {
@@ -937,6 +985,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   }
                 ]
@@ -1349,6 +1400,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true,
             "conditions": [
               {
@@ -1370,6 +1424,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true
               }
             ]
@@ -1588,6 +1645,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true,
             "conditions": [
               {
@@ -1609,6 +1669,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true
               },
               {
@@ -1630,6 +1693,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true
               },
               {
@@ -1651,6 +1717,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true
               },
               {
@@ -1672,6 +1741,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true
               }
             ]
@@ -1784,6 +1856,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true,
             "conditions": [
               {
@@ -1805,6 +1880,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true,
                 "conditions": [
                   {
@@ -1826,6 +1904,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   },
                   {
@@ -1847,6 +1928,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   }
                 ]
@@ -2005,6 +2089,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true,
             "conditions": [
               {
@@ -2026,6 +2113,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true,
                 "conditions": [
                   {
@@ -2047,6 +2137,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   },
                   {
@@ -2068,6 +2161,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   }
                 ]
@@ -2226,6 +2322,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": false,
             "conditions": [
               {
@@ -2247,6 +2346,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true,
                 "conditions": [
                   {
@@ -2268,6 +2370,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   },
                   {
@@ -2289,6 +2394,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   },
                   {
@@ -2310,6 +2418,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   }
                 ]
@@ -2468,6 +2579,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": false,
             "conditions": [
               {
@@ -2489,6 +2603,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true,
                 "conditions": [
                   {
@@ -2510,6 +2627,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true,
                     "conditions": [
                       {
@@ -2531,6 +2651,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true,
                         "conditions": [
                           {
@@ -2552,6 +2675,9 @@
                             "timer_value_raw": null,
                             "timer_unit": "sec",
                             "timer_operator": "ge",
+                            "schedule_mode": "daily",
+                            "schedule_value_raw": null,
+                            "schedule_operator": "eq",
                             "enabled": true
                           },
                           {
@@ -2573,6 +2699,9 @@
                             "timer_value_raw": null,
                             "timer_unit": "sec",
                             "timer_operator": "ge",
+                            "schedule_mode": "daily",
+                            "schedule_value_raw": null,
+                            "schedule_operator": "eq",
                             "enabled": true
                           }
                         ]
@@ -2596,6 +2725,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true,
                         "conditions": [
                           {
@@ -2617,6 +2749,9 @@
                             "timer_value_raw": null,
                             "timer_unit": "sec",
                             "timer_operator": "ge",
+                            "schedule_mode": "daily",
+                            "schedule_value_raw": null,
+                            "schedule_operator": "eq",
                             "enabled": true
                           },
                           {
@@ -2638,6 +2773,9 @@
                             "timer_value_raw": null,
                             "timer_unit": "sec",
                             "timer_operator": "ge",
+                            "schedule_mode": "daily",
+                            "schedule_value_raw": null,
+                            "schedule_operator": "eq",
                             "enabled": true
                           }
                         ]
@@ -2922,6 +3060,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true,
             "conditions": [
               {
@@ -2943,6 +3084,9 @@
                 "timer_value_raw": "10",
                 "timer_unit": "min",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true
               }
             ]
@@ -3143,6 +3287,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true,
             "conditions": [
               {
@@ -3164,6 +3311,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true,
                 "conditions": [
                   {
@@ -3174,10 +3324,10 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1719,1040,1,1",
+                    "region": "1719,1021,1,1",
                     "color": "c8b89c",
                     "pixel_pattern": null,
-                    "tolerance": 5,
+                    "tolerance": 10,
                     "pixel_min_count": 1,
                     "pixel_exists": true,
                     "timer_index": null,
@@ -3185,6 +3335,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   },
                   {
@@ -3195,7 +3348,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1667,1008,1,1",
+                    "region": "1758,1003,1,1",
                     "color": "ffffff",
                     "pixel_pattern": null,
                     "tolerance": 5,
@@ -3206,6 +3359,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   }
                 ]
@@ -3455,6 +3611,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true,
             "conditions": [
               {
@@ -3476,6 +3635,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true,
                 "conditions": [
                   {
@@ -3497,6 +3659,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   },
                   {
@@ -3518,6 +3683,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   }
                 ]
@@ -3762,6 +3930,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true,
                     "conditions": [
                       {
@@ -3783,6 +3954,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true
                       },
                       {
@@ -3804,6 +3978,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true
                       },
                       {
@@ -3825,6 +4002,9 @@
                         "timer_value_raw": null,
                         "timer_unit": "sec",
                         "timer_operator": "ge",
+                        "schedule_mode": "daily",
+                        "schedule_value_raw": null,
+                        "schedule_operator": "eq",
                         "enabled": true
                       }
                     ]
@@ -4118,6 +4298,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true,
             "conditions": [
               {
@@ -4139,6 +4322,9 @@
                 "timer_value_raw": "3.0",
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true
               }
             ]
@@ -4295,6 +4481,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true,
             "conditions": [
               {
@@ -4316,6 +4505,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true,
                 "conditions": [
                   {
@@ -4337,6 +4529,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   },
                   {
@@ -4358,6 +4553,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   }
                 ]
@@ -4675,6 +4873,9 @@
             "timer_value_raw": null,
             "timer_unit": "sec",
             "timer_operator": "ge",
+            "schedule_mode": "daily",
+            "schedule_value_raw": null,
+            "schedule_operator": "eq",
             "enabled": true,
             "conditions": [
               {
@@ -4696,6 +4897,9 @@
                 "timer_value_raw": null,
                 "timer_unit": "sec",
                 "timer_operator": "ge",
+                "schedule_mode": "daily",
+                "schedule_value_raw": null,
+                "schedule_operator": "eq",
                 "enabled": true,
                 "conditions": [
                   {
@@ -4706,7 +4910,7 @@
                     "var_name": null,
                     "var_value_raw": null,
                     "var_operator": "eq",
-                    "region": "1849,837,1,1",
+                    "region": "1879,841,1,1",
                     "color": "ffffff",
                     "pixel_pattern": null,
                     "tolerance": 5,
@@ -4717,6 +4921,9 @@
                     "timer_value_raw": null,
                     "timer_unit": "sec",
                     "timer_operator": "ge",
+                    "schedule_mode": "daily",
+                    "schedule_value_raw": null,
+                    "schedule_operator": "eq",
                     "enabled": true
                   }
                 ]
@@ -4757,7 +4964,7 @@
               "enabled": true,
               "once_per_macro": false,
               "force_first_run": false,
-              "key": "f",
+              "key": "g",
               "repeat": 1,
               "repeat_raw": null,
               "var_name": null,

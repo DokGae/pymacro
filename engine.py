@@ -7,11 +7,14 @@ import os
 import queue
 import random
 import re
+import subprocess
 import sys
 import threading
 import time
 import traceback
 import json
+from datetime import date as dt_date
+from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Literal, Optional, Set, Tuple
@@ -36,7 +39,7 @@ from lib.pixel import (
 )
 from lib.processes import get_foreground_process
 
-ConditionType = Literal["key", "pixel", "all", "any", "var", "timer"]
+ConditionType = Literal["key", "pixel", "all", "any", "var", "timer", "schedule"]
 KeyMode = Literal["press", "down", "up", "hold", "released"]
 ActionType = Literal[
     "press",
@@ -62,10 +65,12 @@ ActionType = Literal[
     "set_var",
     "timer",
     "telegram_message",
+    "computer_shutdown",
 ]
 GroupMode = Literal["all", "first_true", "first_true_continue", "first_true_return", "while", "repeat_n"]
 SoundWaitMode = Literal["once", "duration", "repeat"]
 TimeUnit = Literal["ms", "sec", "min", "hour"]
+ScheduleMode = Literal["daily", "date", "datetime"]
 StepType = Literal["press", "down", "up", "sleep", "if", "loop_while"]  # legacy 호환용
 MacroMode = Literal["hold", "toggle", "once"]
 VarCategory = Literal["sleep", "region", "color", "key", "var"]
@@ -292,6 +297,219 @@ def _parse_time_value(
     return max(0.0, value), None
 
 
+def _normalize_compare_operator(raw: Any, *, default: str = "eq") -> str:
+    op = str(raw or "").strip().lower()
+    return op if op in ("ge", "gt", "le", "lt", "eq", "ne") else default
+
+
+def _normalize_schedule_mode(raw: Any, *, default: ScheduleMode = "daily") -> ScheduleMode:
+    text = str(raw or "").strip().lower()
+    aliases: dict[str, ScheduleMode] = {
+        "daily": "daily",
+        "time": "daily",
+        "clock": "daily",
+        "date": "date",
+        "datetime": "datetime",
+        "date_time": "datetime",
+        "timestamp": "datetime",
+    }
+    return aliases.get(text, default)
+
+
+def _parse_schedule_clock_text(raw: Any) -> tuple[int, str]:
+    text = str(raw or "").strip()
+    for suffix in ("분", "초"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)].strip()
+            break
+    match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?", text)
+    if not match:
+        raise ValueError("시간 형식이 잘못되었습니다. 예: 03:30, 03:30:15")
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    second_text = match.group(3)
+    second = int(second_text) if second_text is not None else 0
+    precision = "second" if second_text is not None else "minute"
+    return hour * 3600 + minute * 60 + second, precision
+
+
+def _parse_schedule_date_text(raw: Any) -> dt_date:
+    text = str(raw or "").strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except Exception:
+            continue
+    raise ValueError("날짜 형식이 잘못되었습니다. 예: 2026-04-23")
+
+
+def _parse_schedule_datetime_text(raw: Any) -> tuple[datetime, str]:
+    text = str(raw or "").strip().replace("T", " ")
+    formats = [
+        ("%Y-%m-%d %H:%M:%S", "second"),
+        ("%Y/%m/%d %H:%M:%S", "second"),
+        ("%Y.%m.%d %H:%M:%S", "second"),
+        ("%Y-%m-%d %H:%M", "minute"),
+        ("%Y/%m/%d %H:%M", "minute"),
+        ("%Y.%m.%d %H:%M", "minute"),
+    ]
+    for fmt, precision in formats:
+        try:
+            return datetime.strptime(text, fmt), precision
+        except Exception:
+            continue
+    raise ValueError("날짜+시간 형식이 잘못되었습니다. 예: 2026-04-23 03:30, 2026-04-23 03:30:15")
+
+
+def _parse_schedule_value(raw: Any, *, mode: ScheduleMode) -> dict[str, Any]:
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("시간/날짜 값을 입력하세요.")
+
+    def _parse_single(part: str) -> tuple[Any, str]:
+        if mode == "daily":
+            return _parse_schedule_clock_text(part)
+        if mode == "date":
+            return _parse_schedule_date_text(part), "day"
+        return _parse_schedule_datetime_text(part)
+
+    if "~" in text:
+        parts = [p.strip() for p in text.split("~")]
+        if len(parts) != 2 or any(not p for p in parts):
+            raise ValueError("범위 형식이 잘못되었습니다. 예: 03:30~05:00, 2026-04-23~2026-04-30")
+        start_value, start_precision = _parse_single(parts[0])
+        end_value, end_precision = _parse_single(parts[1])
+        if mode in ("date", "datetime") and start_value > end_value:
+            raise ValueError("범위는 시작값이 끝값보다 앞서야 합니다.")
+        return {
+            "raw": text,
+            "is_range": True,
+            "start": start_value,
+            "end": end_value,
+            "start_precision": start_precision,
+            "end_precision": end_precision,
+        }
+
+    value, precision = _parse_single(text)
+    return {"raw": text, "is_range": False, "value": value, "precision": precision}
+
+
+def _schedule_mode_label(mode: Any) -> str:
+    normalized = _normalize_schedule_mode(mode, default="daily")
+    return {"daily": "매일", "date": "날짜", "datetime": "일시"}.get(normalized, str(mode or "시간/날짜"))
+
+
+def _schedule_operator_label(op: Any) -> str:
+    normalized = _normalize_compare_operator(op, default="eq")
+    return {"ge": ">=", "gt": ">", "le": "<=", "lt": "<", "eq": "==", "ne": "!="}.get(normalized, normalized)
+
+
+def _schedule_clock_upper_bound(value: int, precision: str) -> int:
+    if precision == "minute":
+        return min(24 * 60 * 60 - 1, int(value) + 59)
+    return int(value)
+
+
+def _schedule_datetime_upper_bound(value: datetime, precision: str) -> datetime:
+    if precision == "minute":
+        return value + timedelta(seconds=59)
+    return value
+
+
+def _evaluate_schedule_condition_result(cond: Any, *, now: Optional[datetime] = None) -> tuple[bool, Dict[str, Any]]:
+    current = now or datetime.now()
+    mode = _normalize_schedule_mode(getattr(cond, "schedule_mode", None), default="daily")
+    operator = _normalize_compare_operator(getattr(cond, "schedule_operator", "eq"), default="eq")
+    raw_value = str(getattr(cond, "schedule_value_raw", "") or "").strip()
+    parsed = _parse_schedule_value(raw_value, mode=mode)
+    detail: Dict[str, Any] = {
+        "mode": mode,
+        "mode_text": _schedule_mode_label(mode),
+        "operator": operator,
+        "operator_text": _schedule_operator_label(operator),
+        "expected_text": raw_value,
+    }
+
+    if mode == "daily":
+        current_value = current.hour * 3600 + current.minute * 60 + current.second
+        detail["current_text"] = current.strftime("%H:%M:%S")
+        detail["current"] = current_value
+        if parsed.get("is_range"):
+            start = int(parsed["start"])
+            end = _schedule_clock_upper_bound(int(parsed["end"]), str(parsed.get("end_precision") or "minute"))
+            if start <= end:
+                result = start <= current_value <= end
+            else:
+                result = current_value >= start or current_value <= end
+            detail["operator"] = "range"
+            detail["operator_text"] = "~"
+            detail["wrap_midnight"] = start > end
+            return result, {"schedule": detail}
+        target = int(parsed["value"])
+        precision = str(parsed.get("precision") or "minute")
+        upper_bound = _schedule_clock_upper_bound(target, precision)
+        if operator == "eq":
+            result = target <= current_value <= upper_bound
+        elif operator == "ne":
+            result = not (target <= current_value <= upper_bound)
+        elif operator == "gt":
+            result = current_value > target
+        elif operator == "ge":
+            result = current_value >= target
+        elif operator == "lt":
+            result = current_value < target
+        else:
+            result = current_value <= target
+        return result, {"schedule": detail}
+
+    if mode == "date":
+        current_value = current.date()
+        detail["current_text"] = current_value.isoformat()
+        detail["current"] = current_value.isoformat()
+        if parsed.get("is_range"):
+            start = parsed["start"]
+            end = parsed["end"]
+            detail["operator"] = "range"
+            detail["operator_text"] = "~"
+            return bool(start <= current_value <= end), {"schedule": detail}
+        target = parsed["value"]
+        ops = {
+            "gt": lambda a, b: a > b,
+            "ge": lambda a, b: a >= b,
+            "lt": lambda a, b: a < b,
+            "le": lambda a, b: a <= b,
+            "eq": lambda a, b: a == b,
+            "ne": lambda a, b: a != b,
+        }
+        return bool(ops[operator](current_value, target)), {"schedule": detail}
+
+    current_value = current
+    detail["current_text"] = current.strftime("%Y-%m-%d %H:%M:%S")
+    detail["current"] = current.isoformat(sep=" ", timespec="seconds")
+    if parsed.get("is_range"):
+        start = parsed["start"]
+        end = _schedule_datetime_upper_bound(parsed["end"], str(parsed.get("end_precision") or "minute"))
+        detail["operator"] = "range"
+        detail["operator_text"] = "~"
+        return bool(start <= current_value <= end), {"schedule": detail}
+    target = parsed["value"]
+    precision = str(parsed.get("precision") or "minute")
+    upper_bound = _schedule_datetime_upper_bound(target, precision)
+    if operator == "eq":
+        result = target <= current_value <= upper_bound
+    elif operator == "ne":
+        result = not (target <= current_value <= upper_bound)
+    elif operator == "gt":
+        result = current_value > target
+    elif operator == "ge":
+        result = current_value >= target
+    elif operator == "lt":
+        result = current_value < target
+    else:
+        result = current_value <= target
+    return result, {"schedule": detail}
+
+
 def _sound_path_text(raw: Any) -> str:
     text = str(raw or "").strip()
     if not text:
@@ -463,6 +681,7 @@ def _play_system_alert(
     repeat_count: int = 1,
     stop_event: threading.Event | None = None,
     interval_sec: float = 0.35,
+    wait_after_last: bool = True,
 ) -> tuple[bool, bool, str | None]:
     try:
         loops = max(1, int(repeat_count or 1))
@@ -486,7 +705,8 @@ def _play_system_alert(
                 played = False
         if not played:
             return False, False, "system_alert_failed"
-        if idx + 1 < loops and _wait_with_optional_stop(stop_event, interval_sec):
+        should_wait = (idx + 1 < loops) or bool(wait_after_last)
+        if should_wait and _wait_with_optional_stop(stop_event, interval_sec):
             return False, True, None
     return True, False, None
 
@@ -514,7 +734,11 @@ def _play_alert_sound(
     if wait_mode == "duration":
         return False, None, False, "sound_file_required_for_duration"
     loops = repeat_count if wait_mode == "repeat" else 1
-    played, stopped, error = _play_system_alert(repeat_count=loops, stop_event=stop_event)
+    played, stopped, error = _play_system_alert(
+        repeat_count=loops,
+        stop_event=stop_event,
+        wait_after_last=True,
+    )
     return played, None, stopped, error
 
 
@@ -902,6 +1126,9 @@ class Condition:
     timer_value_raw: Optional[str] = None
     timer_unit: TimeUnit = "sec"
     timer_operator: str = "ge"
+    schedule_mode: ScheduleMode = "daily"
+    schedule_value_raw: Optional[str] = None
+    schedule_operator: str = "eq"
 
     @classmethod
     def _parse_region(cls, raw: Any, resolver: Optional[VariableResolver]) -> tuple[Region, Optional[str]]:
@@ -989,6 +1216,10 @@ class Condition:
             return None
         return max(0.0, float(self.timer_value))
 
+    @staticmethod
+    def parse_schedule_value(raw: Any, *, mode: ScheduleMode = "daily") -> dict[str, Any]:
+        return _parse_schedule_value(raw, mode=_normalize_schedule_mode(mode, default="daily"))
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "Condition":
         ctype = data.get("type", "key")
@@ -1053,6 +1284,9 @@ class Condition:
                     timer_value = None
         timer_op_raw = str(data.get("timer_operator", data.get("timer_op", "ge"))).lower()
         timer_operator = timer_op_raw if timer_op_raw in ("ge", "gt", "le", "lt", "eq", "ne") else "ge"
+        schedule_mode = _normalize_schedule_mode(data.get("schedule_mode"), default="daily")
+        schedule_value_raw = data.get("schedule_value_raw", data.get("schedule_value"))
+        schedule_operator = _normalize_compare_operator(data.get("schedule_operator"), default="eq")
         enabled_raw = data.get("enabled")
         if isinstance(enabled_raw, str):
             enabled_val = enabled_raw.strip().lower() not in ("false", "0", "no")
@@ -1083,6 +1317,9 @@ class Condition:
             timer_value_raw=str(timer_value_raw) if timer_value_raw is not None else None,
             timer_unit=timer_unit,
             timer_operator=timer_operator,
+            schedule_mode=schedule_mode,
+            schedule_value_raw=str(schedule_value_raw) if schedule_value_raw is not None else None,
+            schedule_operator=schedule_operator,
             enabled=enabled_val,
         )
         return cond
@@ -1107,6 +1344,9 @@ class Condition:
             "timer_value_raw": self.timer_value_raw,
             "timer_unit": _normalize_time_unit(getattr(self, "timer_unit", "sec"), default="sec"),
             "timer_operator": self.timer_operator,
+            "schedule_mode": _normalize_schedule_mode(getattr(self, "schedule_mode", "daily"), default="daily"),
+            "schedule_value_raw": self.schedule_value_raw,
+            "schedule_operator": _normalize_compare_operator(getattr(self, "schedule_operator", "eq"), default="eq"),
             "enabled": getattr(self, "enabled", True),
         }
         if self.type in ("all", "any"):
@@ -3468,6 +3708,33 @@ class MacroRunner:
             )
             return end_result(status="timer", timer_slot=slot, timer_value=value)
 
+        if action.type == "computer_shutdown":
+            try:
+                if sys.platform.startswith("win"):
+                    subprocess.Popen(
+                        ["shutdown", "/s", "/t", "0"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                else:
+                    subprocess.Popen(
+                        ["shutdown", "-h", "now"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+            except Exception as exc:
+                self.engine._emit_log(f"컴퓨터 종료 실패: {exc}")
+                return end_result(status="error", error="computer_shutdown_failed")
+            self.engine._emit_log("컴퓨터 종료 명령을 실행했습니다.")
+            self.engine._emit_event(
+                {
+                    "type": "system_shutdown",
+                    "macro": self._macro_context(),
+                    "timestamp": time.time(),
+                }
+            )
+            return end_result(status="computer_shutdown")
+
         if action.type == "if":
             cond = action.condition
             if not cond:
@@ -5506,6 +5773,9 @@ class MacroEngine:
                 "operator": op,
                 "unit": timer_unit,
             }
+        elif cond.type == "schedule":
+            base_result, schedule_detail = _evaluate_schedule_condition_result(cond)
+            detail.update(schedule_detail)
         else:
             base_result = False
 
@@ -5595,17 +5865,36 @@ class MacroEngine:
         children: List[Dict[str, Any]] = []
         true_branch: List[Dict[str, Any]] = []
         false_branch: List[Dict[str, Any]] = []
-        base_result = False
+        base_result: bool | None = None
+
+        def _collect_effective_results(nodes: List[Dict[str, Any]]) -> List[bool]:
+            results: List[bool] = []
+            for node in nodes:
+                node_result = node.get("result")
+                if node_result is True or node_result is False:
+                    results.append(node_result)
+            return results
+
+        def _reduce_results(mode: str, results: List[bool]) -> bool | None:
+            if not results:
+                return None
+            if mode == "all":
+                return False if any(r is False for r in results) else True
+            return True if any(r is True for r in results) else False
 
         if not cond_enabled:
+            detail["excluded"] = True
+            detail["excluded_reason"] = "disabled"
             return {
                 "cond": cond,
                 "type": getattr(cond, "type", None),
                 "name": getattr(cond, "name", None),
                 "path": current_path,
                 "path_text": " > ".join(current_path),
-                "result": False,
-                "base_result": False,
+                "enabled": False,
+                "excluded": True,
+                "result": None,
+                "base_result": None,
                 "detail": detail,
                 "children": [],
                 "on_true": [],
@@ -5683,10 +5972,14 @@ class MacroEngine:
                     children.append(child_res)
                     if getattr(child, "enabled", True):
                         active_children.append(child_res)
-                base_result = bool(active_children) and (
-                    all(r.get("result") for r in active_children) if cond.type == "all" else any(r.get("result") for r in active_children)
-                )
-                detail["group"] = {"mode": cond.type, "count": len(active_children), "total": len(cond.conditions or [])}
+                effective_results = _collect_effective_results(active_children)
+                base_result = _reduce_results(cond.type, effective_results)
+                detail["group"] = {
+                    "mode": cond.type,
+                    "count": len(active_children),
+                    "total": len(cond.conditions or []),
+                    "effective_count": len(effective_results),
+                }
             elif cond.type == "var":
                 name = (cond.var_name or "").strip()
                 if not name:
@@ -5736,14 +6029,17 @@ class MacroEngine:
                     "operator": op,
                     "unit": timer_unit,
                 }
+            elif cond.type == "schedule":
+                base_result, schedule_detail = _evaluate_schedule_condition_result(cond)
+                detail.update(schedule_detail)
             else:
                 base_result = False
         except Exception as exc:
             detail["error"] = str(exc)
             base_result = False
 
-        final_result = base_result
-        if base_result and cond.on_true:
+        final_result: bool | None = base_result
+        if base_result is True and cond.on_true:
             active_true: List[Dict[str, Any]] = []
             for idx, child in enumerate(cond.on_true):
                 child_res = self.debug_condition_tree(
@@ -5756,9 +6052,10 @@ class MacroEngine:
                 true_branch.append(child_res)
                 if getattr(child, "enabled", True):
                     active_true.append(child_res)
-            if active_true:
-                final_result = any(r.get("result") for r in active_true)
-        elif (not base_result) and cond.on_false:
+            branch_result = _reduce_results("any", _collect_effective_results(active_true))
+            if branch_result is not None:
+                final_result = branch_result
+        elif base_result is False and cond.on_false:
             active_false: List[Dict[str, Any]] = []
             for idx, child in enumerate(cond.on_false):
                 child_res = self.debug_condition_tree(
@@ -5771,8 +6068,14 @@ class MacroEngine:
                 false_branch.append(child_res)
                 if getattr(child, "enabled", True):
                     active_false.append(child_res)
-            if active_false:
-                final_result = any(r.get("result") for r in active_false)
+            branch_result = _reduce_results("any", _collect_effective_results(active_false))
+            if branch_result is not None:
+                final_result = branch_result
+
+        excluded = final_result is None
+        if excluded:
+            detail["excluded"] = True
+            detail["excluded_reason"] = detail.get("excluded_reason") or "no_active_conditions"
 
         return {
             "cond": cond,
@@ -5780,8 +6083,10 @@ class MacroEngine:
             "name": getattr(cond, "name", None),
             "path": current_path,
             "path_text": " > ".join(current_path),
-            "result": bool(final_result),
-            "base_result": bool(base_result),
+            "enabled": cond_enabled,
+            "excluded": excluded,
+            "result": final_result,
+            "base_result": base_result,
             "detail": detail,
             "children": children,
             "on_true": true_branch,
