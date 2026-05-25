@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import ctypes
 import io
+import math
 import os
 import queue
 import random
@@ -76,6 +77,7 @@ MacroMode = Literal["hold", "toggle", "once"]
 VarCategory = Literal["sleep", "region", "color", "key", "var"]
 DEFAULT_BASE_RESOLUTION: tuple[int, int] = (1920, 1080)
 DEFAULT_BASE_SCALE: float = 100.0
+DEFAULT_VAR_SLOT_COUNT: int = 20
 _TRIGGER_MOD_ALIASES = {
     "ctrl": {"ctrl", "control", "lctrl", "rctrl", "leftctrl", "rightctrl"},
     "shift": {"shift", "lshift", "rshift", "leftshift", "rightshift"},
@@ -197,6 +199,85 @@ def _format_time_number(value: float, *, unit: TimeUnit) -> str:
         return str(max(0, int(round(float(value)))))
     text = f"{float(value):.9f}".rstrip("0").rstrip(".")
     return text if text else "0"
+
+
+def _default_value_var_slots() -> Dict[str, str]:
+    return {f"변수{i}": "0" for i in range(1, DEFAULT_VAR_SLOT_COUNT + 1)}
+
+
+def _merge_default_value_var_slots(values: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    merged = dict(values or {})
+    for name, default_value in _default_value_var_slots().items():
+        merged.setdefault(name, default_value)
+    return merged
+
+
+def _parse_var_numeric_value(raw: Any, *, label: str = "변수 값") -> float:
+    if raw in (None, ""):
+        return 0.0
+    if isinstance(raw, bool):
+        return float(int(raw))
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    text = str(raw).strip()
+    if not text:
+        return 0.0
+    try:
+        value = float(text)
+    except Exception as exc:
+        raise ValueError(f"{label}은 숫자여야 합니다.") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{label}은 유한한 숫자여야 합니다.")
+    return value
+
+
+def _parse_var_random_range(raw: Any) -> Optional[tuple[float, float, bool]]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    match = re.fullmatch(r"\s*([+-]?\d+(?:\.\d+)?)\s*(?:~|-)\s*([+-]?\d+(?:\.\d+)?)\s*", text)
+    if not match:
+        return None
+    first_text = match.group(1)
+    second_text = match.group(2)
+    first = float(first_text)
+    second = float(second_text)
+    if not math.isfinite(first) or not math.isfinite(second):
+        return None
+    low, high = sorted((first, second))
+    use_int = bool(re.fullmatch(r"[+-]?\d+", first_text)) and bool(re.fullmatch(r"[+-]?\d+", second_text))
+    return low, high, use_int
+
+
+def _resolve_var_random_value(raw: Any) -> Any:
+    parsed = _parse_var_random_range(raw)
+    if not parsed:
+        return raw
+    low, high, use_int = parsed
+    if use_int:
+        return random.randint(int(low), int(high))
+    return random.uniform(low, high)
+
+
+def _format_var_numeric_value(value: Any) -> str:
+    numeric = float(value or 0.0)
+    if not math.isfinite(numeric):
+        return "0"
+    if numeric.is_integer():
+        return str(int(numeric))
+    text = f"{numeric:.12f}".rstrip("0").rstrip(".")
+    return text if text else "0"
+
+
+def _try_parse_var_integer(raw: Any) -> Optional[int]:
+    try:
+        numeric = _parse_var_numeric_value(raw)
+    except Exception:
+        return None
+    rounded = round(numeric)
+    if abs(numeric - rounded) > 1e-9:
+        return None
+    return int(rounded)
 
 
 def _append_time_unit_text(text: Any, unit: TimeUnit) -> str:
@@ -924,6 +1005,13 @@ class MacroVariables:
     key: Dict[str, str] = field(default_factory=dict)
     var: Dict[str, str] = field(default_factory=dict)
 
+    def __post_init__(self):
+        self.sleep = dict(self.sleep or {})
+        self.region = dict(self.region or {})
+        self.color = dict(self.color or {})
+        self.key = dict(self.key or {})
+        self.var = dict(_merge_default_value_var_slots(self.var))
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MacroVariables":
         return cls(
@@ -1247,7 +1335,7 @@ class Condition:
             except Exception:
                 var_value = str(var_value_raw)
         var_operator_raw = str(data.get("var_operator", "eq")).lower()
-        var_operator = "ne" if var_operator_raw == "ne" else "eq"
+        var_operator = var_operator_raw if var_operator_raw in ("eq", "ne", "even", "odd") else "eq"
         timer_idx_raw = data.get("timer_index", data.get("timer_slot"))
         timer_index = None
         try:
@@ -1398,6 +1486,7 @@ class Action:
     var_name: Optional[str] = None
     var_value: Optional[str] = None
     var_value_raw: Optional[str] = None
+    var_update_mode: str = "set"
     confirm_fails: int = 1
     sleep_ms: int = 0
     sleep_range: Optional[tuple[int, int]] = None
@@ -1601,6 +1690,8 @@ class Action:
                 var_value = resolver.resolve(str(var_value_raw), "var") if resolver else str(var_value_raw)
             except Exception:
                 var_value = str(var_value_raw)
+        var_update_mode_raw = str(data.get("var_update_mode", data.get("var_mode", "set")) or "set").lower()
+        var_update_mode = var_update_mode_raw if var_update_mode_raw in ("set", "add", "sub") else "set"
         timer_idx_raw = data.get("timer_index", data.get("timer_slot"))
         timer_index = None
         try:
@@ -1727,6 +1818,7 @@ class Action:
             var_name=data.get("var_name"),
             var_value=var_value,
             var_value_raw=str(var_value_raw) if var_value_raw is not None else None,
+            var_update_mode=var_update_mode,
             confirm_fails=confirm_fails,
             sleep_ms=sleep_ms,
             sleep_range=sleep_range,
@@ -1777,6 +1869,7 @@ class Action:
             "repeat_raw": self.repeat_raw if self.repeat_raw is not None else None,
             "var_name": self.var_name,
             "var_value_raw": self.var_value_raw if self.var_value_raw is not None else self.var_value,
+            "var_update_mode": getattr(self, "var_update_mode", "set"),
             "confirm_fails": self.confirm_fails,
             "sleep_ms": self.sleep_value_for_export(),
             "sleep_raw": self.sleep_raw,
@@ -2777,6 +2870,8 @@ class MacroRunner:
         inherit_held_keys: Optional[Iterable[str]] = None,
         inherit_held_mouse: Optional[Iterable[str]] = None,
     ):
+        self._root_macro = macro
+        self._root_index = index
         self.macro = macro
         self.engine = engine
         self.index = index
@@ -2805,8 +2900,9 @@ class MacroRunner:
         self._start_cycle = 0
         self._release_inputs_on_stop = True
         self._terminal_status: str = "idle"
-        root_stack_key = f"{self.index}:{self._macro_identifier()}" if self.index is not None else self._macro_identifier()
+        root_stack_key = self._macro_stack_key_for(self._root_macro, self._root_index)
         self._macro_call_stack: Tuple[str, ...] = (root_stack_key,)
+        self._macro_frame_stack: List[tuple[Macro, Optional[int], str]] = [(self._root_macro, self._root_index, root_stack_key)]
 
     def _has_force_first_action(self, actions: List[Action]) -> bool:
         for act in actions:
@@ -2840,21 +2936,46 @@ class MacroRunner:
         base = f"{self.macro.trigger_label(include_mode=False) or self.macro.trigger_key}"
         return base if self.index is None else f"{base}#{self.index}"
 
-    def _macro_context(self) -> Dict[str, Any]:
-        primary = self.macro.primary_trigger()
+    def _macro_context_for(self, macro: Macro, idx: Optional[int]) -> Dict[str, Any]:
+        primary = macro.primary_trigger()
         return {
-            "index": self.index,
-            "name": self.macro.name,
+            "index": idx,
+            "name": macro.name,
             "trigger_key": primary.key,
             "mode": primary.mode,
-            "triggers": [t.to_dict() for t in self.macro.trigger_list()],
+            "triggers": [t.to_dict() for t in macro.trigger_list()],
         }
 
-    def _macro_identifier(self) -> str:
-        base = (self.macro.name or "").strip().lower()
+    def _macro_context(self) -> Dict[str, Any]:
+        return self._macro_context_for(self.macro, self.index)
+
+    def _macro_identifier_for(self, macro: Macro, idx: Optional[int]) -> str:
+        base = (getattr(macro, "name", None) or "").strip().lower()
         if not base:
-            base = (self.macro.primary_trigger().key or self.macro.trigger_key or "").strip().lower()
-        return base or f"macro-{self.index if self.index is not None else 'unknown'}"
+            try:
+                primary = macro.primary_trigger()
+                base = (getattr(primary, "key", None) or getattr(macro, "trigger_key", "") or "").strip().lower()
+            except Exception:
+                base = (getattr(macro, "trigger_key", "") or "").strip().lower()
+        return base or f"macro-{idx if idx is not None else 'unknown'}"
+
+    def _macro_identifier(self) -> str:
+        return self._macro_identifier_for(self.macro, self.index)
+
+    def _macro_stack_key_for(self, macro: Macro, idx: Optional[int]) -> str:
+        ident = self._macro_identifier_for(macro, idx)
+        return f"{idx}:{ident}" if idx is not None else ident
+
+    def _macro_label_for(self, macro: Macro, idx: Optional[int]) -> str:
+        if getattr(macro, "name", None):
+            try:
+                name = str(macro.name).strip()
+            except Exception:
+                name = ""
+            if name:
+                return name
+        base = f"{macro.trigger_label(include_mode=False) or macro.trigger_key}"
+        return base if idx is None else f"{base}#{idx}"
 
     def _build_seq_map(self, actions: List[Action], prefix: List[int]):
         for idx, act in enumerate(actions):
@@ -2882,8 +3003,10 @@ class MacroRunner:
                 chain.append(num)
         return chain
 
-    def _emit_macro_event(self, etype: str, **extra):
-        payload = {"type": etype, "macro": self._macro_context()}
+    def _emit_macro_event(self, etype: str, *, macro: Optional[Macro] = None, idx: Optional[int] = None, **extra):
+        target_macro = macro or self.macro
+        target_idx = self.index if macro is None else idx
+        payload = {"type": etype, "macro": self._macro_context_for(target_macro, target_idx)}
         payload.update(extra)
         self.engine._emit_event(payload)
 
@@ -2961,7 +3084,13 @@ class MacroRunner:
         if getattr(self, "_sent_stop_event", False):
             return
         self._sent_stop_event = True
-        self._emit_macro_event("macro_stop", reason=reason, cycle=getattr(self, "_current_cycle", 0))
+        self._emit_macro_event(
+            "macro_stop",
+            macro=self._root_macro,
+            idx=self._root_index,
+            reason=reason,
+            cycle=getattr(self, "_current_cycle", 0),
+        )
 
     def _release_held_keys(self, *, force: bool = False):
         if not force and not getattr(self, "_release_inputs_on_stop", True):
@@ -3011,7 +3140,17 @@ class MacroRunner:
         self._stop_actions_run = False
         self._stop_logged = False
         self._first_cycle_done = bool(self._start_cycle > 0)
-        self._force_first_cycle = self._has_force_first_action(self.macro.actions)
+        self.macro = self._root_macro
+        self.index = self._root_index
+        self._seq_map = {}
+        self._seq_counter = 1
+        self._build_seq_map(self._root_macro.actions, [])
+        self._if_false_streaks = {}
+        self._cond_key_states = {}
+        root_stack_key = self._macro_stack_key_for(self._root_macro, self._root_index)
+        self._macro_call_stack = (root_stack_key,)
+        self._macro_frame_stack = [(self._root_macro, self._root_index, root_stack_key)]
+        self._force_first_cycle = self._has_force_first_action(self._root_macro.actions)
         self._current_cycle = self._start_cycle
         self._terminal_status = "running"
         name = f"Macro-{self.macro.primary_trigger().key or self.macro.trigger_key}"
@@ -3023,10 +3162,10 @@ class MacroRunner:
         limit_text = "inf" if limit is None else str(limit)
         label = self.macro.trigger_label(include_mode=False) or self.macro.trigger_key
         self.engine._emit_log(f"매크로 시작: {label} (cycle_limit={limit_text})")
-        self._emit_macro_event("macro_start", cycle=self._start_cycle)
+        self._emit_macro_event("macro_start", macro=self._root_macro, idx=self._root_index, cycle=self._start_cycle)
 
     def stop(self, *, release_inputs: bool = True, run_stop_actions: bool = True):
-        label = self.macro.trigger_label(include_mode=False) or self.macro.trigger_key
+        label = self._macro_label_for(self._root_macro, self._root_index)
         if self._terminal_status == "running":
             self._terminal_status = "stopped"
         self._stop_request_after_cycle = False
@@ -3090,17 +3229,59 @@ class MacroRunner:
             except Exception:
                 pass
 
+    def _run_stop_actions_for_frame(
+        self,
+        macro: Macro,
+        idx: Optional[int],
+        stack_key: str,
+        *,
+        call_stack: Optional[Tuple[str, ...]] = None,
+    ):
+        actions = getattr(macro, "stop_actions", []) or []
+        if not actions:
+            return
+        prev_macro = self.macro
+        prev_index = self.index
+        prev_seq_map = self._seq_map
+        prev_seq_counter = self._seq_counter
+        prev_if_false_streaks = self._if_false_streaks
+        prev_cond_key_states = self._cond_key_states
+        prev_cycle = getattr(self, "_current_cycle", 0)
+        prev_call_stack = getattr(self, "_macro_call_stack", ())
+        self.macro = macro
+        self.index = idx
+        self._seq_map = {}
+        self._seq_counter = 1
+        self._build_seq_map(actions, [])
+        self._if_false_streaks = {}
+        self._cond_key_states = {}
+        self._macro_call_stack = tuple(call_stack or (stack_key,))
+        labels = self._label_index(actions)
+        try:
+            self._run_actions(copy.deepcopy(actions), labels, root=True, path=[f"{self._macro_label()}-on_stop"])
+        finally:
+            self.macro = prev_macro
+            self.index = prev_index
+            self._seq_map = prev_seq_map
+            self._seq_counter = prev_seq_counter
+            self._if_false_streaks = prev_if_false_streaks
+            self._cond_key_states = prev_cond_key_states
+            self._current_cycle = prev_cycle
+            self._macro_call_stack = prev_call_stack
+
     def _run_stop_actions(self):
         if self._stop_actions_run:
             return
-        actions = getattr(self.macro, "stop_actions", []) or []
-        if not actions:
-            self._stop_actions_run = True
-            return
-        labels = self._label_index(actions)
+        frames = list(getattr(self, "_macro_frame_stack", []) or [])
+        if not frames:
+            root_stack_key = self._macro_stack_key_for(self._root_macro, self._root_index)
+            frames = [(self._root_macro, self._root_index, root_stack_key)]
         self._running_stop_actions = True
         try:
-            self._run_actions(copy.deepcopy(actions), labels, root=True, path=[f"{self._macro_label()}-on_stop"])
+            for pos in range(len(frames) - 1, -1, -1):
+                macro, idx, stack_key = frames[pos]
+                call_stack = tuple(frame[2] for frame in frames[: pos + 1])
+                self._run_stop_actions_for_frame(macro, idx, stack_key, call_stack=call_stack)
         finally:
             self._running_stop_actions = False
             self._stop_actions_run = True
@@ -3533,6 +3714,7 @@ class MacroRunner:
             held_keys_before, held_mouse_before = self.snapshot_held_inputs()
 
             nested_labels = self._label_index(target_macro.actions)
+            self._macro_frame_stack.append((target_macro, target_idx, target_stack_key))
             self.macro = target_macro
             self.index = target_idx
             self._seq_map = {}
@@ -3553,6 +3735,11 @@ class MacroRunner:
                 )
             finally:
                 self._release_new_nested_holds(held_keys_before, held_mouse_before)
+                if getattr(self, "_macro_frame_stack", None):
+                    if self._macro_frame_stack[-1][2] == target_stack_key:
+                        self._macro_frame_stack.pop()
+                    else:
+                        self._macro_frame_stack = [frame for frame in self._macro_frame_stack if frame[2] != target_stack_key]
                 self.macro = prev_macro
                 self.index = prev_index
                 self._seq_map = prev_seq_map
@@ -3596,21 +3783,14 @@ class MacroRunner:
         if action.type == "macro_stop":
             # 현재 매크로를 즉시 중단한다.
             if len(getattr(self, "_macro_call_stack", ())) > 1:
-                stop_actions = getattr(self.macro, "stop_actions", []) or []
-                if stop_actions and not self._running_stop_actions:
-                    stop_labels = self._label_index(stop_actions)
-                    prev_running_stop_actions = self._running_stop_actions
-                    self._running_stop_actions = True
-                    try:
-                        self._run_actions(
-                            copy.deepcopy(stop_actions),
-                            stop_labels,
-                            root=True,
-                            path=path + [f"{self._macro_label()}-on_stop"],
-                            idx_path=[],
-                        )
-                    finally:
-                        self._running_stop_actions = prev_running_stop_actions
+                if not self._running_stop_actions:
+                    current_stack_key = self._macro_stack_key_for(self.macro, self.index)
+                    self._run_stop_actions_for_frame(
+                        self.macro,
+                        self.index,
+                        current_stack_key,
+                        call_stack=getattr(self, "_macro_call_stack", ()) or (current_stack_key,),
+                    )
                 return end_result(signal="break", status="macro_stop")
             self._terminal_status = "macro_stop"
             self.stop()
@@ -3660,6 +3840,9 @@ class MacroRunner:
             if not name:
                 self.engine._emit_log("변수 설정 실패: 이름이 없습니다.")
                 return end_result(status="error", error="missing_var_name")
+            update_mode = str(getattr(action, "var_update_mode", "set") or "set").lower()
+            if update_mode not in ("set", "add", "sub"):
+                update_mode = "set"
             raw_val = action.var_value_raw if action.var_value_raw is not None else action.var_value
             value = "" if raw_val is None else str(raw_val)
             if self._resolver and raw_val is not None:
@@ -3668,7 +3851,30 @@ class MacroRunner:
                 except Exception as exc:
                     self.engine._emit_log(f"변수 설정 실패: {exc}")
                     return end_result(status="error", error=str(exc))
-            self._vars.var[name] = str(value)
+            value = _resolve_var_random_value(value)
+            if update_mode == "set":
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    next_value = _format_var_numeric_value(value)
+                else:
+                    next_value = str(value)
+                log_text = f"변수 설정: {name}={next_value}"
+            else:
+                delta = _parse_var_numeric_value(value, label="변수 증감 값")
+                current_raw = self._vars.var.get(name, "0")
+                try:
+                    current_num = _parse_var_numeric_value(current_raw, label=f"변수 '{name}' 현재값")
+                except Exception as exc:
+                    self.engine._emit_log(f"변수 설정 실패: {exc}")
+                    return end_result(status="error", error=str(exc))
+                if update_mode == "sub":
+                    next_num = current_num - delta
+                    op_text = "-="
+                else:
+                    next_num = current_num + delta
+                    op_text = "+="
+                next_value = _format_var_numeric_value(next_num)
+                log_text = f"변수 연산: {name} {op_text} {_format_var_numeric_value(delta)} -> {next_value}"
+            self._vars.var[name] = next_value
             ts = time.time()
             self.engine._emit_event(
                 {
@@ -3677,11 +3883,11 @@ class MacroRunner:
                     "name": name,
                     "value": self._vars.var[name],
                     "macro": self._macro_context(),
-                    "source": "set_var",
+                    "source": "set_var" if update_mode == "set" else f"set_var_{update_mode}",
                     "timestamp": ts,
                 }
             )
-            self.engine._emit_log(f"변수 설정: {name}={self._vars.var[name]}")
+            self.engine._emit_log(log_text)
             return end_result(status="ok", updated_var=name, value=self._vars.var[name])
 
         if action.type == "timer":
@@ -5728,22 +5934,35 @@ class MacroEngine:
             name = (cond.var_name or "").strip()
             if not name:
                 return False
-            expected_raw = cond.var_value_raw if cond.var_value_raw is not None else cond.var_value
-            expected = str(expected_raw) if expected_raw is not None else ""
-            if resolver:
-                try:
-                    expected = resolver.resolve(expected, "var")
-                except Exception:
-                    pass
+            op = str(getattr(cond, "var_operator", "eq") or "eq").lower()
             actual_value = vars_state.var.get(name) if vars_state else None  # type: ignore[union-attr]
-            base_result = False if actual_value is None else str(actual_value) == expected
-            if getattr(cond, "var_operator", "eq") == "ne":
-                base_result = not base_result
+            expected = ""
+            if op in ("eq", "ne"):
+                expected_raw = cond.var_value_raw if cond.var_value_raw is not None else cond.var_value
+                expected = str(expected_raw) if expected_raw is not None else ""
+                if resolver:
+                    try:
+                        expected = resolver.resolve(expected, "var")
+                    except Exception:
+                        pass
+                base_result = False if actual_value is None else str(actual_value) == expected
+                if op == "ne":
+                    base_result = not base_result
+            elif op == "even":
+                actual_int = _try_parse_var_integer(actual_value)
+                expected = "짝수"
+                base_result = actual_int is not None and actual_int % 2 == 0
+            elif op == "odd":
+                actual_int = _try_parse_var_integer(actual_value)
+                expected = "홀수"
+                base_result = actual_int is not None and actual_int % 2 != 0
+            else:
+                base_result = False
             detail["var"] = {
                 "name": name,
                 "expected": expected,
                 "actual": actual_value,
-                "operator": getattr(cond, "var_operator", "eq"),
+                "operator": op,
             }
         elif cond.type == "timer":
             slot = cond.timer_index or 0
@@ -5984,22 +6203,35 @@ class MacroEngine:
                 name = (cond.var_name or "").strip()
                 if not name:
                     raise ValueError("변수 이름이 없습니다.")
-                expected_raw = cond.var_value_raw if cond.var_value_raw is not None else cond.var_value
-                expected = str(expected_raw) if expected_raw is not None else ""
-                if resolver:
-                    try:
-                        expected = resolver.resolve(expected, "var")
-                    except Exception:
-                        pass
+                op = str(getattr(cond, "var_operator", "eq") or "eq").lower()
                 actual_value = vars_state.var.get(name) if vars_state else None  # type: ignore[union-attr]
-                base_result = False if actual_value is None else str(actual_value) == expected
-                if getattr(cond, "var_operator", "eq") == "ne":
-                    base_result = not base_result
+                expected = ""
+                if op in ("eq", "ne"):
+                    expected_raw = cond.var_value_raw if cond.var_value_raw is not None else cond.var_value
+                    expected = str(expected_raw) if expected_raw is not None else ""
+                    if resolver:
+                        try:
+                            expected = resolver.resolve(expected, "var")
+                        except Exception:
+                            pass
+                    base_result = False if actual_value is None else str(actual_value) == expected
+                    if op == "ne":
+                        base_result = not base_result
+                elif op == "even":
+                    actual_int = _try_parse_var_integer(actual_value)
+                    expected = "짝수"
+                    base_result = actual_int is not None and actual_int % 2 == 0
+                elif op == "odd":
+                    actual_int = _try_parse_var_integer(actual_value)
+                    expected = "홀수"
+                    base_result = actual_int is not None and actual_int % 2 != 0
+                else:
+                    base_result = False
                 detail["var"] = {
                     "name": name,
                     "expected": expected,
                     "actual": actual_value,
-                    "operator": getattr(cond, "var_operator", "eq"),
+                    "operator": op,
                 }
             elif cond.type == "timer":
                 slot = cond.timer_index or 0

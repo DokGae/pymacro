@@ -8,6 +8,8 @@ wheels/
 screenshot/
 setting/
 pattern/
+config/global_state.json
+config/local/
 
 # Virtual environments
 .venv

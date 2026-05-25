@@ -46,6 +46,7 @@ from engine import (
     normalize_trigger_key,
     parse_trigger_keys,
     _infer_time_unit_from_text,
+    _parse_var_random_range,
     _send_telegram_message,
 )
 from lib import keyboard as kbutil
@@ -457,6 +458,171 @@ def _stroke_key_label(stroke, key_name: str | None = None) -> str:
     if sc > 0:
         parts.append(f"SC {sc}")
     return " / ".join(parts) if parts else "알 수 없는 키"
+
+
+def _build_qt_special_key_map() -> dict[int, str]:
+    key_enum = QtCore.Qt.Key
+    mapping = {
+        int(key_enum.Key_Backspace): "backspace",
+        int(key_enum.Key_Tab): "tab",
+        int(key_enum.Key_Backtab): "tab",
+        int(key_enum.Key_Return): "enter",
+        int(key_enum.Key_Enter): "enter",
+        int(key_enum.Key_Pause): "pause",
+        int(key_enum.Key_CapsLock): "capslock",
+        int(key_enum.Key_Escape): "esc",
+        int(key_enum.Key_Space): "space",
+        int(key_enum.Key_PageUp): "pageup",
+        int(key_enum.Key_PageDown): "pagedown",
+        int(key_enum.Key_End): "end",
+        int(key_enum.Key_Home): "home",
+        int(key_enum.Key_Left): "left",
+        int(key_enum.Key_Up): "up",
+        int(key_enum.Key_Right): "right",
+        int(key_enum.Key_Down): "down",
+        int(key_enum.Key_Insert): "insert",
+        int(key_enum.Key_Delete): "delete",
+        int(key_enum.Key_NumLock): "numlock",
+        int(key_enum.Key_ScrollLock): "scrolllock",
+        int(key_enum.Key_Menu): "apps",
+        int(key_enum.Key_Shift): "shift",
+        int(key_enum.Key_Control): "ctrl",
+        int(key_enum.Key_Alt): "alt",
+        int(key_enum.Key_Meta): "win",
+    }
+    for attr in ("Key_Super_L", "Key_Super_R", "Key_Hyper_L", "Key_Hyper_R"):
+        if hasattr(key_enum, attr):
+            mapping[int(getattr(key_enum, attr))] = "win"
+    return mapping
+
+
+_QT_SPECIAL_KEY_TO_MACRO_KEY = _build_qt_special_key_map()
+_DIRECT_CAPTURE_MACRO_KEYS = frozenset(_QT_SPECIAL_KEY_TO_MACRO_KEY.values())
+
+
+def _macro_key_from_qt_event(event: QtGui.QKeyEvent) -> str | None:
+    if event is None:
+        return None
+    try:
+        native_vk = int(event.nativeVirtualKey() or 0)
+    except Exception:
+        native_vk = 0
+    if native_vk > 0:
+        key = _vk_to_macro_key(native_vk)
+        if key:
+            return key
+    try:
+        qkey = int(event.key())
+    except Exception:
+        qkey = 0
+    mapped = _QT_SPECIAL_KEY_TO_MACRO_KEY.get(qkey)
+    if mapped:
+        return mapped
+    try:
+        f1 = int(QtCore.Qt.Key.Key_F1)
+        f35 = int(QtCore.Qt.Key.Key_F35)
+    except Exception:
+        f1 = f35 = 0
+    if f1 and f1 <= qkey <= f35:
+        return f"f{qkey - f1 + 1}"
+    if 65 <= qkey <= 90:
+        return chr(qkey).lower()
+    if 48 <= qkey <= 57:
+        return chr(qkey)
+    text = unicodedata.normalize("NFKC", str(event.text() or ""))
+    if len(text) == 1 and not text.isspace():
+        candidate = text.lower()
+        try:
+            kbutil.vk_from_key(candidate)
+        except Exception:
+            return None
+        return candidate
+    return None
+
+
+def _macro_key_text_from_qt_event(event: QtGui.QKeyEvent) -> str | None:
+    key_name = _macro_key_from_qt_event(event)
+    if not key_name:
+        return None
+    modifiers = event.modifiers()
+    parts: list[str] = []
+    if modifiers & QtCore.Qt.KeyboardModifier.ControlModifier and key_name != "ctrl":
+        parts.append("ctrl")
+    if modifiers & QtCore.Qt.KeyboardModifier.ShiftModifier and key_name != "shift":
+        parts.append("shift")
+    if modifiers & QtCore.Qt.KeyboardModifier.AltModifier and key_name != "alt":
+        parts.append("alt")
+    if modifiers & QtCore.Qt.KeyboardModifier.MetaModifier and key_name != "win":
+        parts.append("win")
+    parts.append(key_name)
+    return normalize_trigger_key("+".join(parts))
+
+
+def _looks_like_variable_key_text(text: str) -> bool:
+    raw = str(text or "").strip()
+    return raw.startswith(("/", "@", "${"))
+
+
+class MacroKeyLineEdit(QtWidgets.QLineEdit):
+    """특수키를 직접 눌러 입력할 수 있는 키 전용 라인에디트."""
+
+    def _manual_text_mode(self) -> bool:
+        text = self.text()
+        if not text:
+            return False
+        if self.hasSelectedText() and self.selectedText() == text:
+            return False
+        return _looks_like_variable_key_text(text)
+
+    def _should_capture_event(self, event: QtGui.QKeyEvent) -> bool:
+        if self._manual_text_mode():
+            return False
+        key_name = _macro_key_from_qt_event(event)
+        if not key_name:
+            return False
+        if key_name in _DIRECT_CAPTURE_MACRO_KEYS:
+            return True
+        modifiers = event.modifiers()
+        combo_modifiers = (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            | QtCore.Qt.KeyboardModifier.AltModifier
+            | QtCore.Qt.KeyboardModifier.MetaModifier
+        )
+        if (
+            modifiers & combo_modifiers
+            and key_name not in ("ctrl", "alt", "win")
+        ):
+            return True
+        try:
+            qkey = int(event.key())
+            if int(QtCore.Qt.Key.Key_F1) <= qkey <= int(QtCore.Qt.Key.Key_F35):
+                return True
+        except Exception:
+            pass
+        text = unicodedata.normalize("NFKC", str(event.text() or ""))
+        return (not text) or text.isspace()
+
+    def _capture_key_event(self, event: QtGui.QKeyEvent) -> bool:
+        if not self._should_capture_event(event):
+            return False
+        captured = _macro_key_text_from_qt_event(event)
+        if not captured:
+            return False
+        self.setText(captured)
+        self.setCursorPosition(len(captured))
+        event.accept()
+        return True
+
+    def event(self, event: QtCore.QEvent):
+        if isinstance(event, QtGui.QKeyEvent):
+            if event.type() == QtCore.QEvent.Type.ShortcutOverride and self._should_capture_event(event):
+                event.accept()
+                return True
+            if event.type() == QtCore.QEvent.Type.KeyPress and self._capture_key_event(event):
+                return True
+        return super().event(event)
+
+
 class _WinPoint(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 def _current_cursor_pos() -> tuple[int, int] | None:
@@ -1390,8 +1556,83 @@ def _attach_variable_completer(edit: QtWidgets.QLineEdit, names: List[str]):
         edit.setCursorPosition(len(new_text))
     comp.activated[str].connect(_insert_choice)
     edit.textEdited.connect(_show_popup)
-    # 첫 입력 시 바로 /를 치면 팝업이 뜸
-    edit.setCompleter(comp)
+
+
+def _make_name_combo(*, placeholder: str = "", editable: bool = True) -> QtWidgets.QComboBox:
+    combo = QtWidgets.QComboBox()
+    combo.setEditable(editable)
+    combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+    combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
+    combo.setMinimumContentsLength(12)
+    if editable and combo.lineEdit() is not None:
+        combo.lineEdit().setPlaceholderText(placeholder)
+    return combo
+
+
+def _natural_name_sort_key(name: str):
+    text = str(name or "").strip().casefold()
+    parts = re.split(r"(\d+)", text)
+    key: list[tuple[int, object]] = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part))
+    return tuple(key or [(1, "")])
+
+
+def _refresh_name_combo(
+    combo: QtWidgets.QComboBox,
+    names: List[str],
+    *,
+    preserve: str | None = None,
+    placeholder: str = "",
+):
+    current_text = str(preserve if preserve is not None else combo.currentText() or "").strip()
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for raw_name in names or []:
+        text = str(raw_name or "").strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(text)
+    uniq.sort(key=_natural_name_sort_key)
+    combo.blockSignals(True)
+    combo.clear()
+    for text in uniq:
+        combo.addItem(text, text)
+    if current_text and current_text.casefold() not in seen:
+        uniq.append(current_text)
+        uniq.sort(key=_natural_name_sort_key)
+        combo.clear()
+        for text in uniq:
+            combo.addItem(text, text)
+    if combo.count() == 0:
+        combo.addItem("변수1", "변수1")
+        uniq.append("변수1")
+    if current_text:
+        idx = combo.findData(current_text)
+        if idx < 0:
+            idx = combo.findText(current_text)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        if combo.isEditable():
+            combo.setCurrentText(current_text)
+    else:
+        combo.setCurrentIndex(0)
+    if combo.isEditable() and combo.lineEdit() is not None:
+        combo.lineEdit().setPlaceholderText(placeholder)
+        comp = QtWidgets.QCompleter(uniq or ["변수1"], combo)
+        comp.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
+        comp.setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
+        comp.setCompletionMode(QtWidgets.QCompleter.CompletionMode.PopupCompletion)
+        combo.setCompleter(comp)
+    combo.blockSignals(False)
 def _actions_from_table(table: QtWidgets.QTableWidget, resolver=None) -> List[Step]:
     steps: List[Step] = []
     for row in range(table.rowCount()):
@@ -1515,8 +1756,17 @@ def _condition_brief(cond: Condition) -> str:
         color_hex = cond.color_raw or (_rgb_to_hex(cond.color) or "------")
         return f"픽셀 {region} #{color_hex} tol={cond.tolerance} ({state}){suffix}"
     if cond.type == "var":
-        op_text = "!=" if getattr(cond, "var_operator", "eq") == "ne" else "=="
-        return f"변수 {cond.var_name} {op_text} {cond.var_value_raw or cond.var_value or ''}{suffix}"
+        op = str(getattr(cond, "var_operator", "eq") or "eq")
+        name = str(getattr(cond, "var_name", "") or "").strip() or "변수"
+        value = str(getattr(cond, "var_value_raw", None) or getattr(cond, "var_value", "") or "").strip()
+        if op == "even":
+            return f"{name}=짝수일때{suffix}"
+        if op == "odd":
+            return f"{name}=홀수일때{suffix}"
+        op_text = "!=" if op == "ne" else "=="
+        if op == "ne":
+            return f"{name}!={value}일때{suffix}"
+        return f"{name}={value}일때{suffix}"
     if cond.type == "timer":
         op_map = {"ge": ">=", "gt": ">", "le": "<=", "lt": "<", "eq": "==", "ne": "!="}
         op = op_map.get(getattr(cond, "timer_operator", "ge"), ">=")
@@ -1609,7 +1859,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             self.type_combo.addItem("OR 그룹 (하나라도 참)", "any")
         self.type_combo.addItem("픽셀", "pixel")
         self.type_combo.addItem("키/마우스", "key")
-        self.type_combo.addItem("변수 값 비교", "var")
+        self.type_combo.addItem("변수 조건", "var")
         self.type_combo.addItem("타이머", "timer")
         self.type_combo.addItem("시간/날짜", "schedule")
         self.name_edit = QtWidgets.QLineEdit()
@@ -1643,18 +1893,25 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.pattern_manage_btn.clicked.connect(self._open_pattern_manager_cb)
         self.pattern_check.stateChanged.connect(self._sync_type_visibility)
         self._reload_patterns()
-        self.var_name_edit = QtWidgets.QLineEdit()
+        self.var_name_edit = _make_name_combo(placeholder="대상 변수를 선택하세요", editable=True)
+        self.var_name_edit.setToolTip("드롭다운에서 변수1~변수20 또는 등록한 변수명을 선택하세요.")
+        self._refresh_var_name_combo()
+        _orig_var_popup = self.var_name_edit.showPopup
+        def _show_var_popup():
+            self._refresh_var_name_combo()
+            _orig_var_popup()
+        self.var_name_edit.showPopup = _show_var_popup
         self.var_value_edit = QtWidgets.QLineEdit()
         self._install_var_completer(self.var_value_edit, "var")
-        if callable(self._variable_provider):
-            names = self._variable_provider("var")
-            comp = QtWidgets.QCompleter(names, self.var_name_edit)
-            comp.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
-            comp.setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
-            self.var_name_edit.setCompleter(comp)
         self.var_op_combo = QtWidgets.QComboBox()
         self.var_op_combo.addItem("같을 때 참 (==)", "eq")
         self.var_op_combo.addItem("다를 때 참 (!=)", "ne")
+        self.var_op_combo.addItem("짝수일 때 참", "even")
+        self.var_op_combo.addItem("홀수일 때 참", "odd")
+        self.var_op_combo.currentIndexChanged.connect(self._sync_type_visibility)
+        self.var_help_label = QtWidgets.QLabel("")
+        self.var_help_label.setWordWrap(True)
+        self.var_help_label.setStyleSheet("color: gray;")
         self.timer_slot_combo = QtWidgets.QComboBox()
         for i in range(1, 21):
             self.timer_slot_combo.addItem(f"타이머{i}", i)
@@ -1735,9 +1992,10 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.form.addRow("Tolerance", self.tol_spin)
         self.form.addRow("최소 일치 픽셀 수", self.pixel_min_spin)
         self.form.addRow("픽셀 상태", self.pixel_expect_combo)
-        self.form.addRow("변수 이름", self.var_name_edit)
-        self.form.addRow("변수 값", self.var_value_edit)
-        self.form.addRow("비교 방식", self.var_op_combo)
+        self.form.addRow("대상 변수", self.var_name_edit)
+        self.form.addRow("판정 방식", self.var_op_combo)
+        self.form.addRow("비교할 값", self.var_value_edit)
+        self.form.addRow("", self.var_help_label)
         self.form.addRow("타이머 슬롯(1~20)", self.timer_slot_combo)
         self.form.addRow("타이머 값", self.timer_value_wrap)
         self.form.addRow("타이머 비교", self.timer_op_combo)
@@ -1761,6 +2019,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.type_combo.currentIndexChanged.connect(self._sync_type_visibility)
         self.schedule_mode_combo.currentIndexChanged.connect(self._sync_schedule_hint)
+        self.var_name_edit.currentTextChanged.connect(lambda *_: self._sync_var_condition_fields())
         if cond:
             self._load(cond)
         else:
@@ -1773,6 +2032,21 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             self._sync_type_visibility()
     def _current_type(self) -> str:
         return self.type_combo.currentData()
+    def _refresh_var_name_combo(self, preserve: str | None = None):
+        names: list[str] = []
+        if callable(self._variable_provider):
+            try:
+                names = self._variable_provider("var") or []
+            except Exception:
+                names = []
+        _refresh_name_combo(
+            self.var_name_edit,
+            names,
+            preserve=preserve,
+            placeholder="대상 변수를 선택하세요",
+        )
+    def _current_var_name(self) -> str:
+        return str(self.var_name_edit.currentText() or "").strip()
     def _sync_schedule_hint(self):
         mode = self.schedule_mode_combo.currentData() or "daily"
         if mode == "date":
@@ -1790,6 +2064,30 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.schedule_value_edit.setPlaceholderText(placeholder)
         self.schedule_value_edit.setToolTip(tooltip)
         self.schedule_hint_label.setText(hint)
+    def _sync_var_condition_fields(self):
+        is_var = self._current_type() == "var"
+        op = str(self.var_op_combo.currentData() or "eq")
+        needs_value = is_var and op in ("eq", "ne")
+        self.var_value_edit.setVisible(needs_value)
+        self.var_value_edit.setEnabled(needs_value)
+        label = self.form.labelForField(self.var_value_edit)
+        if label is not None:
+            label.setVisible(needs_value)
+            label.setText("비교할 값")
+        target_name = self._current_var_name() or "변수1"
+        if needs_value:
+            self.var_value_edit.setPlaceholderText("예: 10, hello, /변수2")
+            self.var_value_edit.setToolTip("문자열, 숫자, 또는 다른 변수(/변수명)와 비교합니다.")
+            if op == "ne":
+                help_text = f"`{target_name}`의 현재값이 아래 `비교할 값`과 다를 때 참입니다."
+            else:
+                help_text = f"`{target_name}`의 현재값이 아래 `비교할 값`과 같을 때 참입니다."
+        else:
+            self.var_value_edit.setPlaceholderText("짝수/홀수 비교에서는 값 입력이 필요 없습니다.")
+            self.var_value_edit.setToolTip("현재 변수값이 정수일 때만 짝수/홀수 판정이 됩니다.")
+            help_text = f"`{target_name}`의 현재값이 {'짝수' if op == 'even' else '홀수'}인지 바로 검사합니다. 비교값은 입력하지 않습니다."
+        self.var_help_label.setText(help_text if is_var else "")
+        self.var_help_label.setVisible(is_var)
     def _sync_type_visibility(self):
         typ = self._current_type()
         is_key = typ == "key"
@@ -1837,7 +2135,10 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                     label.setVisible(min_visible)
         else:
             self.color_wrap.setVisible(False)
-        _toggle((self.var_name_edit, self.var_value_edit, self.var_op_combo), visible=is_var, enabled=is_var)
+        if is_var:
+            self._refresh_var_name_combo(self._current_var_name())
+        _toggle((self.var_name_edit, self.var_value_edit, self.var_op_combo, self.var_help_label), visible=is_var, enabled=is_var)
+        self._sync_var_condition_fields()
         _toggle((self.timer_slot_combo, self.timer_value_wrap, self.timer_op_combo), visible=is_timer, enabled=is_timer)
         _toggle((self.schedule_mode_combo, self.schedule_value_edit, self.schedule_op_combo, self.schedule_hint_label), visible=is_schedule, enabled=is_schedule)
         self.group_hint.setVisible(is_group)
@@ -1875,7 +2176,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         elif cond.type in ("all", "any"):
             self._child_conditions = copy.deepcopy(cond.conditions)
         elif cond.type == "var":
-            self.var_name_edit.setText(cond.var_name or "")
+            self._refresh_var_name_combo(cond.var_name or "")
             self.var_value_edit.setText(cond.var_value_raw or cond.var_value or "")
             idx = self.var_op_combo.findData(getattr(cond, "var_operator", "eq"))
             if idx >= 0:
@@ -1946,11 +2247,11 @@ class ConditionNodeDialog(QtWidgets.QDialog):
                 pixel_exists=pixel_exists,
             )
         if typ == "var":
-            var_name = self.var_name_edit.text().strip()
+            var_name = self._current_var_name()
             if not var_name:
-                raise ValueError("변수 이름을 입력하세요.")
-            value_raw = self.var_value_edit.text().strip()
+                raise ValueError("대상 변수를 선택하세요.")
             op = self.var_op_combo.currentData() or "eq"
+            value_raw = self.var_value_edit.text().strip() if op in ("eq", "ne") else ""
             return Condition(type="var", name=name, var_name=var_name, var_value_raw=value_raw or None, var_operator=op)
         if typ == "timer":
             slot = int(self.timer_slot_combo.currentData() or 0)
@@ -5638,7 +5939,9 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if act.type == "set_var":
             val = act.var_value_raw or act.var_value or ""
             name = act.var_name or ""
-            return f"{name}={val}".strip() + suffix
+            op = str(getattr(act, "var_update_mode", "set") or "set")
+            op_text = {"set": "=", "add": "+=", "sub": "-="}.get(op, "=")
+            return f"{name}{op_text}{val}".strip() + suffix
         if act.type == "goto":
             return (act.goto_label or act.label or "") + suffix
         if act.type == "label":
@@ -5894,39 +6197,38 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         parent = primary.parent()
         if any(it.parent() is not parent for it in items):
             return False, "같은 부모를 가진 항목만 이동합니다.", primary
-        current_row = parent.indexOfChild(primary) if parent else self.indexOfTopLevelItem(primary)
         sibling_count = parent.childCount() if parent else self.topLevelItemCount()
-        target_row = current_row + offset
-        if target_row < 0 or target_row >= sibling_count:
+        rows = [parent.indexOfChild(it) if parent else self.indexOfTopLevelItem(it) for it in items]
+        if any(row < 0 for row in rows):
+            return False, "선택한 항목을 이동할 수 없습니다.", primary
+        if offset < 0 and min(rows) <= 0:
             return False, "같은 부모 안에서만 한 칸 이동할 수 있습니다.", primary
+        if offset > 0 and max(rows) >= sibling_count - 1:
+            return False, "같은 부모 안에서만 한 칸 이동할 수 있습니다.", primary
+
+        def move_one(item: QtWidgets.QTreeWidgetItem):
+            current_row = parent.indexOfChild(item) if parent else self.indexOfTopLevelItem(item)
+            target_row = current_row + offset
+            if parent:
+                parent.takeChild(current_row)
+                parent.insertChild(target_row, item)
+            else:
+                self.takeTopLevelItem(current_row)
+                self.insertTopLevelItem(target_row, item)
+
         expanded = self._expanded_keys()
-        if parent:
-            parent.takeChild(current_row)
-            parent.insertChild(target_row, primary)
-            if primary.parent() is not parent:
-                # 안전장치: 잘못 부모가 바뀌면 원래 부모로 되돌림
-                try:
-                    current_parent = primary.parent()
-                    if current_parent:
-                        current_parent.takeChild(current_parent.indexOfChild(primary))
-                except Exception:
-                    pass
-                parent.insertChild(target_row, primary)
-        else:
-            self.takeTopLevelItem(current_row)
-            self.insertTopLevelItem(target_row, primary)
-            if primary.parent() is not None:
-                # 부모가 생겨버렸다면 떼어내고 다시 최상위에 삽입
-                p = primary.parent()
-                if p:
-                    p.takeChild(p.indexOfChild(primary))
-                self.insertTopLevelItem(target_row, primary)
+        ordered_items = list(reversed(items)) if offset > 0 else items
+        for item in ordered_items:
+            move_one(item)
         self._restore_expanded(expanded)
-        primary.setSelected(True)
-        self.setCurrentItem(primary)
-        self.scrollToItem(primary)
+        focus_item = items[-1] if offset > 0 else items[0]
+        self.setCurrentItem(focus_item)
+        self.clearSelection()
+        for item in items:
+            item.setSelected(True)
+        self.scrollToItem(focus_item)
         self.renumber()
-        return True, None, primary
+        return True, None, focus_item
     def _clone_tree_item(self, item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QTreeWidgetItem:
         clone = QtWidgets.QTreeWidgetItem([item.text(col) for col in range(item.columnCount())])
         clone_data = copy.deepcopy(item.data(0, QtCore.Qt.ItemDataRole.UserRole))
@@ -6196,15 +6498,17 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.once_check = QtWidgets.QCheckBox("첫 사이클만 실행")
         self.force_first_check = QtWidgets.QCheckBox("첫 입력 1회 무조건 실행(트리거 상태 무시)")
         self.force_first_check.setToolTip("트리거가 풀려도 첫 사이클을 한 번은 끝까지 실행")
-        self.key_edit = QtWidgets.QLineEdit()
+        self.key_edit = MacroKeyLineEdit()
         self.key_edit.setPlaceholderText("예: r / space (조합은 아래 체크박스로 설정)")
+        self.key_edit.setToolTip("문자 키는 직접 입력하고, CapsLock/Space/F키 같은 특수키는 키보드에서 바로 눌러 입력할 수 있습니다.")
         self.action_mod_ctrl = QtWidgets.QCheckBox("Ctrl")
         self.action_mod_shift = QtWidgets.QCheckBox("Shift")
         self.action_mod_alt = QtWidgets.QCheckBox("Alt")
         self.action_mod_win = QtWidgets.QCheckBox("Win")
-        self.action_main_key_edit = QtWidgets.QLineEdit()
+        self.action_main_key_edit = MacroKeyLineEdit()
         self.action_main_key_edit.setPlaceholderText("주 키 (예: 2, r, f1)")
         self.action_main_key_edit.setClearButtonEnabled(True)
+        self.action_main_key_edit.setToolTip("주 키도 직접 눌러 입력할 수 있습니다. 예: Space, CapsLock, F1")
         action_key_builder_row = QtWidgets.QWidget()
         action_key_builder_layout = QtWidgets.QHBoxLayout(action_key_builder_row)
         action_key_builder_layout.setContentsMargins(0, 0, 0, 0)
@@ -6304,8 +6608,22 @@ class ActionEditDialog(QtWidgets.QDialog):
             self._refresh_macro_targets()
             _orig_macro_popup()
         self.macro_target_combo.showPopup = _show_macro_popup
-        self.var_name_edit = QtWidgets.QLineEdit()
+        self.var_name_edit = _make_name_combo(placeholder="대상 변수를 선택하거나 직접 입력하세요", editable=True)
+        self.var_name_edit.setToolTip("드롭다운에서 변수1~변수20 또는 등록한 변수명을 고르거나 직접 입력할 수 있습니다.")
+        self._refresh_var_name_combo()
+        _orig_var_popup = self.var_name_edit.showPopup
+        def _show_var_popup():
+            self._refresh_var_name_combo()
+            _orig_var_popup()
+        self.var_name_edit.showPopup = _show_var_popup
         self.var_value_edit = QtWidgets.QLineEdit()
+        self.var_update_mode_combo = QtWidgets.QComboBox()
+        self.var_update_mode_combo.addItem("직접 설정 (=)", "set")
+        self.var_update_mode_combo.addItem("현재값에 더하기 (+=)", "add")
+        self.var_update_mode_combo.addItem("현재값에서 빼기 (-=)", "sub")
+        self.var_help_label = QtWidgets.QLabel("")
+        self.var_help_label.setWordWrap(True)
+        self.var_help_label.setStyleSheet("color: gray;")
         self.timer_slot_combo = QtWidgets.QComboBox()
         for i in range(1, 21):
             self.timer_slot_combo.addItem(f"타이머{i}", i)
@@ -6390,12 +6708,6 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.key_warn_label = QtWidgets.QLabel("")
         self.key_warn_label.setStyleSheet("color:#c00;font-weight:bold;")
         self.key_warn_label.setVisible(False)
-        if callable(self._variable_provider):
-            names = self._variable_provider("var")
-            comp = QtWidgets.QCompleter(names, self.var_name_edit)
-            comp.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
-            comp.setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
-            self.var_name_edit.setCompleter(comp)
         self.cond_label = QtWidgets.QLabel("(조건 없음)")
         self.edit_cond_btn = QtWidgets.QPushButton("조건 편집")
         form.addRow("타입", self.type_combo)
@@ -6422,8 +6734,10 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("라벨 이름", self.label_edit)
         form.addRow("점프 대상 라벨", self.goto_combo)
         form.addRow("실행할 매크로", self.macro_target_combo)
-        form.addRow("변수 이름", self.var_name_edit)
-        form.addRow("변수 값", self.var_value_edit)
+        form.addRow("대상 변수", self.var_name_edit)
+        form.addRow("변수 동작", self.var_update_mode_combo)
+        form.addRow("입력 값", self.var_value_edit)
+        form.addRow("", self.var_help_label)
         form.addRow("텔레그램 봇 토큰", self.telegram_token_edit)
         form.addRow("텔레그램 챗 ID", self.telegram_chat_id_edit)
         form.addRow("텔레그램 메시지", self.telegram_message_edit)
@@ -6467,6 +6781,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.key_edit.textChanged.connect(self._update_trigger_warning)
         self.mouse_button_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self.mouse_pos_mode_combo.currentIndexChanged.connect(self._sync_mouse_pos_hint)
+        self.var_update_mode_combo.currentIndexChanged.connect(self._sync_var_action_fields)
+        self.var_name_edit.currentTextChanged.connect(lambda *_: self._sync_var_action_fields())
         self.type_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self.telegram_test_btn.clicked.connect(self._test_telegram_message)
         self.sound_file_browse_btn.clicked.connect(self._browse_sound_file)
@@ -6475,6 +6791,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.capture_mouse_pos_shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.capture_mouse_pos_shortcut.activated.connect(self._capture_mouse_position)
         self._toggle_override_enabled()
+        self._sync_var_action_fields()
         if action:
             self._load(action)
         else:
@@ -6496,6 +6813,52 @@ class ActionEditDialog(QtWidgets.QDialog):
     def _sound_wait_mode(self) -> str:
         mode = self.sound_wait_mode_combo.currentData()
         return str(mode or "once")
+    def _refresh_var_name_combo(self, preserve: str | None = None):
+        names: list[str] = []
+        if callable(self._variable_provider):
+            try:
+                names = self._variable_provider("var") or []
+            except Exception:
+                names = []
+        _refresh_name_combo(
+            self.var_name_edit,
+            names,
+            preserve=preserve,
+            placeholder="대상 변수를 선택하거나 직접 입력하세요",
+        )
+    def _current_var_name(self) -> str:
+        return str(self.var_name_edit.currentText() or "").strip()
+    def _sync_var_action_fields(self):
+        show_var = self._current_type() == "set_var"
+        mode = str(self.var_update_mode_combo.currentData() or "set")
+        target_name = self._current_var_name() or "변수1"
+        value_label = self._form_layout.labelForField(self.var_value_edit) if hasattr(self, "_form_layout") else None
+        if mode == "set":
+            self.var_value_edit.setPlaceholderText("예: 123, hello, 1~100, /변수2")
+            self.var_value_edit.setToolTip("입력한 값을 변수에 그대로 저장합니다. `1~100`처럼 쓰면 실행할 때마다 랜덤 숫자가 들어갑니다.")
+            help_text = (
+                f"`{target_name}`에 입력한 값을 그대로 저장합니다. "
+                f"`1~100`처럼 쓰면 실행할 때마다 랜덤 숫자가 들어갑니다. "
+                f"예: `{target_name} = 10`, `{target_name} = 1~100`"
+            )
+            if value_label is not None:
+                value_label.setText("설정할 값")
+        else:
+            self.var_value_edit.setPlaceholderText("예: 1, 0.5, 1~10, /변수2")
+            self.var_value_edit.setToolTip(
+                "현재 변수값에 숫자를 더하거나 뺍니다. 현재값도 숫자여야 합니다. "
+                "`1~10`처럼 쓰면 실행할 때마다 랜덤 숫자로 증감합니다."
+            )
+            help_text = (
+                f"`{target_name}`의 현재값에 숫자를 {'더합니다' if mode == 'add' else '뺍니다'}. "
+                f"`1~10`처럼 쓰면 실행할 때마다 랜덤 숫자로 {'더해집니다' if mode == 'add' else '빠집니다'}. "
+                f"예: `{target_name} {'+=' if mode == 'add' else '-='} 1`, "
+                f"`{target_name} {'+=' if mode == 'add' else '-='} 1~10`"
+            )
+            if value_label is not None:
+                value_label.setText("증감 값")
+        self.var_help_label.setText(help_text if show_var else "")
+        self.var_help_label.setVisible(show_var)
     def _sync_action_key_from_builder(self):
         if self._updating_action_key_builder:
             return
@@ -6521,7 +6884,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         if self._updating_action_key_builder:
             return
         text = self.key_edit.text().strip()
-        keys = parse_trigger_keys(text)
+        preserve_raw = _looks_like_variable_key_text(text)
+        keys = [] if preserve_raw else parse_trigger_keys(text)
         mods = {k for k in keys if k in ("ctrl", "shift", "alt", "win")}
         main_key = next((k for k in keys if k not in mods), "")
         self._updating_action_key_builder = True
@@ -6531,7 +6895,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.action_mod_alt.setChecked("alt" in mods)
             self.action_mod_win.setChecked("win" in mods)
             self.action_main_key_edit.setText(main_key)
-            self.key_edit.setText(normalize_trigger_key(text))
+            self.key_edit.setText(text if preserve_raw else normalize_trigger_key(text))
         finally:
             self._updating_action_key_builder = False
     def _sync_mouse_pos_hint(self):
@@ -6815,10 +7179,15 @@ class ActionEditDialog(QtWidgets.QDialog):
             self._refresh_macro_targets()
         self._set_field_visible(self.macro_target_combo, show_macro_target)
         self.macro_target_combo.setEnabled(show_macro_target)
+        if show_var:
+            self._refresh_var_name_combo(self._current_var_name())
         self._set_field_visible(self.var_name_edit, show_var)
+        self._set_field_visible(self.var_update_mode_combo, show_var)
         self._set_field_visible(self.var_value_edit, show_var)
-        for w in (self.var_name_edit, self.var_value_edit):
+        self._set_field_visible(self.var_help_label, show_var)
+        for w in (self.var_name_edit, self.var_update_mode_combo, self.var_value_edit, self.var_help_label):
             w.setEnabled(show_var)
+        self._sync_var_action_fields()
         self._set_field_visible(self.telegram_token_edit, show_telegram)
         self._set_field_visible(self.telegram_chat_id_edit, show_telegram)
         self._set_field_visible(self.telegram_message_edit, show_telegram)
@@ -6965,7 +7334,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         else:
             self._existing_elifs = []
         if act.type == "set_var":
-            self.var_name_edit.setText(act.var_name or "")
+            self._refresh_var_name_combo(act.var_name or "")
+            idx = self.var_update_mode_combo.findData(getattr(act, "var_update_mode", "set"))
+            self.var_update_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.var_value_edit.setText(act.var_value_raw or act.var_value or "")
         elif act.type == "telegram_message":
             self.telegram_token_edit.setText(str(getattr(act, "telegram_bot_token", "") or ""))
@@ -7132,14 +7503,26 @@ class ActionEditDialog(QtWidgets.QDialog):
                 raise ValueError("실행할 매크로를 선택하세요.")
             act.macro_target = macro_target
         elif typ == "set_var":
-            var_name = self.var_name_edit.text().strip()
+            var_name = self._current_var_name()
             if not var_name:
-                raise ValueError("변수 이름을 입력하세요.")
+                raise ValueError("대상 변수를 선택하거나 입력하세요.")
+            act.var_update_mode = str(self.var_update_mode_combo.currentData() or "set")
             act.var_name = var_name
             act.var_value_raw = self.var_value_edit.text().strip()
+            if act.var_update_mode in ("add", "sub"):
+                if not act.var_value_raw:
+                    raise ValueError("변수 더하기/빼기 값은 숫자로 입력하세요.")
+                resolved_delta = self._resolver.resolve(act.var_value_raw, "var") if self._resolver else act.var_value_raw
+                resolved_delta_text = str(resolved_delta).strip()
+                if not _parse_var_random_range(resolved_delta_text):
+                    try:
+                        float(resolved_delta_text)
+                    except Exception as exc:
+                        raise ValueError("변수 더하기/빼기 값은 숫자 또는 `1~10` 같은 랜덤 범위여야 합니다.") from exc
             if self._add_variable:
                 try:
-                    self._add_variable("var", var_name, act.var_value_raw or "")
+                    default_value = "0" if act.var_update_mode in ("add", "sub") else (act.var_value_raw or "")
+                    self._add_variable("var", var_name, default_value)
                 except Exception:
                     pass
         elif typ == "telegram_message":
@@ -10889,7 +11272,12 @@ class DebuggerDialog(QtWidgets.QDialog):
             return f"영역={region_txt} 색상={color_txt} tol={tol} 기대={expect}/발견={found}{count_txt}"
         if cond_type == "var":
             var_info = detail.get("var") or {}
-            op_txt = "!=" if var_info.get("operator") == "ne" else "=="
+            op = str(var_info.get("operator") or "eq")
+            if op == "even":
+                return f"{var_info.get('name', '')} 짝수 (실제={var_info.get('actual')})"
+            if op == "odd":
+                return f"{var_info.get('name', '')} 홀수 (실제={var_info.get('actual')})"
+            op_txt = "!=" if op == "ne" else "=="
             return f"{var_info.get('name', '')} {op_txt} {var_info.get('expected', '')} (실제={var_info.get('actual')})"
         if cond_type == "timer":
             t = detail.get("timer") or {}
@@ -15932,7 +16320,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._config_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
-        self._state_path = self._config_dir / "global_state.json"
+        self._legacy_state_path = self._config_dir / "global_state.json"
+        self._state_path = self._config_dir / "local" / "global_state.json"
         self._state: dict = self._load_state()
         self._debugger_state = self._state.get("debugger", {}) if isinstance(self._state, dict) else {}
         self._image_viewer_state = self._state.get("image_viewer", {}) if isinstance(self._state, dict) else {}
@@ -17272,14 +17661,15 @@ class MacroWindow(QtWidgets.QMainWindow):
         )
     # App state ----------------------------------------------------------
     def _load_state(self) -> dict:
-        if not self._state_path.exists():
-            return {}
-        try:
-            data = json.loads(self._state_path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception as exc:
-            self._append_log(f"상태 파일 로드 오류: {exc}")
-            return {}
+        for path in (self._state_path, getattr(self, "_legacy_state_path", None)):
+            if not path or not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
+            except Exception as exc:
+                self._append_log(f"상태 파일 로드 오류: {exc}")
+        return {}
     def _write_state(self, state: dict):
         try:
             if not self._state_path.parent.exists():
