@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Macro 사용 매뉴얼</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --paper: #ffffff;
+      --ink: #1f2933;
+      --muted: #667085;
+      --line: #d9dee7;
+      --brand: #2457a6;
+      --brand-soft: #e8f0ff;
+      --warn: #8a4b00;
+      --warn-bg: #fff5df;
+      --code: #f0f3f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.65 "Segoe UI", "Malgun Gothic", Arial, sans-serif;
+    }
+    header {
+      background: #15213a;
+      color: #fff;
+      padding: 34px 28px;
+      border-bottom: 4px solid var(--brand);
+    }
+    header h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: 0; }
+    header p { margin: 0; color: #d6e2f5; max-width: 980px; }
+    .page {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 22px;
+      max-width: 1280px;
+      margin: 22px auto;
+      padding: 0 18px 40px;
+    }
+    nav {
+      position: sticky;
+      top: 16px;
+      align-self: start;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    nav h2 { margin: 0 0 10px; font-size: 16px; }
+    nav a {
+      display: block;
+      color: #26415f;
+      text-decoration: none;
+      padding: 5px 0;
+      border-bottom: 1px solid #eef1f5;
+    }
+    nav a:last-child { border-bottom: 0; }
+    main {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 26px;
+    }
+    section { padding: 10px 0 26px; border-bottom: 1px solid var(--line); }
+    section:last-child { border-bottom: 0; }
+    h2 { margin: 0 0 14px; font-size: 24px; color: #172033; }
+    h3 { margin: 22px 0 8px; font-size: 18px; color: #203454; }
+    h4 { margin: 16px 0 6px; font-size: 15px; color: #2b3f5c; }
+    p { margin: 8px 0; }
+    ul, ol { margin-top: 8px; padding-left: 22px; }
+    li { margin: 4px 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 18px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      vertical-align: top;
+    }
+    th { background: #f1f5fb; text-align: left; }
+    code, kbd {
+      background: var(--code);
+      border: 1px solid #d8dee8;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 0.94em;
+    }
+    .note, .warn {
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin: 12px 0;
+    }
+    .note { background: var(--brand-soft); border: 1px solid #c9d9fb; }
+    .warn { background: var(--warn-bg); border: 1px solid #ffd48a; color: var(--warn); }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin: 12px 0;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfe;
+    }
+    .card strong { display: block; margin-bottom: 4px; color: #1f3658; }
+    .muted { color: var(--muted); }
+    @media (max-width: 900px) {
+      .page { grid-template-columns: 1fr; }
+      nav { position: static; }
+      main { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Macro 사용 매뉴얼</h1>
+    <p>Interception 기반 키보드/마우스/픽셀 매크로 편집기의 주요 기능을 처음 사용하는 기준으로 정리한 문서입니다.</p>
+  </header>
+
+  <div class="page">
+    <nav>
+      <h2>목차</h2>
+      <a href="#overview">1. 프로그램 개요</a>
+      <a href="#start">2. 실행과 기본 흐름</a>
+      <a href="#screen">3. 메인 화면</a>
+      <a href="#profile">4. 프로필 관리</a>
+      <a href="#macro">5. 매크로 만들기</a>
+      <a href="#actions">6. 액션 설정</a>
+      <a href="#conditions">7. 조건 설정</a>
+      <a href="#variables">8. 전역 변수</a>
+      <a href="#pixel">9. 픽셀/패턴</a>
+      <a href="#viewer">10. 이미지 뷰어/피커</a>
+      <a href="#screenshot">11. 스크린샷</a>
+      <a href="#debugger">12. 디버거와 테스트</a>
+      <a href="#devices">13. 키보드/마우스 설정</a>
+      <a href="#resolution">14. 해상도와 프리셋 이동</a>
+      <a href="#examples">15. 예시</a>
+      <a href="#trouble">16. 문제 해결</a>
+    </nav>
+
+    <main>
+      <section id="overview">
+        <h2>1. 프로그램 개요</h2>
+        <p>Macro는 여러 매크로를 프로필 파일로 관리하고, 각 매크로 안에 액션을 트리 형태로 배치해서 실행하는 GUI 프로그램입니다. 키 입력, 마우스 클릭/이동, 대기, 조건 분기, 반복, 픽셀 검사, 변수 저장, 타이머, 텔레그램 메시지까지 한 흐름 안에서 구성할 수 있습니다.</p>
+        <div class="flow">
+          <div class="card"><strong>프로필</strong>여러 매크로와 전역 변수, 입력장치 설정을 저장하는 파일입니다.</div>
+          <div class="card"><strong>매크로</strong>트리거 키/마우스와 실행 모드를 가진 실행 단위입니다.</div>
+          <div class="card"><strong>액션</strong>키 입력, 마우스 클릭, 조건, 반복 같은 실제 동작입니다.</div>
+          <div class="card"><strong>조건</strong>키, 픽셀, 변수, 타이머, 시간/날짜 상태를 검사합니다.</div>
+        </div>
+        <div class="warn">Windows에서 관리자 권한으로 실행해야 키보드/마우스 후킹과 Interception 기반 입력 기능이 정상 동작합니다.</div>
+      </section>
+
+      <section id="start">
+        <h2>2. 실행과 기본 흐름</h2>
+        <h3>설치</h3>
+        <p>프로젝트 폴더에서 의존성을 설치합니다.</p>
+        <p><code>uv sync</code></p>
+        <h3>실행</h3>
+        <p>관리자 권한 터미널에서 실행합니다.</p>
+        <p><code>uv run python main.py</code></p>
+        <h3>처음 사용하는 순서</h3>
+        <ol>
+          <li><strong>설정 &gt; 키보드 설정</strong>에서 입력 모드와 장치를 확인합니다.</li>
+          <li><strong>매크로 추가</strong>로 새 매크로를 만들고 트리거를 지정합니다.</li>
+          <li>액션 트리에 <strong>액션 추가</strong>를 눌러 필요한 동작을 순서대로 넣습니다.</li>
+          <li><strong>적용</strong>을 눌러 GUI 내용을 엔진에 반영합니다.</li>
+          <li><strong>시작</strong>과 <strong>활성</strong> 상태를 켜고 트리거로 테스트합니다.</li>
+          <li>문제가 있으면 로그, 픽셀 테스트, 디버거로 확인합니다.</li>
+        </ol>
+      </section>
+
+      <section id="screen">
+        <h2>3. 메인 화면</h2>
+        <h3>상단 상태/제어 영역</h3>
+        <table>
+          <tr><th>항목</th><th>설명</th></tr>
+          <tr><td>시작</td><td>매크로 엔진을 시작합니다. 시작 후에도 활성 상태가 꺼져 있으면 트리거 실행은 되지 않습니다.</td></tr>
+          <tr><td>중지</td><td>엔진을 멈추고 눌림 유지 중인 입력을 정리합니다.</td></tr>
+          <tr><td>일시중지</td><td>실행 중인 매크로 흐름을 잠시 멈춥니다.</td></tr>
+          <tr><td>활성/비활성</td><td>엔진은 켜 둔 상태에서 트리거 반응만 켜거나 끕니다.</td></tr>
+          <tr><td>적용</td><td>현재 GUI 설정을 엔진에 반영합니다. 단축키는 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>입니다.</td></tr>
+        </table>
+        <h3>메뉴</h3>
+        <table>
+          <tr><th>메뉴</th><th>기능</th></tr>
+          <tr><td>파일</td><td>새로 만들기, 불러오기, 저장, 다른 이름으로 저장. 각각 <kbd>Ctrl</kbd>+<kbd>N</kbd>, <kbd>Ctrl</kbd>+<kbd>O</kbd>, <kbd>Ctrl</kbd>+<kbd>S</kbd>, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>를 사용할 수 있습니다.</td></tr>
+          <tr><td>기능</td><td>스크린샷, 디버거, 픽셀 테스트, 픽셀 패턴 관리, 전역 변수 관리, 프리셋 옮기기, 색상값 계산, 이미지 뷰어/피커를 엽니다.</td></tr>
+          <tr><td>설정</td><td>키보드/마우스 입력 방식과 Interception 장치를 설정합니다.</td></tr>
+        </table>
+        <h3>매크로 목록</h3>
+        <p>매크로 목록에는 순번, 이름, 트리거, 모드, 활성 여부, 적용 범위, 설명이 표시됩니다. 하단 버튼으로 추가, 편집, 복사, 붙여넣기, 복제, 삭제가 가능합니다.</p>
+        <h3>로그</h3>
+        <p>실행 상태, 픽셀 테스트 결과, 입력장치 테스트 결과 등이 표시됩니다. 필요 없을 때는 로그 표시를 끌 수 있습니다.</p>
+      </section>
+
+      <section id="profile">
+        <h2>4. 프로필 관리</h2>
+        <p>프로필은 현재 매크로 목록, 변수, 입력장치 설정, 픽셀 패턴 참조, 해상도 기준값 등을 저장하는 단위입니다.</p>
+        <ul>
+          <li><strong>새로 만들기</strong>: 현재 편집 내용을 초기화하고 새 프로필을 시작합니다.</li>
+          <li><strong>불러오기</strong>: 저장된 JSON 프로필을 엽니다.</li>
+          <li><strong>저장</strong>: 현재 파일에 덮어씁니다.</li>
+          <li><strong>다른 이름으로 저장</strong>: 새 파일로 저장합니다.</li>
+          <li><strong>최근 불러온/즐겨찾기</strong>: 자주 쓰는 프로필을 빠르게 다시 열 수 있습니다. 즐겨찾기는 드래그로 순서를 바꿀 수 있습니다.</li>
+        </ul>
+        <div class="note">프로필을 수정한 뒤에는 저장과 적용을 구분해서 사용하세요. 저장은 파일 기록이고, 적용은 현재 실행 엔진에 반영하는 동작입니다.</div>
+      </section>
+
+      <section id="macro">
+        <h2>5. 매크로 만들기</h2>
+        <h3>매크로의 기본 구성</h3>
+        <table>
+          <tr><th>항목</th><th>설명</th></tr>
+          <tr><td>이름/설명</td><td>목록에서 구분하기 위한 표시 이름과 설명입니다.</td></tr>
+          <tr><td>트리거</td><td>매크로를 실행할 키 또는 마우스 입력입니다. 예: <code>z</code>, <code>shift+1</code>, <code>mouse1</code>.</td></tr>
+          <tr><td>모드</td><td>홀드, 토글, 1회 실행 같은 실행 방식을 정합니다.</td></tr>
+          <tr><td>활성</td><td>개별 매크로를 켜거나 끕니다.</td></tr>
+          <tr><td>적용 범위</td><td>특정 앱에서만 실행하거나 특정 앱을 제외하는 식으로 범위를 제한할 수 있습니다.</td></tr>
+          <tr><td>사이클 횟수</td><td>비워 두면 계속 반복하고, 숫자를 입력하면 지정 횟수만 실행합니다.</td></tr>
+        </table>
+        <h3>액션 트리 편집</h3>
+        <p>매크로 편집 창에서 액션을 추가하고 순서를 바꿉니다. 조건, 그룹, 반복 액션은 하위 액션을 가질 수 있어 트리 구조가 됩니다. IF 액션은 참 분기, ELSE, ELIF를 통해 흐름을 나눌 수 있습니다.</p>
+        <ul>
+          <li><strong>액션 추가</strong>: 선택한 위치에 새 액션을 넣습니다.</li>
+          <li><strong>선택 편집</strong>: 선택 액션의 세부 설정을 엽니다.</li>
+          <li><strong>선택 삭제</strong>: 선택한 액션을 제거합니다.</li>
+          <li><strong>복사/붙여넣기</strong>: 자주 쓰는 액션 묶음을 재사용합니다.</li>
+          <li><strong>드래그앤드롭</strong>: 액션 순서를 바꾸거나 하위로 이동합니다.</li>
+        </ul>
+      </section>
+
+      <section id="actions">
+        <h2>6. 액션 설정</h2>
+        <p>액션 설정 창의 <strong>타입</strong>에 따라 필요한 입력칸만 보입니다. 공통으로 이름, 설명, 활성 여부, 반복 횟수, 조건, 입력 딜레이 오버라이드 등을 설정할 수 있습니다.</p>
+        <h3>입력 액션</h3>
+        <table>
+          <tr><th>타입</th><th>설명</th><th>주요 입력</th></tr>
+          <tr><td>탭/press</td><td>키를 눌렀다가 뗍니다.</td><td>키, 조합 구성, 반복 횟수</td></tr>
+          <tr><td>누르고 유지/down</td><td>키를 누른 상태로 유지합니다.</td><td>키, 일시중지 시 유지</td></tr>
+          <tr><td>떼기/up</td><td>눌려 있는 키를 뗍니다.</td><td>키</td></tr>
+          <tr><td>마우스 클릭</td><td>마우스 버튼을 눌렀다가 뗍니다.</td><td>마우스 버튼, 좌표 x,y</td></tr>
+          <tr><td>마우스 누르기/down</td><td>마우스 버튼을 누른 상태로 유지합니다.</td><td>마우스 버튼, 좌표 x,y</td></tr>
+          <tr><td>마우스 떼기/up</td><td>눌려 있는 마우스 버튼을 뗍니다.</td><td>마우스 버튼, 좌표 x,y</td></tr>
+          <tr><td>마우스 이동</td><td>지정 좌표로 커서를 이동합니다.</td><td>절대/상대 기준, 좌표, 이동 시간</td></tr>
+        </table>
+        <div class="note">마우스 좌표 입력칸이 보일 때 <kbd>F1</kbd>을 누르면 현재 커서 좌표가 <code>x,y</code> 형식으로 자동 입력됩니다. 마우스 이동의 상대 모드에서는 <code>dx,dy</code>를 직접 입력합니다.</div>
+        <h3>시간/흐름 액션</h3>
+        <table>
+          <tr><th>타입</th><th>설명</th></tr>
+          <tr><td>대기/sleep</td><td>지정 시간 동안 기다립니다. <code>500ms</code>, <code>3초</code>, <code>1.5분</code>, <code>1~3</code> 같은 입력을 사용할 수 있습니다.</td></tr>
+          <tr><td>라벨/label</td><td>점프 대상 위치를 만듭니다.</td></tr>
+          <tr><td>점프/goto</td><td>지정 라벨로 이동합니다.</td></tr>
+          <tr><td>continue</td><td>현재 매크로 사이클 처음으로 돌아갑니다.</td></tr>
+          <tr><td>return</td><td>현재 매크로 실행을 종료합니다.</td></tr>
+          <tr><td>break</td><td>현재 그룹 또는 while/repeat_n 반복을 빠져나옵니다.</td></tr>
+          <tr><td>macro_stop</td><td>현재 매크로를 즉시 중단합니다.</td></tr>
+          <tr><td>noop</td><td>아무 동작도 하지 않습니다. 자리 표시나 임시 비활성 용도로 씁니다.</td></tr>
+        </table>
+        <h3>조건/그룹 액션</h3>
+        <table>
+          <tr><th>타입</th><th>설명</th></tr>
+          <tr><td>조건/if</td><td>조건이 참이면 children을 실행하고, 거짓이면 ELSE children을 실행합니다. ELIF도 추가할 수 있습니다.</td></tr>
+          <tr><td>조건/elif</td><td>IF의 추가 조건 분기로 사용합니다.</td></tr>
+          <tr><td>그룹/group</td><td>하위 액션 묶음을 실행합니다. 모두 실행, 첫 참만 실행, 첫 참 후 continue/return, while, repeat_n 모드를 제공합니다.</td></tr>
+        </table>
+        <h3>기능 액션</h3>
+        <table>
+          <tr><th>타입</th><th>설명</th></tr>
+          <tr><td>픽셀겟/pixel_get</td><td>지정 좌표의 색상을 읽어 color 변수에 저장합니다. 좌표는 <code>x,y</code> 또는 <code>x,y,w,h</code> 형식입니다.</td></tr>
+          <tr><td>변수 설정/set_var</td><td>Value 변수를 직접 설정하거나 현재값에 더하고 뺍니다. 범위값을 쓰면 실행마다 랜덤값을 사용할 수 있습니다.</td></tr>
+          <tr><td>타이머/timer</td><td>타이머1~20 중 하나를 지정 값으로 초기화합니다.</td></tr>
+          <tr><td>사운드 알림</td><td>시스템 알림음 또는 선택한 사운드 파일을 재생합니다.</td></tr>
+          <tr><td>다른 매크로 1사이클 실행</td><td>선택한 매크로를 한 사이클 실행합니다.</td></tr>
+          <tr><td>텔레그램 메시지</td><td>봇 토큰, 채팅 ID, 메시지를 이용해 텔레그램으로 알림을 보냅니다.</td></tr>
+          <tr><td>컴퓨터 종료</td><td>운영체제 종료 명령을 실행합니다. 실사용 전 테스트 프로필에서 충분히 확인하세요.</td></tr>
+        </table>
+        <h3>입력 딜레이 오버라이드</h3>
+        <p>키/마우스 입력 액션마다 기본 딜레이와 다른 누름-뗌 지연, 키 사이 지연을 줄 수 있습니다. <code>40</code>처럼 고정값 또는 <code>40-80</code>처럼 랜덤 범위를 사용할 수 있습니다.</p>
+      </section>
+
+      <section id="conditions">
+        <h2>7. 조건 설정</h2>
+        <p>조건은 IF, ELIF, 그룹 모드, 매크로 실행 판단, 디버그 테스트에서 사용됩니다.</p>
+        <table>
+          <tr><th>조건 타입</th><th>설명</th></tr>
+          <tr><td>픽셀</td><td>화면 영역에서 특정 색상이나 픽셀 패턴이 있는지 검사합니다. 허용오차, 최소 일치 픽셀 수, 있음/없음 판정을 설정합니다.</td></tr>
+          <tr><td>키/마우스</td><td>키 또는 마우스 버튼의 press, down, up, hold, released 상태를 검사합니다. 여러 키를 AND/OR로 묶을 수 있습니다.</td></tr>
+          <tr><td>변수 조건</td><td>Value 변수의 값이 같은지, 다른지, 짝수인지, 홀수인지 검사합니다.</td></tr>
+          <tr><td>타이머</td><td>타이머1~20의 현재 값과 기준 값을 비교합니다. >=, >, ==, <=, <, !=를 사용할 수 있습니다.</td></tr>
+          <tr><td>시간/날짜</td><td>매일 시각, 날짜, 날짜+시간을 기준으로 현재 시간과 비교합니다. 범위 입력도 사용할 수 있습니다.</td></tr>
+          <tr><td>AND 그룹</td><td>하위 조건이 모두 참일 때 참입니다.</td></tr>
+          <tr><td>OR 그룹</td><td>하위 조건 중 하나라도 참이면 참입니다.</td></tr>
+        </table>
+        <h3>키/마우스 조건 모드</h3>
+        <ul>
+          <li><code>press</code>, <code>down</code>: 눌리는 순간 한 번 참입니다.</li>
+          <li><code>up</code>: 뗄 때 한 번 참입니다.</li>
+          <li><code>hold</code>: 누르고 있는 동안 계속 참입니다.</li>
+          <li><code>released</code>: 누르지 않은 상태일 때 참입니다.</li>
+        </ul>
+        <h3>픽셀 조건 입력</h3>
+        <ul>
+          <li>영역: <code>x,y</code> 또는 <code>x,y,w,h</code>. w/h를 생략하면 1x1로 처리합니다.</li>
+          <li>색상: <code>ff0000</code> 또는 <code>#ff0000</code> 형식입니다.</li>
+          <li>변수: <code>/name</code>, <code>${name}</code>, <code>@name</code> 형식으로 참조할 수 있습니다.</li>
+          <li>패턴 사용: 픽셀 패턴 관리에서 저장한 패턴 이름을 선택합니다.</li>
+        </ul>
+      </section>
+
+      <section id="variables">
+        <h2>8. 전역 변수</h2>
+        <p>전역 변수는 여러 매크로와 조건에서 공유됩니다. 메인 화면의 변수 탭 또는 <strong>기능 &gt; 전역 변수 관리</strong>에서 관리합니다.</p>
+        <table>
+          <tr><th>종류</th><th>용도</th><th>예시</th></tr>
+          <tr><td>Sleep</td><td>대기 시간 값</td><td><code>500</code>, <code>1~3</code>, <code>2초</code></td></tr>
+          <tr><td>Region</td><td>픽셀 검사 영역</td><td><code>100,200,50,50</code></td></tr>
+          <tr><td>Color</td><td>픽셀 색상</td><td><code>ff0000</code></td></tr>
+          <tr><td>Key</td><td>키 이름 또는 스캔코드</td><td><code>space</code>, <code>shift+1</code></td></tr>
+          <tr><td>Value</td><td>일반 값, 숫자, 문자열</td><td><code>10</code>, <code>ready</code></td></tr>
+        </table>
+        <h3>참조 방식</h3>
+        <p>입력칸에서 변수는 <code>/변수명</code>, <code>${변수명}</code>, <code>@변수명</code> 형태로 참조합니다. 변수 입력이 가능한 칸에서는 <code>/</code>를 입력하면 자동완성이 표시됩니다.</p>
+        <h3>변수 설정 액션</h3>
+        <p><strong>set_var</strong> 액션으로 Value 변수를 직접 설정하거나, 현재값에 더하기/빼기를 할 수 있습니다. 증감 모드는 현재값이 숫자로 해석될 수 있어야 합니다.</p>
+      </section>
+
+      <section id="pixel">
+        <h2>9. 픽셀/패턴</h2>
+        <h3>픽셀 테스트</h3>
+        <p><strong>기능 &gt; 픽셀 테스트</strong>에서 영역, 색상, 허용오차, 최소 픽셀 수를 넣고 조건이 실제 화면에서 참인지 확인할 수 있습니다. 조건 편집창의 테스트 버튼에서도 같은 디버그 흐름을 열 수 있습니다.</p>
+        <h3>색상값 계산</h3>
+        <p><strong>기능 &gt; 색상값 계산</strong>은 목표 색상과 샘플 색상의 차이를 보고 적절한 허용오차를 결정할 때 사용합니다.</p>
+        <h3>픽셀 패턴 관리</h3>
+        <p>단일 색상 하나가 아니라 여러 픽셀의 상대 좌표와 색상 조합을 검사하려면 패턴을 사용합니다. 패턴은 <code>pattern</code> 폴더의 JSON 파일로 저장되며 여러 프로필에서 공유됩니다.</p>
+        <ul>
+          <li>패턴 이름을 만들고 기준점 주변의 샘플 좌표/색상을 추가합니다.</li>
+          <li>조건 설정에서 <strong>패턴 사용</strong>을 켜고 저장된 패턴을 선택합니다.</li>
+          <li>이미지 뷰어/피커와 디버거를 같이 쓰면 좌표와 색상을 빠르게 확인할 수 있습니다.</li>
+        </ul>
+      </section>
+
+      <section id="viewer">
+        <h2>10. 이미지 뷰어/피커</h2>
+        <p><strong>기능 &gt; 이미지 뷰어/피커</strong>는 스크린샷 폴더나 선택한 루트 폴더의 이미지를 보면서 좌표와 색상을 뽑는 창입니다.</p>
+        <h3>주요 기능</h3>
+        <ul>
+          <li>루트 변경, 탐색기에서 열기, 새로고침, 선택 삭제, 폴더 비우기.</li>
+          <li>파일 트리에서 이미지 선택, 폴더 이동, 드래그앤드롭 이동/복사.</li>
+          <li>즐겨찾기 그룹 추가, 현재 폴더 추가, 삭제.</li>
+          <li>단일 캡처 후 자동 새로고침.</li>
+          <li>이미지 위 마우스 위치의 좌표와 색상 확인.</li>
+          <li>범위 선택으로 <code>x,y,w,h</code> 영역을 복사하고 조건 창에 자동 반영.</li>
+        </ul>
+        <h3>단축키</h3>
+        <table>
+          <tr><th>키</th><th>동작</th></tr>
+          <tr><td><kbd>F1</kbd></td><td>현재 이미지 위 샘플 좌표를 복사합니다.</td></tr>
+          <tr><td><kbd>F2</kbd></td><td>현재 이미지 위 샘플 색상을 복사합니다.</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>F1</kbd></td><td>범위 선택을 시작합니다.</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>Left/Right</kbd></td><td>이전/다음 이미지로 이동합니다.</td></tr>
+          <tr><td><kbd>Arrow</kbd></td><td>샘플 위치를 1픽셀씩 이동합니다.</td></tr>
+          <tr><td><kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd></td><td>확대, 축소, 배율 초기화.</td></tr>
+          <tr><td><kbd>F5</kbd></td><td>새로고침.</td></tr>
+          <tr><td><kbd>Delete</kbd></td><td>선택 삭제.</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>창 닫기 또는 범위 선택 취소.</td></tr>
+        </table>
+      </section>
+
+      <section id="screenshot">
+        <h2>11. 스크린샷</h2>
+        <p><strong>기능 &gt; 스크린샷</strong>에서 화면 캡처를 시작/중지하고 저장 형식과 단축키를 설정합니다. 저장된 이미지는 이미지 뷰어/피커에서 바로 확인할 수 있습니다.</p>
+        <ul>
+          <li>캡처 간격과 저장 큐 크기 제한을 둡니다.</li>
+          <li>PNG 또는 JPG 형식을 사용할 수 있습니다.</li>
+          <li>JPG 품질, PNG 압축 수준을 설정할 수 있습니다.</li>
+          <li>시작, 중지, 단일 캡처 핫키를 지정할 수 있습니다.</li>
+        </ul>
+        <div class="note">스크린샷 핫키는 매크로 트리거와 충돌하지 않도록 별도 키를 사용하는 것이 좋습니다.</div>
+      </section>
+
+      <section id="debugger">
+        <h2>12. 디버거와 테스트</h2>
+        <h3>디버거</h3>
+        <p><strong>기능 &gt; 디버거</strong>는 조건 평가 결과를 트리로 보여 줍니다. 픽셀 조건, 변수 조건, 타이머 조건이 왜 참/거짓인지 확인할 때 사용합니다.</p>
+        <ul>
+          <li>평가 주기와 허용오차를 조정할 수 있습니다.</li>
+          <li>조건 실패 경로와 세부 값을 확인할 수 있습니다.</li>
+          <li>이미지 뷰어의 현재 이미지를 디버그 소스로 사용할 수 있습니다.</li>
+          <li>실패 시 캡처 기능으로 조건이 실패하는 순간의 화면을 저장할 수 있습니다.</li>
+        </ul>
+        <h3>픽셀 테스트</h3>
+        <p>단일 픽셀/영역 조건만 빠르게 확인하려면 픽셀 테스트 창을 사용합니다. 조건 창에서 테스트를 누르면 현재 조건 값이 자동으로 넘어갑니다.</p>
+        <h3>로그 확인</h3>
+        <p>엔진 시작/중지, 입력장치 테스트, 픽셀 테스트, 변수 업데이트, 텔레그램 전송 결과 등은 로그에 남습니다. 매크로가 기대대로 움직이지 않으면 먼저 로그를 확인하세요.</p>
+      </section>
+
+      <section id="devices">
+        <h2>13. 키보드/마우스 설정</h2>
+        <p><strong>설정 &gt; 키보드 설정</strong>에서 입력 백엔드와 장치를 설정합니다.</p>
+        <table>
+          <tr><th>항목</th><th>설명</th></tr>
+          <tr><td>입력 모드</td><td>Interception 하드웨어 입력 또는 소프트웨어 입력 방식을 선택합니다.</td></tr>
+          <tr><td>키보드 장치</td><td>입력에 사용할 키보드 장치를 선택합니다.</td></tr>
+          <tr><td>마우스 장치</td><td>마우스 입력에 사용할 장치를 선택합니다.</td></tr>
+          <tr><td>테스트 키</td><td>키보드 테스트에 사용할 키입니다. 기본값은 <code>f24</code>입니다.</td></tr>
+          <tr><td>키/마우스 딜레이</td><td>누름-뗌 지연과 입력 사이 지연을 기본값으로 설정합니다.</td></tr>
+          <tr><td>설치</td><td><code>interception/install-interception.exe</code>를 관리자 권한으로 실행합니다. 설치 후 재부팅이 필요합니다.</td></tr>
+        </table>
+        <div class="warn">Interception 드라이버 설치나 장치 선택이 잘못되면 입력이 전송되지 않을 수 있습니다. 설정 후 반드시 테스트 버튼으로 확인하세요.</div>
+      </section>
+
+      <section id="resolution">
+        <h2>14. 해상도와 프리셋 이동</h2>
+        <p>픽셀 좌표와 마우스 좌표는 해상도와 앱 배율의 영향을 받습니다. 메인 화면의 해상도 영역은 다른 모니터/배율 환경으로 프리셋을 옮길 때 좌표를 보정하기 위한 기능입니다.</p>
+        <ul>
+          <li><strong>기준 해상도</strong>: 프리셋을 만든 환경의 해상도입니다.</li>
+          <li><strong>기준 앱 배율</strong>: 프리셋을 만든 환경의 앱 배율입니다.</li>
+          <li><strong>현재 해상도</strong>: 지금 사용할 화면 해상도입니다. 자동 감지 또는 직접 입력이 가능합니다.</li>
+          <li><strong>현재 앱 배율</strong>: 지금 사용할 앱 배율입니다. 배율 감지 또는 직접 입력이 가능합니다.</li>
+          <li><strong>기준=현재</strong>: 현재 환경을 새 기준으로 저장합니다.</li>
+          <li><strong>프리셋 옮기기</strong>: 프로필의 좌표, 영역, 변수 좌표를 새 환경에 맞게 변환합니다.</li>
+        </ul>
+        <div class="note">좌표 변환 후에는 픽셀 조건과 마우스 클릭 위치를 이미지 뷰어/픽셀 테스트로 다시 확인하는 것이 좋습니다.</div>
+      </section>
+
+      <section id="examples">
+        <h2>15. 예시</h2>
+        <h3>예시 1: 트리거를 누르는 동안 키 반복</h3>
+        <ol>
+          <li>매크로 추가에서 트리거를 <code>z</code>, 모드를 홀드로 설정합니다.</li>
+          <li>액션에 <code>press r</code>을 추가합니다.</li>
+          <li><code>sleep 50ms</code>를 추가합니다.</li>
+          <li><code>press t</code>를 추가합니다.</li>
+          <li>적용 후 시작/활성 상태에서 <code>z</code>를 누르고 테스트합니다.</li>
+        </ol>
+        <h3>예시 2: 특정 색상이 보이면 F1, 아니면 F2</h3>
+        <ol>
+          <li>이미지 뷰어에서 대상 위치에 마우스를 올리고 <kbd>F1</kbd>로 좌표를 확인합니다.</li>
+          <li><kbd>F2</kbd>로 색상을 복사합니다.</li>
+          <li>액션 트리에 IF를 추가하고 조건 타입을 픽셀로 설정합니다.</li>
+          <li>영역에 <code>x,y,1,1</code>, 색상에 복사한 값을 넣습니다.</li>
+          <li>THEN에는 <code>press f1</code>, ELSE에는 <code>press f2</code>를 넣습니다.</li>
+          <li>픽셀 테스트로 조건이 맞는지 확인한 뒤 적용합니다.</li>
+        </ol>
+        <h3>예시 3: 5초마다 텔레그램 알림</h3>
+        <ol>
+          <li>타이머 조건을 만들고 타이머1이 5초 이상이면 참으로 설정합니다.</li>
+          <li>IF의 THEN에 텔레그램 메시지 액션을 넣습니다.</li>
+          <li>그 다음 타이머 액션으로 타이머1을 0초로 초기화합니다.</li>
+          <li>매크로가 반복 실행되면 5초마다 메시지가 전송됩니다.</li>
+        </ol>
+      </section>
+
+      <section id="trouble">
+        <h2>16. 문제 해결</h2>
+        <table>
+          <tr><th>증상</th><th>확인할 것</th></tr>
+          <tr><td>트리거가 반응하지 않음</td><td>엔진 시작 여부, 활성 상태, 매크로 활성 체크, 트리거 키 이름, 앱 범위 설정을 확인합니다.</td></tr>
+          <tr><td>입력이 전송되지 않음</td><td>관리자 권한, Interception 설치, 키보드/마우스 장치 선택, 테스트 버튼 결과를 확인합니다.</td></tr>
+          <tr><td>좌표가 맞지 않음</td><td>현재 해상도/배율, 기준 해상도/배율, 다중 모니터 좌표, 프리셋 이동 여부를 확인합니다.</td></tr>
+          <tr><td>픽셀 조건이 안 맞음</td><td>이미지 뷰어에서 좌표와 색상을 다시 찍고, 허용오차와 최소 일치 픽셀 수를 조정합니다.</td></tr>
+          <tr><td>매크로가 너무 빠름</td><td>sleep 액션을 추가하거나 입력 딜레이 기본값/오버라이드를 설정합니다.</td></tr>
+          <tr><td>무한 반복에서 CPU 사용량이 높음</td><td>while 그룹 내부에 짧은 sleep을 넣습니다.</td></tr>
+          <tr><td>변수가 해석되지 않음</td><td>변수 종류가 맞는지, 이름 오타가 없는지, <code>/name</code> 형식이 맞는지 확인합니다.</td></tr>
+        </table>
+        <p class="muted">마지막 업데이트: 2026-05-29</p>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

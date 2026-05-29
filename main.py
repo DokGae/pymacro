@@ -6535,7 +6535,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_pos_mode_combo.addItem("현재 위치 기준 (dx,dy)", "relative")
         self.mouse_pos_mode_combo.setToolTip("mouse_move에서 좌표를 절대/상대 방식으로 선택합니다.")
         self.mouse_pos_edit = QtWidgets.QLineEdit()
-        self.mouse_pos_edit.setPlaceholderText("x,y (비우면 현재 위치)")
+        self.mouse_pos_edit.setPlaceholderText("x,y (비우면 현재 위치, F1로 현재 좌표 입력)")
         self.mouse_pos_edit.setToolTip("F1: 현재 마우스 좌표 입력")
         self.mouse_move_duration_spin = QtWidgets.QSpinBox()
         self.mouse_move_duration_spin.setRange(0, 60000)
@@ -6904,7 +6904,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.mouse_pos_edit.setPlaceholderText("dx,dy (예: 120,-80)")
             self.mouse_pos_edit.setToolTip("현재 마우스 위치 기준 상대 이동량입니다. 예: 50,-20")
         else:
-            self.mouse_pos_edit.setPlaceholderText("x,y (비우면 현재 위치)")
+            self.mouse_pos_edit.setPlaceholderText("x,y (비우면 현재 위치, F1로 현재 좌표 입력)")
             self.mouse_pos_edit.setToolTip("F1: 현재 마우스 좌표 입력")
     def _capture_mouse_position(self):
         mouse_types = {"mouse_click", "mouse_down", "mouse_up", "mouse_move"}
