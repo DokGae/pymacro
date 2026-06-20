@@ -1530,26 +1530,26 @@ def _attach_variable_completer(edit: QtWidgets.QLineEdit, names: List[str]):
     entries = [f"/{n}" for n in names]
     comp = QtWidgets.QCompleter(entries or ["/"], edit)
     comp.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
-    comp.setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
+    comp.setFilterMode(QtCore.Qt.MatchFlag.MatchStartsWith)
     comp.setCompletionMode(QtWidgets.QCompleter.CompletionMode.PopupCompletion)
-    comp.setModelSorting(QtWidgets.QCompleter.ModelSorting.CaseInsensitivelySortedModel)
+    comp.setModelSorting(QtWidgets.QCompleter.ModelSorting.UnsortedModel)
+    edit.setCompleter(comp)
     def _current_prefix(text: str) -> tuple[str, int]:
         pos = text.rfind("/")
         if pos < 0:
             return "", -1
-        return text[pos + 1 :], pos
+        return text[pos:], pos
     def _show_popup(text: str):
         prefix, start = _current_prefix(text)
         if start < 0:
+            comp.popup().hide()
             return
         comp.setCompletionPrefix(prefix)
         comp.complete()
     def _insert_choice(val: str):
         text = edit.text()
         prefix, start = _current_prefix(text)
-        insert = f"@{val}"
-        if start >= 0 and text[start:].startswith("${"):
-            insert = f"${{{val}}}"
+        insert = val if str(val).startswith("/") else f"/{val}"
         new_text = text[: start if start >= 0 else len(text)]
         new_text += insert
         edit.setText(new_text)
