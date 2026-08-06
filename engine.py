@@ -14,6 +14,7 @@ import threading
 import time
 import traceback
 import json
+import ssl
 from datetime import date as dt_date
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -823,7 +824,14 @@ def _play_alert_sound(
     return played, None, stopped, error
 
 
-def _send_telegram_message(bot_token: str, chat_id: str, message: str, *, timeout_sec: float = 8.0) -> tuple[bool, str | None]:
+def _send_telegram_message(
+    bot_token: str,
+    chat_id: str,
+    message: str,
+    *,
+    timeout_sec: float = 8.0,
+    ssl_verify: bool = True,
+) -> tuple[bool, str | None]:
     token = str(bot_token or "").strip()
     target = str(chat_id or "").strip()
     text = str(message or "")
@@ -838,7 +846,8 @@ def _send_telegram_message(bot_token: str, chat_id: str, message: str, *, timeou
     req = urllib_request.Request(url=url, data=payload, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
     try:
-        with urllib_request.urlopen(req, timeout=max(1.0, float(timeout_sec))) as resp:
+        context = None if ssl_verify else ssl._create_unverified_context()
+        with urllib_request.urlopen(req, timeout=max(1.0, float(timeout_sec)), context=context) as resp:
             body = resp.read()
     except urllib_error.HTTPError as exc:
         detail = ""
@@ -1520,6 +1529,7 @@ class Action:
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
     telegram_message: Optional[str] = None
+    telegram_ssl_verify: bool = True
     key_delay_override_enabled: bool = False
     key_delay_override: Optional[KeyDelayConfig] = None
 
@@ -1799,10 +1809,12 @@ class Action:
         telegram_bot_token = None
         telegram_chat_id = None
         telegram_message = None
+        telegram_ssl_verify = True
         if typ == "telegram_message":
             telegram_bot_token = data.get("telegram_bot_token", data.get("bot_token"))
             telegram_chat_id = data.get("telegram_chat_id", data.get("chat_id"))
             telegram_message = data.get("telegram_message", data.get("message"))
+            telegram_ssl_verify = bool(data.get("telegram_ssl_verify", True))
         return cls(
             type=typ,
             name=data.get("name"),
@@ -1852,6 +1864,7 @@ class Action:
             telegram_bot_token=str(telegram_bot_token) if telegram_bot_token is not None else None,
             telegram_chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
             telegram_message=str(telegram_message) if telegram_message is not None else None,
+            telegram_ssl_verify=telegram_ssl_verify,
             key_delay_override_enabled=override_enabled,
             key_delay_override=key_delay_override,
         )
@@ -1899,6 +1912,7 @@ class Action:
             "telegram_bot_token": self.telegram_bot_token,
             "telegram_chat_id": self.telegram_chat_id,
             "telegram_message": self.telegram_message,
+            "telegram_ssl_verify": bool(getattr(self, "telegram_ssl_verify", True)),
             "key_delay_override_enabled": getattr(self, "key_delay_override_enabled", False),
             "key_delay_override": self.key_delay_override.to_dict() if getattr(self, "key_delay_override", None) else None,
         }
@@ -3559,7 +3573,8 @@ class MacroRunner:
                 return end_result(status="error", error="missing_chat_id")
             if not message.strip():
                 return end_result(status="error", error="missing_message")
-            ok, err = _send_telegram_message(token, chat_id, message)
+            ssl_verify = bool(getattr(action, "telegram_ssl_verify", True))
+            ok, err = _send_telegram_message(token, chat_id, message, ssl_verify=ssl_verify)
             self.engine._emit_event(
                 {
                     "type": "action",

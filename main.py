@@ -6646,6 +6646,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.telegram_chat_id_edit.setPlaceholderText("챗 ID (예: 123456789 또는 -100...)")
         self.telegram_message_edit = QtWidgets.QLineEdit()
         self.telegram_message_edit.setPlaceholderText("보낼 메시지")
+        self.telegram_ssl_verify_check = QtWidgets.QCheckBox("SSL 인증서 검증")
+        self.telegram_ssl_verify_check.setChecked(True)
+        self.telegram_ssl_verify_check.setToolTip("끄면 인증서 검증 없이 텔레그램으로 전송합니다. 개인 PC/개인망에서만 임시로 사용하세요.")
         self.telegram_test_btn = QtWidgets.QPushButton("테스트 메시지 보내기")
         self.telegram_test_btn.setToolTip("현재 입력값으로 텔레그램 메시지를 테스트 전송합니다.")
         self.desc_edit = QtWidgets.QLineEdit()
@@ -6741,6 +6744,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("텔레그램 봇 토큰", self.telegram_token_edit)
         form.addRow("텔레그램 챗 ID", self.telegram_chat_id_edit)
         form.addRow("텔레그램 메시지", self.telegram_message_edit)
+        form.addRow("", self.telegram_ssl_verify_check)
         form.addRow("텔레그램 테스트", self.telegram_test_btn)
         form.addRow("타이머 슬롯(1~20)", self.timer_slot_combo)
         form.addRow("타이머 값", self.timer_value_wrap)
@@ -6956,7 +6960,12 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.telegram_test_btn.setEnabled(False)
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            ok, err = _send_telegram_message(token, chat_id, message)
+            ok, err = _send_telegram_message(
+                token,
+                chat_id,
+                message,
+                ssl_verify=self.telegram_ssl_verify_check.isChecked(),
+            )
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
             self.telegram_test_btn.setEnabled(self._current_type() == "telegram_message")
@@ -7191,8 +7200,15 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._set_field_visible(self.telegram_token_edit, show_telegram)
         self._set_field_visible(self.telegram_chat_id_edit, show_telegram)
         self._set_field_visible(self.telegram_message_edit, show_telegram)
+        self._set_field_visible(self.telegram_ssl_verify_check, show_telegram)
         self._set_field_visible(self.telegram_test_btn, show_telegram)
-        for w in (self.telegram_token_edit, self.telegram_chat_id_edit, self.telegram_message_edit, self.telegram_test_btn):
+        for w in (
+            self.telegram_token_edit,
+            self.telegram_chat_id_edit,
+            self.telegram_message_edit,
+            self.telegram_ssl_verify_check,
+            self.telegram_test_btn,
+        ):
             w.setEnabled(show_telegram)
         self._set_field_visible(self.timer_slot_combo, show_timer)
         self._set_field_visible(self.timer_value_wrap, show_timer)
@@ -7342,6 +7358,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.telegram_token_edit.setText(str(getattr(act, "telegram_bot_token", "") or ""))
             self.telegram_chat_id_edit.setText(str(getattr(act, "telegram_chat_id", "") or ""))
             self.telegram_message_edit.setText(str(getattr(act, "telegram_message", "") or ""))
+            self.telegram_ssl_verify_check.setChecked(bool(getattr(act, "telegram_ssl_verify", True)))
         elif act.type == "timer":
             idx = self.timer_slot_combo.findData(getattr(act, "timer_index", 1))
             if idx >= 0:
@@ -7538,6 +7555,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             act.telegram_bot_token = bot_token
             act.telegram_chat_id = chat_id
             act.telegram_message = message_text
+            act.telegram_ssl_verify = self.telegram_ssl_verify_check.isChecked()
         elif typ == "timer":
             slot = int(self.timer_slot_combo.currentData() or 0)
             if slot < 1 or slot > 20:
