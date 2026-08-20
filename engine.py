@@ -52,6 +52,7 @@ ActionType = Literal[
     "mouse_down",
     "mouse_up",
     "mouse_move",
+    "mouse_wheel",
     "sleep",
     "sound_alert",
     "macro_cycle",
@@ -1514,6 +1515,9 @@ class Action:
     mouse_pos: Optional[tuple[int, int]] = None
     mouse_pos_raw: Optional[str] = None
     mouse_move_duration_ms: int = 0
+    wheel_direction: str = "down"
+    wheel_amount: int = 1
+    wheel_interval_ms: int = 50
     pixel_region: Optional[Region] = None
     pixel_region_raw: Optional[str] = None
     pixel_target: Optional[str] = None
@@ -1778,6 +1782,17 @@ class Action:
             mouse_move_duration_ms = max(0, int(float(mouse_move_duration_raw or 0)))
         except Exception:
             mouse_move_duration_ms = 0
+        wheel_direction = str(data.get("wheel_direction", "down") or "down").strip().lower()
+        if wheel_direction not in ("up", "down"):
+            wheel_direction = "down"
+        try:
+            wheel_amount = max(1, int(data.get("wheel_amount", data.get("wheel_count", 1)) or 1))
+        except Exception:
+            wheel_amount = 1
+        try:
+            wheel_interval_ms = max(0, int(data.get("wheel_interval_ms", 50) or 0))
+        except Exception:
+            wheel_interval_ms = 50
         group_repeat_raw = data.get("group_repeat")
         try:
             group_repeat = max(1, int(group_repeat_raw)) if group_repeat_raw not in (None, "") else None
@@ -1870,6 +1885,9 @@ class Action:
             mouse_pos=mouse_pos,
             mouse_pos_raw=mouse_pos_raw,
             mouse_move_duration_ms=mouse_move_duration_ms,
+            wheel_direction=wheel_direction,
+            wheel_amount=wheel_amount,
+            wheel_interval_ms=wheel_interval_ms,
             pixel_region=region,
             pixel_region_raw=region_raw,
             pixel_target=data.get("pixel_target"),
@@ -1925,6 +1943,9 @@ class Action:
             "mouse_pos": list(self.mouse_pos) if self.mouse_pos is not None else None,
             "mouse_pos_raw": self.mouse_pos_raw,
             "mouse_move_duration_ms": max(0, int(getattr(self, "mouse_move_duration_ms", 0) or 0)),
+            "wheel_direction": getattr(self, "wheel_direction", "down"),
+            "wheel_amount": max(1, int(getattr(self, "wheel_amount", 1) or 1)),
+            "wheel_interval_ms": max(0, int(getattr(self, "wheel_interval_ms", 50) or 0)),
             "pixel_region": list(self.pixel_region) if self.pixel_region is not None else None,
             "pixel_region_raw": self.pixel_region_raw,
             "pixel_target": self.pixel_target,
@@ -3774,6 +3795,22 @@ class MacroRunner:
                 self._sleep_with_condition_poll(gap_delay, allow_condition=False)
             return end_result()
 
+        if action.type == "mouse_wheel":
+            direction = str(getattr(action, "wheel_direction", "down") or "down").strip().lower()
+            amount = max(1, int(getattr(action, "wheel_amount", 1) or 1))
+            interval_ms = max(0, int(getattr(action, "wheel_interval_ms", 50) or 0))
+            delta = 120 if direction == "up" else -120
+            for i in range(amount):
+                if self._stop_event.is_set() and not self._running_stop_actions:
+                    return end_result(status="stopped", signal="break")
+                ok = self.engine._send_mouse_wheel(delta)
+                if not ok:
+                    return end_result(status="error", error="send_failed")
+                self.engine._emit_event({"type": "action", "action": "mouse_wheel", "direction": direction, "delta": delta})
+                if interval_ms > 0 and i < amount - 1:
+                    self._sleep_with_condition_poll(interval_ms, allow_condition=False)
+            return end_result(status="mouse_wheel", direction=direction, amount=amount)
+
         if action.type == "macro_cycle":
             target_ref = str(getattr(action, "macro_target", "") or "").strip()
             if not target_ref:
@@ -5168,6 +5205,24 @@ class MacroEngine:
                     return True
                 except Exception as exc2:
                     self._emit_log(f"소프트웨어 마우스 입력 실패: {exc2}")
+            return False
+
+    def _send_mouse_wheel(self, delta: int) -> bool:
+        backend = self._backend or self._software_backend
+        if backend is None:
+            return False
+        try:
+            backend.mouse_wheel(int(delta))
+            return True
+        except Exception as exc:
+            self._emit_log(f"마우스 휠 입력 실패({getattr(backend, 'mode', 'unknown')}): {exc}")
+            fb = self._software_backend
+            if fb and fb is not backend:
+                try:
+                    fb.mouse_wheel(int(delta))
+                    return True
+                except Exception as exc2:
+                    self._emit_log(f"소프트웨어 마우스 휠 입력 실패: {exc2}")
             return False
 
     def _key_state_detail(self, key: str) -> tuple[bool, Dict[str, Any]]:

@@ -180,6 +180,9 @@ class KeyboardBackend:
     def mouse_move(self, x: int, y: int):
         raise NotImplementedError
 
+    def mouse_wheel(self, delta: int):
+        raise NotImplementedError
+
     def test(self, key: str):
         """전송 테스트를 수행한다."""
         self.press(key)
@@ -271,6 +274,12 @@ def _send_mouse_move(x: int, y: int):
     user32.SetCursorPos(int(x), int(y))
 
 
+def _send_mouse_wheel(delta: int):
+    if user32 is None:
+        raise RuntimeError("SendInput(mouse_event) is unavailable on this platform.")
+    user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, int(delta), 0)
+
+
 def _current_cursor_pos() -> Optional[tuple[int, int]]:
     if user32 is None:
         return None
@@ -349,6 +358,9 @@ class SoftwareBackend(KeyboardBackend):
 
     def mouse_move(self, x: int, y: int):
         _send_mouse_move(x, y)
+
+    def mouse_wheel(self, delta: int):
+        _send_mouse_wheel(delta)
 
 
 class InterceptionBackend(KeyboardBackend):
@@ -522,6 +534,13 @@ class InterceptionBackend(KeyboardBackend):
         stroke.info = 0
         dev.send(stroke)
 
+    def _mouse_wheel_state(self) -> int:
+        for name in ("VerticalWheel", "Wheel", "MouseWheel"):
+            value = getattr(MouseState, name, None)
+            if value is not None:
+                return int(value)
+        return 0x0400
+
     def mouse_down(self, button: str, *, x: Optional[int] = None, y: Optional[int] = None):
         self._mouse_send(button, is_down=True, x=x, y=y)
 
@@ -554,5 +573,17 @@ class InterceptionBackend(KeyboardBackend):
         stroke.rawbtns = 0
         stroke.x = int(dx)
         stroke.y = int(dy)
+        stroke.info = 0
+        dev.send(stroke)
+
+    def mouse_wheel(self, delta: int):
+        dev = self._mouse_device()
+        stroke = dev.stroke.__class__()  # MouseStroke
+        stroke.state = self._mouse_wheel_state()
+        stroke.flags = 0
+        stroke.rolling = int(delta)
+        stroke.rawbtns = 0
+        stroke.x = 0
+        stroke.y = 0
         stroke.info = 0
         dev.send(stroke)

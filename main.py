@@ -279,6 +279,7 @@ ACTION_TYPE_OPTIONS = [
     ("마우스 누르기 (down)", "mouse_down"),
     ("마우스 떼기 (up)", "mouse_up"),
     ("마우스 이동", "mouse_move"),
+    ("마우스 휠", "mouse_wheel"),
     ("대기 (sleep)", "sleep"),
     ("소리 알림", "sound_alert"),
     ("다른 매크로 1사이클 실행", "macro_cycle"),
@@ -5932,6 +5933,13 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 if move_ms > 0:
                     value += f" ~{move_ms}ms"
             return value + suffix
+        if act.type == "mouse_wheel":
+            direction = str(getattr(act, "wheel_direction", "down") or "down").lower()
+            direction_txt = "위" if direction == "up" else "아래"
+            amount = max(1, int(getattr(act, "wheel_amount", 1) or 1))
+            interval = max(0, int(getattr(act, "wheel_interval_ms", 50) or 0))
+            interval_txt = f" / {interval}ms" if amount > 1 and interval > 0 else ""
+            return f"휠 {direction_txt} {amount}회{interval_txt}" + suffix
         if act.type == "sleep":
             return act.sleep_value_text() + suffix
         if act.type == "if":
@@ -6593,6 +6601,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("마우스 누르기 (down)", "mouse_down"),
             ("마우스 떼기 (up)", "mouse_up"),
             ("마우스 이동", "mouse_move"),
+            ("마우스 휠", "mouse_wheel"),
             ("대기 (sleep)", "sleep"),
             ("소리 알림", "sound_alert"),
             ("다른 매크로 1사이클 실행", "macro_cycle"),
@@ -6665,6 +6674,18 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_move_duration_spin.setSingleStep(10)
         self.mouse_move_duration_spin.setSuffix(" ms")
         self.mouse_move_duration_spin.setToolTip("0이면 즉시 이동, 0보다 크면 해당 시간 동안 부드럽게 이동합니다.")
+        self.wheel_direction_combo = QtWidgets.QComboBox()
+        self.wheel_direction_combo.addItem("아래로", "down")
+        self.wheel_direction_combo.addItem("위로", "up")
+        self.wheel_amount_spin = QtWidgets.QSpinBox()
+        self.wheel_amount_spin.setRange(1, 999)
+        self.wheel_amount_spin.setValue(1)
+        self.wheel_amount_spin.setSuffix(" 회")
+        self.wheel_interval_spin = QtWidgets.QSpinBox()
+        self.wheel_interval_spin.setRange(0, 5000)
+        self.wheel_interval_spin.setSingleStep(10)
+        self.wheel_interval_spin.setValue(50)
+        self.wheel_interval_spin.setSuffix(" ms")
         self.sleep_edit = QtWidgets.QLineEdit("0")
         self.sleep_edit.setPlaceholderText("예: 500, 1-3, 500~1500, /변수")
         self.sleep_edit.setToolTip("숫자/범위를 입력하고 오른쪽에서 단위를 선택하세요. 예: 500ms, 1-3, 0.5~1분, 0.25시")
@@ -6872,6 +6893,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("마우스 이동 기준", self.mouse_pos_mode_combo)
         form.addRow("마우스 좌표 x,y (선택)", self.mouse_pos_edit)
         form.addRow("마우스 이동 시간", self.mouse_move_duration_spin)
+        form.addRow("휠 방향", self.wheel_direction_combo)
+        form.addRow("휠 횟수", self.wheel_amount_spin)
+        form.addRow("휠 간격", self.wheel_interval_spin)
         form.addRow("반복 횟수", self.repeat_edit)
         form.addRow("일시중지 시 유지", self.pause_keep_check)
         form.addRow("Sleep 값", self.sleep_wrap)
@@ -7294,6 +7318,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_mouse_move_mode = typ == "mouse_move"
         show_mouse_move_duration = typ == "mouse_move"
         show_mouse_pos = typ in mouse_types
+        show_mouse_wheel = typ == "mouse_wheel"
         show_sleep = typ == "sleep"
         show_sound = typ == "sound_alert"
         sound_wait_mode = self._sound_wait_mode() if show_sound else "once"
@@ -7325,6 +7350,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_pos_edit.setEnabled(show_mouse_pos)
         self._set_field_visible(self.mouse_move_duration_spin, show_mouse_move_duration)
         self.mouse_move_duration_spin.setEnabled(show_mouse_move_duration)
+        for w in (self.wheel_direction_combo, self.wheel_amount_spin, self.wheel_interval_spin):
+            self._set_field_visible(w, show_mouse_wheel)
+            w.setEnabled(show_mouse_wheel)
         self._set_field_visible(self.repeat_edit, show_repeat)
         self.repeat_edit.setEnabled(show_repeat)
         self._set_field_visible(self.pause_keep_check, show_pause_keep)
@@ -7468,6 +7496,15 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.mouse_move_duration_spin.setValue(max(0, int(getattr(act, "mouse_move_duration_ms", 0) or 0)))
         except Exception:
             self.mouse_move_duration_spin.setValue(0)
+        _set_combo_data(self.wheel_direction_combo, getattr(act, "wheel_direction", "down"), fallback="down")
+        try:
+            self.wheel_amount_spin.setValue(max(1, int(getattr(act, "wheel_amount", 1) or 1)))
+        except Exception:
+            self.wheel_amount_spin.setValue(1)
+        try:
+            self.wheel_interval_spin.setValue(max(0, int(getattr(act, "wheel_interval_ms", 50) or 0)))
+        except Exception:
+            self.wheel_interval_spin.setValue(50)
         self._set_mouse_move_pos_mode("absolute")
         if act.type in ("mouse_click", "mouse_down", "mouse_up", "mouse_move"):
             btn_val = getattr(act, "mouse_button", None) or getattr(act, "key", None) or "mouse1"
@@ -7676,6 +7713,10 @@ class ActionEditDialog(QtWidgets.QDialog):
                 )
             else:
                 act.key_delay_override = None
+        elif typ == "mouse_wheel":
+            act.wheel_direction = str(self.wheel_direction_combo.currentData() or "down")
+            act.wheel_amount = max(1, int(self.wheel_amount_spin.value()))
+            act.wheel_interval_ms = max(0, int(self.wheel_interval_spin.value()))
         elif typ == "sleep":
             act.sleep_raw = self.sleep_edit.text().strip() or None
             act.sleep_unit = self.sleep_unit_combo.currentData() or "ms"
