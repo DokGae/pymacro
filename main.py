@@ -16314,6 +16314,190 @@ class VariableManagerDialog(QtWidgets.QDialog):
         if res == QtWidgets.QMessageBox.StandardButton.Discard:
             self._close_without_prompt()
             return
+
+
+class MacroStatusPopup(QtWidgets.QDialog):
+    def __init__(self, parent=None, *, state: dict | None = None, save_state_cb=None):
+        super().__init__(parent)
+        self._save_state_cb = save_state_cb
+        self._app_closing = False
+        self.setWindowTitle("매크로 상태")
+        self.setWindowFlag(QtCore.Qt.WindowType.Tool, True)
+        self.setMinimumSize(260, 126)
+        self.resize(300, 138)
+        self.setStyleSheet(
+            """
+            MacroStatusPopup {
+                background: #f7f8fa;
+            }
+            QLabel {
+                background: transparent;
+            }
+            QCheckBox {
+                color: #565f6b;
+                font-size: 11px;
+                spacing: 6px;
+            }
+            QCheckBox::indicator {
+                width: 22px;
+                height: 12px;
+                border-radius: 6px;
+                background: #d8dde5;
+            }
+            QCheckBox::indicator:checked {
+                background: #1f7ae0;
+            }
+            """
+        )
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        self.status_bar = QtWidgets.QFrame()
+        self.status_bar.setFixedHeight(4)
+        self.status_bar.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        layout.addWidget(self.status_bar)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setContentsMargins(0, 4, 0, 0)
+        top_row.setSpacing(10)
+
+        title_col = QtWidgets.QVBoxLayout()
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(2)
+
+        self.caption_label = QtWidgets.QLabel("MACRO STATUS")
+        caption_font = self.caption_label.font()
+        caption_font.setPointSize(8)
+        caption_font.setBold(True)
+        self.caption_label.setFont(caption_font)
+        self.caption_label.setStyleSheet("color: #8a94a3;")
+        title_col.addWidget(self.caption_label)
+
+        self.state_label = QtWidgets.QLabel("대기상태")
+        font = self.state_label.font()
+        font.setPointSize(17)
+        font.setBold(True)
+        self.state_label.setFont(font)
+        title_col.addWidget(self.state_label)
+        top_row.addLayout(title_col, stretch=1)
+
+        self.badge_label = QtWidgets.QLabel("WAIT")
+        self.badge_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.badge_label.setMinimumWidth(58)
+        self.badge_label.setFixedHeight(26)
+        badge_font = self.badge_label.font()
+        badge_font.setPointSize(9)
+        badge_font.setBold(True)
+        self.badge_label.setFont(badge_font)
+        top_row.addWidget(self.badge_label)
+        layout.addLayout(top_row)
+
+        self.detail_label = QtWidgets.QLabel("실행중: 없음")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setStyleSheet("color: #697386;")
+        layout.addWidget(self.detail_label)
+
+        bottom_row = QtWidgets.QHBoxLayout()
+        bottom_row.setContentsMargins(0, 2, 0, 0)
+        bottom_row.addStretch()
+
+        self.always_on_top_check = QtWidgets.QCheckBox("항상 위")
+        self.always_on_top_check.toggled.connect(self._toggle_always_on_top)
+        bottom_row.addWidget(self.always_on_top_check)
+        layout.addLayout(bottom_row)
+
+        self._restore_state(state or {})
+        self.update_state({})
+
+    def _toggle_always_on_top(self, checked: bool):
+        pos = self.pos()
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, bool(checked))
+        self.show()
+        self.move(pos)
+        self._save_state()
+
+    def _restore_state(self, state: dict):
+        always_on_top = bool(state.get("always_on_top", True))
+        self.always_on_top_check.blockSignals(True)
+        self.always_on_top_check.setChecked(always_on_top)
+        self.always_on_top_check.blockSignals(False)
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, always_on_top)
+        geo = state.get("geometry")
+        if isinstance(geo, list) and len(geo) == 4:
+            try:
+                self.setGeometry(*(int(v) for v in geo))
+            except Exception:
+                pass
+
+    def _collect_state(self, *, visible: bool | None = None) -> dict:
+        g = self.geometry()
+        return {
+            "visible": self.isVisible() if visible is None else bool(visible),
+            "always_on_top": self.always_on_top_check.isChecked(),
+            "geometry": [g.x(), g.y(), g.width(), g.height()],
+        }
+
+    def _save_state(self, *, visible: bool | None = None):
+        if callable(self._save_state_cb):
+            try:
+                self._save_state_cb(self._collect_state(visible=visible))
+            except Exception:
+                pass
+
+    def update_state(self, state: dict):
+        running = bool(state.get("running", False))
+        active = bool(state.get("active", False))
+        active_macro_count = int(state.get("active_macro_count", 0) or 0)
+        active_toggle_count = int(state.get("active_toggle_count", 0) or 0)
+        active_macro_names = [
+            str(name).strip()
+            for name in (state.get("active_macro_names") or [])
+            if str(name).strip()
+        ]
+
+        if not running or not active:
+            label = "정지상태"
+            color = "#e5484d"
+            badge = "STOP"
+            detail = "프로그램 비활성"
+        elif active_macro_count > 0:
+            label = "동작중"
+            color = "#1ea76b"
+            badge = "LIVE"
+            if active_macro_names:
+                detail = f"실행중: {', '.join(active_macro_names)}"
+            else:
+                detail = f"실행중: {active_macro_count}개"
+        else:
+            label = "대기상태"
+            color = "#d99a00"
+            badge = "WAIT"
+            detail = "실행중: 없음"
+
+        self.status_bar.setStyleSheet(f"background: {color}; border-radius: 2px;")
+        self.state_label.setText(label)
+        self.state_label.setStyleSheet(f"color: {color};")
+        self.badge_label.setText(badge)
+        self.badge_label.setStyleSheet(
+            f"color: {color}; background: rgba(255, 255, 255, 0.92); border: 1px solid {color}; border-radius: 13px;"
+        )
+        self.detail_label.setText(detail)
+
+    def moveEvent(self, event: QtGui.QMoveEvent):
+        super().moveEvent(event)
+        self._save_state()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent):
+        super().resizeEvent(event)
+        self._save_state()
+
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        self._save_state(visible=bool(self._app_closing and self.isVisible()))
+        return super().closeEvent(event)
+
+
 class MacroWindow(QtWidgets.QMainWindow):
     _macro_clipboard: list[Macro] | None = None
 
@@ -16345,6 +16529,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._image_viewer_state = self._state.get("image_viewer", {}) if isinstance(self._state, dict) else {}
         self._color_calc_state = self._state.get("color_calc", {}) if isinstance(self._state, dict) else {}
         self._preset_transfer_state = self._state.get("preset_transfer", {}) if isinstance(self._state, dict) else {}
+        self._macro_status_popup_state = self._state.get("macro_status_popup", {}) if isinstance(self._state, dict) else {}
         self._log_enabled = bool(self._state.get("log_enabled", True)) if isinstance(self._state, dict) else True
         history_state = self._state.get("profile_history", {}) if isinstance(self._state, dict) else {}
         self._recent_profiles: list[str] = self._dedupe_profile_paths(
@@ -16362,6 +16547,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._color_calc_dialog: ColorToleranceDialog | None = None
         self._keyboard_settings_dialog: KeyboardSettingsDialog | None = None
         self._variable_manager_dialog: VariableManagerDialog | None = None
+        self._macro_status_popup: MacroStatusPopup | None = None
         self._last_backend_state: dict | None = None
         pixel_state = self._state.get("pixel_test", {}) if isinstance(self._state, dict) else {}
         self._pixel_test_defaults = {
@@ -16440,6 +16626,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.poll_timer.setInterval(100)
         self.poll_timer.timeout.connect(self._poll_engine)
         self.poll_timer.start()
+        if bool(self._macro_status_popup_state.get("visible", False)):
+            QtCore.QTimer.singleShot(0, self._restore_macro_status_popup)
         self._status_hint = "상단 버튼=활성/일시정지/비활성화, 기능 메뉴=디버거/픽셀 테스트"
         self.statusBar().showMessage(self._status_hint)
         self._set_capture_status(self.screenshot_manager.is_running)
@@ -16517,6 +16705,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         for act in (new_action, load_action, save_action, save_as_action):
             file_menu.addAction(act)
         feature_menu = menu_bar.addMenu("기능(&G)")
+        status_popup_action = QtGui.QAction("매크로 상태 팝업", self)
+        status_popup_action.triggered.connect(self._open_macro_status_popup)
+        feature_menu.addAction(status_popup_action)
         screenshot_action = QtGui.QAction("스크린샷", self)
         screenshot_action.triggered.connect(self._open_screenshot_dialog)
         feature_menu.addAction(screenshot_action)
@@ -16545,6 +16736,34 @@ class MacroWindow(QtWidgets.QMainWindow):
         keyboard_settings_action = QtGui.QAction("키보드 설정", self)
         keyboard_settings_action.triggered.connect(self._open_keyboard_settings)
         settings_menu.addAction(keyboard_settings_action)
+
+    def _open_macro_status_popup(self):
+        if self._macro_status_popup is None:
+            self._macro_status_popup = MacroStatusPopup(
+                self,
+                state=self._macro_status_popup_state,
+                save_state_cb=self._persist_macro_status_popup_state,
+            )
+        self._update_macro_status_popup(self.engine.snapshot_state())
+        self._macro_status_popup.show()
+        self._macro_status_popup.raise_()
+        self._macro_status_popup.activateWindow()
+        self._persist_macro_status_popup_state(self._macro_status_popup._collect_state(visible=True))
+
+    def _restore_macro_status_popup(self):
+        self._open_macro_status_popup()
+
+    def _update_macro_status_popup(self, state: dict | None = None):
+        popup = getattr(self, "_macro_status_popup", None)
+        if popup is None or not popup.isVisible():
+            return
+        if state is None:
+            try:
+                state = self.engine.snapshot_state()
+            except Exception:
+                state = {}
+        popup.update_state(state or {})
+
     def _open_screenshot_dialog(self):
         if self._screenshot_dialog is None:
             self._screenshot_dialog = ScreenshotDialog(
@@ -17923,6 +18142,9 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _persist_image_viewer_state(self, data: dict):
         self._image_viewer_state = data or {}
         self._update_state("image_viewer", self._image_viewer_state)
+    def _persist_macro_status_popup_state(self, data: dict):
+        self._macro_status_popup_state = data or {}
+        self._update_state("macro_status_popup", self._macro_status_popup_state)
     def _persist_preset_transfer_state(self, data: dict):
         state = dict(self._preset_transfer_state) if isinstance(self._preset_transfer_state, dict) else {}
         state["sample_preset"] = data or {}
@@ -19217,6 +19439,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._fail_capture_hotkey_prev = pressed
     def _poll_engine(self):
         self._tick_fail_capture_hotkey()
+        self._update_macro_status_popup()
         cap_running = self.screenshot_manager.is_running
         if cap_running != getattr(self, "_last_capture_running", False):
             self._set_capture_status(cap_running)
@@ -19281,6 +19504,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         prev = self._last_backend_state or {}
         self._last_backend_state = backend
         self._update_keyboard_summary(backend, prev)
+        self._update_macro_status_popup(state)
     def _set_label(self, label: QtWidgets.QLabel, text: str, on: bool):
         label.setText(text)
         base = getattr(self, "_status_badge_style", "")
@@ -19552,6 +19776,14 @@ class MacroWindow(QtWidgets.QMainWindow):
         if self._color_calc_dialog:
             try:
                 self._color_calc_dialog._save_state()
+            except Exception:
+                pass
+        if self._macro_status_popup:
+            try:
+                self._macro_status_popup._app_closing = True
+                self._persist_macro_status_popup_state(
+                    self._macro_status_popup._collect_state(visible=self._macro_status_popup.isVisible())
+                )
             except Exception:
                 pass
         self._fail_capture_hotkey_prev = False

@@ -4648,7 +4648,36 @@ class MacroEngine:
         self._emit_state()
 
     def snapshot_state(self) -> Dict[str, Any]:
-        return {"running": self.running, "active": self.active, "paused": self.paused}
+        active_macro_count = 0
+        active_toggle_count = 0
+        active_macro_names: List[str] = []
+        try:
+            with self._lock:
+                runners = list(self._macro_runners.items())
+                toggle_states = dict(self._toggle_states)
+                macros = list(getattr(self._profile, "macros", []) or [])
+            for idx, runner in runners:
+                if runner and runner.is_alive():
+                    active_macro_count += 1
+                    try:
+                        macro = macros[idx]
+                        active_macro_names.append(self._macro_display_name(macro, idx))
+                    except Exception:
+                        active_macro_names.append(f"macro-{idx}")
+                    if bool(toggle_states.get(idx, False)):
+                        active_toggle_count += 1
+        except Exception:
+            active_macro_count = 0
+            active_toggle_count = 0
+            active_macro_names = []
+        return {
+            "running": self.running,
+            "active": self.active,
+            "paused": self.paused,
+            "active_macro_count": active_macro_count,
+            "active_toggle_count": active_toggle_count,
+            "active_macro_names": active_macro_names,
+        }
 
     def _emit_event(self, payload: Dict[str, Any]):
         self._events.put(payload)
