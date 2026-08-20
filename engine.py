@@ -40,6 +40,7 @@ from lib.pixel import (
     find_pattern_in_region,
 )
 from lib.processes import get_foreground_process
+from lib.windows import focus_window
 
 ConditionType = Literal["key", "pixel", "all", "any", "var", "timer", "schedule"]
 KeyMode = Literal["press", "down", "up", "hold", "released"]
@@ -68,6 +69,7 @@ ActionType = Literal[
     "timer",
     "telegram_message",
     "computer_shutdown",
+    "window_focus",
 ]
 GroupMode = Literal["all", "first_true", "first_true_continue", "first_true_return", "while", "repeat_n"]
 SoundWaitMode = Literal["once", "duration", "repeat"]
@@ -1530,6 +1532,13 @@ class Action:
     telegram_chat_id: Optional[str] = None
     telegram_message: Optional[str] = None
     telegram_ssl_verify: bool = True
+    window_title: Optional[str] = None
+    window_class: Optional[str] = None
+    window_process: Optional[str] = None
+    window_match_mode: str = "process_title_contains"
+    window_restore: bool = True
+    window_wait_ms: int = 150
+    window_fail_stop: bool = True
     key_delay_override_enabled: bool = False
     key_delay_override: Optional[KeyDelayConfig] = None
 
@@ -1815,6 +1824,20 @@ class Action:
             telegram_chat_id = data.get("telegram_chat_id", data.get("chat_id"))
             telegram_message = data.get("telegram_message", data.get("message"))
             telegram_ssl_verify = bool(data.get("telegram_ssl_verify", True))
+        window_match_mode = str(data.get("window_match_mode", "process_title_contains") or "process_title_contains")
+        if window_match_mode not in (
+            "process_title_contains",
+            "title_contains",
+            "title_exact",
+            "class_exact",
+            "process_exact",
+            "process_class",
+        ):
+            window_match_mode = "process_title_contains"
+        try:
+            window_wait_ms = max(0, int(data.get("window_wait_ms", 150) or 0))
+        except Exception:
+            window_wait_ms = 150
         return cls(
             type=typ,
             name=data.get("name"),
@@ -1865,6 +1888,13 @@ class Action:
             telegram_chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
             telegram_message=str(telegram_message) if telegram_message is not None else None,
             telegram_ssl_verify=telegram_ssl_verify,
+            window_title=str(data.get("window_title", data.get("title", "")) or "") or None,
+            window_class=str(data.get("window_class", data.get("class_name", "")) or "") or None,
+            window_process=str(data.get("window_process", data.get("process_name", "")) or "") or None,
+            window_match_mode=window_match_mode,
+            window_restore=bool(data.get("window_restore", True)),
+            window_wait_ms=window_wait_ms,
+            window_fail_stop=bool(data.get("window_fail_stop", True)),
             key_delay_override_enabled=override_enabled,
             key_delay_override=key_delay_override,
         )
@@ -1913,6 +1943,13 @@ class Action:
             "telegram_chat_id": self.telegram_chat_id,
             "telegram_message": self.telegram_message,
             "telegram_ssl_verify": bool(getattr(self, "telegram_ssl_verify", True)),
+            "window_title": self.window_title,
+            "window_class": self.window_class,
+            "window_process": self.window_process,
+            "window_match_mode": getattr(self, "window_match_mode", "process_title_contains"),
+            "window_restore": bool(getattr(self, "window_restore", True)),
+            "window_wait_ms": max(0, int(getattr(self, "window_wait_ms", 150) or 0)),
+            "window_fail_stop": bool(getattr(self, "window_fail_stop", True)),
             "key_delay_override_enabled": getattr(self, "key_delay_override_enabled", False),
             "key_delay_override": self.key_delay_override.to_dict() if getattr(self, "key_delay_override", None) else None,
         }
@@ -3551,6 +3588,42 @@ class MacroRunner:
                 repeat_count=sound_repeat_count if sound_wait_mode == "repeat" else 1,
                 error=sound_error,
             )
+
+        if action.type == "window_focus":
+            spec = {
+                "title": str(getattr(action, "window_title", "") or "").strip(),
+                "class_name": str(getattr(action, "window_class", "") or "").strip(),
+                "process_name": str(getattr(action, "window_process", "") or "").strip(),
+                "match_mode": str(getattr(action, "window_match_mode", "process_title_contains") or "process_title_contains"),
+            }
+            if not any(spec.get(k) for k in ("title", "class_name", "process_name")):
+                self.engine._emit_log("창 활성화 실패: 대상 조건이 비어 있습니다.")
+                return end_result(signal="break" if getattr(action, "window_fail_stop", True) else None, status="error", error="empty_window_spec")
+            wait_ms = max(0, int(getattr(action, "window_wait_ms", 150) or 0))
+            ok, info, err = focus_window(spec, restore=bool(getattr(action, "window_restore", True)), wait_ms=wait_ms)
+            title = str((info or {}).get("title", "") or spec.get("title") or "")
+            process_name = str((info or {}).get("process_name", "") or spec.get("process_name") or "")
+            self.engine._emit_event(
+                {
+                    "type": "action",
+                    "action": "window_focus",
+                    "ok": ok,
+                    "title": title,
+                    "process_name": process_name,
+                    "match_mode": spec.get("match_mode"),
+                }
+            )
+            if not ok:
+                self.engine._emit_log(f"창 활성화 실패: {process_name} / {title} ({err or 'unknown_error'})")
+                return end_result(
+                    signal="break" if getattr(action, "window_fail_stop", True) else None,
+                    status="error",
+                    error=err or "window_focus_failed",
+                    window_title=title,
+                    window_process=process_name,
+                )
+            self.engine._emit_log(f"창 활성화: {process_name} / {title}")
+            return end_result(status="window_focus", window_title=title, window_process=process_name)
 
         if action.type == "telegram_message":
             token_raw = str(getattr(action, "telegram_bot_token", "") or "").strip()

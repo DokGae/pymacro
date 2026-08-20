@@ -54,6 +54,7 @@ from lib.interception import Interception, KeyFilter, KeyState, MapVk, MouseFilt
 from lib.keyboard import get_keystate
 from lib.processes import get_foreground_process, list_processes
 from lib.pixel import RGB, Region, PixelPattern, PixelPatternPoint, capture_region
+from lib.windows import list_windows
 PATTERN_DIR = Path(__file__).parent / "pattern"
 PATTERN_FILE = PATTERN_DIR / "patterns.json"
 def _load_shared_patterns() -> dict[str, PixelPattern]:
@@ -281,6 +282,7 @@ ACTION_TYPE_OPTIONS = [
     ("대기 (sleep)", "sleep"),
     ("소리 알림", "sound_alert"),
     ("다른 매크로 1사이클 실행", "macro_cycle"),
+    ("창 활성화/포커스", "window_focus"),
     ("타이머 설정", "timer"),
     ("텔레그램 메시지", "telegram_message"),
     ("컴퓨터 종료", "computer_shutdown"),
@@ -1421,6 +1423,7 @@ class ActionTableWidget(QtWidgets.QTableWidget):
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
     def _type_combo(self, default_type: str = "press") -> QtWidgets.QComboBox:
         combo = QtWidgets.QComboBox()
+        combo.setMaxVisibleItems(24)
         for label, value in ACTION_TYPE_OPTIONS:
             combo.addItem(label, value)
         idx = combo.findData(default_type)
@@ -5949,6 +5952,12 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if act.type == "macro_cycle":
             target = str(getattr(act, "macro_target", "") or "").strip() or "대상 없음"
             return f"{target} (1사이클)" + suffix
+        if act.type == "window_focus":
+            title = str(getattr(act, "window_title", "") or "").strip()
+            process = str(getattr(act, "window_process", "") or "").strip()
+            class_name = str(getattr(act, "window_class", "") or "").strip()
+            target = " / ".join(part for part in (process, title or class_name) if part) or "대상 없음"
+            return f"포커스: {target}" + suffix
         if act.type == "pixel_get":
             region_text = act.pixel_region_raw or (
                 ",".join(str(v) for v in act.pixel_region) if act.pixel_region else ""
@@ -6405,6 +6414,118 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             return None
         data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         return data if isinstance(data, Action) else None
+
+
+class WindowPickerDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("창 선택")
+        self.resize(780, 430)
+        self._windows: list[dict] = []
+        self._selected: dict | None = None
+
+        layout = QtWidgets.QVBoxLayout(self)
+        top_row = QtWidgets.QHBoxLayout()
+        self.search_edit = QtWidgets.QLineEdit()
+        self.search_edit.setPlaceholderText("제목, 프로세스, 클래스 검색")
+        self.refresh_btn = QtWidgets.QPushButton("새로고침")
+        top_row.addWidget(self.search_edit, stretch=1)
+        top_row.addWidget(self.refresh_btn)
+        layout.addLayout(top_row)
+
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["제목", "프로세스", "클래스", "PID"])
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.table, stretch=1)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        self.selected_label = QtWidgets.QLabel("")
+        self.selected_label.setStyleSheet("color: #666;")
+        self.ok_btn = QtWidgets.QPushButton("선택")
+        self.cancel_btn = QtWidgets.QPushButton("취소")
+        btn_row.addWidget(self.selected_label, stretch=1)
+        btn_row.addWidget(self.ok_btn)
+        btn_row.addWidget(self.cancel_btn)
+        layout.addLayout(btn_row)
+
+        self.refresh_btn.clicked.connect(self._refresh)
+        self.search_edit.textChanged.connect(self._populate)
+        self.table.itemSelectionChanged.connect(self._sync_selected_label)
+        self.table.itemDoubleClicked.connect(lambda *_: self.accept())
+        self.ok_btn.clicked.connect(self.accept)
+        self.cancel_btn.clicked.connect(self.reject)
+        self._refresh()
+
+    def _refresh(self):
+        try:
+            self._windows = list_windows()
+        except Exception:
+            self._windows = []
+        self._populate()
+
+    def _populate(self, *_args):
+        query = self.search_edit.text().strip().casefold()
+        rows = []
+        for info in self._windows:
+            haystack = " ".join(
+                str(info.get(k, "") or "") for k in ("title", "process_name", "class_name", "pid")
+            ).casefold()
+            if query and query not in haystack:
+                continue
+            rows.append(info)
+        self.table.setRowCount(len(rows))
+        for row, info in enumerate(rows):
+            values = [
+                str(info.get("title", "") or ""),
+                str(info.get("process_name", "") or ""),
+                str(info.get("class_name", "") or ""),
+                str(info.get("pid", "") or ""),
+            ]
+            for col, value in enumerate(values):
+                item = QtWidgets.QTableWidgetItem(value)
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, info)
+                self.table.setItem(row, col, item)
+        if rows:
+            self.table.selectRow(0)
+        self._sync_selected_label()
+
+    def _current_info(self) -> dict | None:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        data = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
+        return data if isinstance(data, dict) else None
+
+    def _sync_selected_label(self):
+        info = self._current_info()
+        if not info:
+            self.selected_label.setText("선택된 창 없음")
+            return
+        self.selected_label.setText(
+            f"{info.get('process_name', '')} / {info.get('title', '')}"
+        )
+
+    def selected_window(self) -> dict | None:
+        return self._selected
+
+    def accept(self):
+        info = self._current_info()
+        if not info:
+            QtWidgets.QMessageBox.information(self, "창 선택", "선택할 창이 없습니다.")
+            return
+        self._selected = dict(info)
+        super().accept()
+
+
 class ActionEditDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -6463,6 +6584,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
         self.type_combo = QtWidgets.QComboBox()
+        self.type_combo.setMaxVisibleItems(28)
         for label, val in [
             ("탭 (press)", "press"),
             ("누르고 유지 (down)", "down"),
@@ -6474,6 +6596,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("대기 (sleep)", "sleep"),
             ("소리 알림", "sound_alert"),
             ("다른 매크로 1사이클 실행", "macro_cycle"),
+            ("창 활성화/포커스", "window_focus"),
             ("텔레그램 메시지", "telegram_message"),
             ("컴퓨터 종료", "computer_shutdown"),
             ("현재 매크로 중지 (macro_stop)", "macro_stop"),
@@ -6608,6 +6731,29 @@ class ActionEditDialog(QtWidgets.QDialog):
             self._refresh_macro_targets()
             _orig_macro_popup()
         self.macro_target_combo.showPopup = _show_macro_popup
+        self.window_pick_btn = QtWidgets.QPushButton("현재 창 목록에서 선택...")
+        self.window_match_mode_combo = QtWidgets.QComboBox()
+        self.window_match_mode_combo.addItem("프로세스 + 제목 포함 (추천)", "process_title_contains")
+        self.window_match_mode_combo.addItem("제목 포함", "title_contains")
+        self.window_match_mode_combo.addItem("제목 정확히 일치", "title_exact")
+        self.window_match_mode_combo.addItem("클래스명 일치", "class_exact")
+        self.window_match_mode_combo.addItem("프로세스명 일치", "process_exact")
+        self.window_match_mode_combo.addItem("프로세스 + 클래스명", "process_class")
+        self.window_title_edit = QtWidgets.QLineEdit()
+        self.window_title_edit.setPlaceholderText("예: Gersang")
+        self.window_process_edit = QtWidgets.QLineEdit()
+        self.window_process_edit.setPlaceholderText("예: Gersang.exe")
+        self.window_class_edit = QtWidgets.QLineEdit()
+        self.window_class_edit.setPlaceholderText("창 클래스명")
+        self.window_restore_check = QtWidgets.QCheckBox("최소화되어 있으면 복원")
+        self.window_restore_check.setChecked(True)
+        self.window_fail_stop_check = QtWidgets.QCheckBox("찾지 못하면 현재 매크로 중단")
+        self.window_fail_stop_check.setChecked(True)
+        self.window_wait_spin = QtWidgets.QSpinBox()
+        self.window_wait_spin.setRange(0, 5000)
+        self.window_wait_spin.setSingleStep(50)
+        self.window_wait_spin.setValue(150)
+        self.window_wait_spin.setSuffix(" ms")
         self.var_name_edit = _make_name_combo(placeholder="대상 변수를 선택하거나 직접 입력하세요", editable=True)
         self.var_name_edit.setToolTip("드롭다운에서 변수1~변수20 또는 등록한 변수명을 고르거나 직접 입력할 수 있습니다.")
         self._refresh_var_name_combo()
@@ -6737,6 +6883,14 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("라벨 이름", self.label_edit)
         form.addRow("점프 대상 라벨", self.goto_combo)
         form.addRow("실행할 매크로", self.macro_target_combo)
+        form.addRow("창 선택", self.window_pick_btn)
+        form.addRow("창 찾기 방식", self.window_match_mode_combo)
+        form.addRow("창 제목", self.window_title_edit)
+        form.addRow("프로세스명", self.window_process_edit)
+        form.addRow("클래스명", self.window_class_edit)
+        form.addRow("포커스 옵션", self.window_restore_check)
+        form.addRow("실패 처리", self.window_fail_stop_check)
+        form.addRow("포커스 후 대기", self.window_wait_spin)
         form.addRow("대상 변수", self.var_name_edit)
         form.addRow("변수 동작", self.var_update_mode_combo)
         form.addRow("입력 값", self.var_value_edit)
@@ -6789,6 +6943,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.var_name_edit.currentTextChanged.connect(lambda *_: self._sync_var_action_fields())
         self.type_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self.telegram_test_btn.clicked.connect(self._test_telegram_message)
+        self.window_pick_btn.clicked.connect(self._pick_window_target)
         self.sound_file_browse_btn.clicked.connect(self._browse_sound_file)
         self.sound_file_clear_btn.clicked.connect(self.sound_file_edit.clear)
         self.capture_mouse_pos_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F1"), self)
@@ -6933,6 +7088,14 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_pos_edit.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
         self.mouse_pos_edit.selectAll()
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"마우스 좌표 입력: {txt}", self, QtCore.QRect(), 1500)
+    def _pick_window_target(self):
+        dlg = WindowPickerDialog(self)
+        if _run_dialog_non_modal(dlg):
+            info = dlg.selected_window() or {}
+            self.window_title_edit.setText(str(info.get("title", "") or ""))
+            self.window_process_edit.setText(str(info.get("process_name", "") or ""))
+            self.window_class_edit.setText(str(info.get("class_name", "") or ""))
+            _set_combo_data(self.window_match_mode_combo, "process_title_contains", fallback="process_title_contains")
     def _test_telegram_message(self):
         token_raw = self.telegram_token_edit.text().strip()
         chat_raw = self.telegram_chat_id_edit.text().strip()
@@ -7139,6 +7302,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_label = typ == "label"
         show_goto = typ == "goto"
         show_macro_target = typ == "macro_cycle"
+        show_window_focus = typ == "window_focus"
         show_var = typ == "set_var"
         show_telegram = typ == "telegram_message"
         show_timer = typ == "timer"
@@ -7188,6 +7352,18 @@ class ActionEditDialog(QtWidgets.QDialog):
             self._refresh_macro_targets()
         self._set_field_visible(self.macro_target_combo, show_macro_target)
         self.macro_target_combo.setEnabled(show_macro_target)
+        for w in (
+            self.window_pick_btn,
+            self.window_match_mode_combo,
+            self.window_title_edit,
+            self.window_process_edit,
+            self.window_class_edit,
+            self.window_restore_check,
+            self.window_fail_stop_check,
+            self.window_wait_spin,
+        ):
+            self._set_field_visible(w, show_window_focus)
+            w.setEnabled(show_window_focus)
         if show_var:
             self._refresh_var_name_combo(self._current_var_name())
         self._set_field_visible(self.var_name_edit, show_var)
@@ -7326,6 +7502,20 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.label_edit.setText(act.label or "")
         self._refresh_goto_targets(act.goto_label or "")
         self._refresh_macro_targets(getattr(act, "macro_target", None) or "")
+        _set_combo_data(
+            self.window_match_mode_combo,
+            getattr(act, "window_match_mode", "process_title_contains"),
+            fallback="process_title_contains",
+        )
+        self.window_title_edit.setText(str(getattr(act, "window_title", "") or ""))
+        self.window_process_edit.setText(str(getattr(act, "window_process", "") or ""))
+        self.window_class_edit.setText(str(getattr(act, "window_class", "") or ""))
+        self.window_restore_check.setChecked(bool(getattr(act, "window_restore", True)))
+        self.window_fail_stop_check.setChecked(bool(getattr(act, "window_fail_stop", True)))
+        try:
+            self.window_wait_spin.setValue(max(0, int(getattr(act, "window_wait_ms", 150) or 0)))
+        except Exception:
+            self.window_wait_spin.setValue(150)
         raw_region = act.pixel_region_raw or ",".join(str(v) for v in (act.pixel_region or []))
         base_txt, offset_txt = _split_region_offset(raw_region) if raw_region else ("", "")
         self.region_edit.setText(base_txt)
@@ -7519,6 +7709,26 @@ class ActionEditDialog(QtWidgets.QDialog):
             if not macro_target:
                 raise ValueError("실행할 매크로를 선택하세요.")
             act.macro_target = macro_target
+        elif typ == "window_focus":
+            act.window_match_mode = str(self.window_match_mode_combo.currentData() or "process_title_contains")
+            act.window_title = self.window_title_edit.text().strip() or None
+            act.window_process = self.window_process_edit.text().strip() or None
+            act.window_class = self.window_class_edit.text().strip() or None
+            act.window_restore = self.window_restore_check.isChecked()
+            act.window_fail_stop = self.window_fail_stop_check.isChecked()
+            act.window_wait_ms = max(0, int(self.window_wait_spin.value()))
+            if not any((act.window_title, act.window_process, act.window_class)):
+                raise ValueError("창 제목/프로세스명/클래스명 중 하나는 입력하세요.")
+            if act.window_match_mode in ("title_contains", "title_exact") and not act.window_title:
+                raise ValueError("제목 기준 매칭은 창 제목을 입력하세요.")
+            if act.window_match_mode == "class_exact" and not act.window_class:
+                raise ValueError("클래스명 기준 매칭은 클래스명을 입력하세요.")
+            if act.window_match_mode == "process_exact" and not act.window_process:
+                raise ValueError("프로세스명 기준 매칭은 프로세스명을 입력하세요.")
+            if act.window_match_mode == "process_class" and (not act.window_process or not act.window_class):
+                raise ValueError("프로세스 + 클래스명 매칭은 프로세스명과 클래스명을 입력하세요.")
+            if act.window_match_mode == "process_title_contains" and (not act.window_process or not act.window_title):
+                raise ValueError("프로세스 + 제목 포함 매칭은 프로세스명과 창 제목을 입력하세요.")
         elif typ == "set_var":
             var_name = self._current_var_name()
             if not var_name:
