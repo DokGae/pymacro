@@ -8127,7 +8127,7 @@ class MacroDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
         self.name_edit = QtWidgets.QLineEdit()
-        self.trigger_edit = QtWidgets.QLineEdit()
+        self.trigger_edit = MacroKeyLineEdit()
         self.trigger_edit.setPlaceholderText("예: w 또는 mouse4 (조합은 아래 체크박스로 설정 후 추가)")
         self.trigger_menu_btn = QtWidgets.QToolButton()
         self.trigger_menu_btn.setText("목록")
@@ -8139,7 +8139,7 @@ class MacroDialog(QtWidgets.QDialog):
         self.trigger_mod_shift = QtWidgets.QCheckBox("Shift")
         self.trigger_mod_alt = QtWidgets.QCheckBox("Alt")
         self.trigger_mod_win = QtWidgets.QCheckBox("Win")
-        self.trigger_main_edit = QtWidgets.QLineEdit()
+        self.trigger_main_edit = MacroKeyLineEdit()
         self.trigger_main_edit.setPlaceholderText("주 키 (예: w, f1, mouse1)")
         self.trigger_main_edit.setClearButtonEnabled(True)
         self.trigger_mode_combo = QtWidgets.QComboBox()
@@ -8402,6 +8402,13 @@ class MacroDialog(QtWidgets.QDialog):
         add("마우스 X2 (mouse5)", "mouse5")
         menu.addSeparator()
         add("CapsLock (capslock)", "capslock")
+        add("Home", "home")
+        add("Insert", "insert")
+        add("PageUp (pgup)", "pgup")
+        add("PageDown (pgdn)", "pgdn")
+        add("End", "end")
+        add("ScrollLock (scroll)", "scroll")
+        add("Pause", "pause")
         for key in [
             "z",
             "x",
