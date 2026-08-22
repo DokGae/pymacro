@@ -47,6 +47,9 @@ _named_vk = {
     "caps": Vk.Capital,
     "capslock": Vk.Capital,
     "numlock": Vk.NumLock,
+    "scroll": Vk.Scroll,
+    "scrlock": Vk.Scroll,
+    "scrlk": Vk.Scroll,
     "scrolllock": Vk.Scroll,
     "apps": Vk.Apps,
     "app": Vk.Apps,
@@ -275,8 +278,11 @@ def vk_from_key(key: KeyLike) -> int:
     if isinstance(key, Vk):
         return int(key)
     if isinstance(key, str):
-        low = key.lower()
+        low = key.strip().lower()
         low = _modifier_aliases.get(low, low)
+        if len(low) > 1 and low not in _named_vk:
+            low = low.replace(" ", "").replace("-", "").replace("_", "")
+            low = _modifier_aliases.get(low, low)
         if low in _named_vk:
             return int(_named_vk[low])
         if len(key) == 1:
@@ -615,7 +621,11 @@ def _vk_code(key: KeyLike) -> int:
     if isinstance(key, int):
         return key
     if isinstance(key, str):
-        low = _modifier_aliases.get(key.lower(), key.lower())
+        low = key.strip().lower()
+        low = _modifier_aliases.get(low, low)
+        if len(low) > 1 and low not in _named_vk:
+            low = low.replace(" ", "").replace("-", "").replace("_", "")
+            low = _modifier_aliases.get(low, low)
         # 명시 매핑이 우선(길이와 무관)
         if low in _named_vk:
             return int(_named_vk[low])
@@ -624,8 +634,16 @@ def _vk_code(key: KeyLike) -> int:
     raise TypeError("key must be Vk, int(vk), 1-char string (e.g. 'r'), or 'esc'.")
 
 
+def _scan_code_with_prefix(vk: int) -> tuple[int, int]:
+    sc_ex = int(map_virtual_key(int(vk), MapVk.VkToScEx) or 0)
+    if sc_ex:
+        return sc_ex & 0xFF, sc_ex & 0xFF00
+    return int(map_virtual_key(int(vk), MapVk.VkToSc) or 0), 0
+
+
 def _scan_code(key: KeyLike) -> int:
-    return map_virtual_key(_vk_code(key), MapVk.VkToSc)
+    sc, _prefix = _scan_code_with_prefix(_vk_code(key))
+    return sc
 
 
 def get_interception() -> Interception | None:
@@ -636,7 +654,11 @@ def get_interception() -> Interception | None:
 def _send(key: KeyLike, state: KeyState, *, device=None, info: int = 0):
     dev = _require_device(device)
     vk = _vk_code(key)
-    sc = map_virtual_key(vk, MapVk.VkToSc)
+    sc, prefix = _scan_code_with_prefix(vk)
+    if prefix == 0xE000:
+        state = KeyState.E0Up if state == KeyState.Up else KeyState.E0Down
+    elif prefix == 0xE100:
+        state = KeyState.E1Up if state == KeyState.Up else KeyState.E1Down
 
     stroke = dev.stroke.__class__()  # KeyStroke
     stroke.code = sc
@@ -662,7 +684,8 @@ def get_keystate(key: KeyLike, async_: bool = True) -> bool:
 
 def to_scan_code(key: KeyLike) -> int:
     """주어진 키를 스캔 코드로 변환합니다."""
-    return map_virtual_key(_vk_code(key), MapVk.VkToSc)
+    sc, _prefix = _scan_code_with_prefix(_vk_code(key))
+    return sc
 
 
 def key_down(key: KeyLike, *, device=None, info: int = 0):

@@ -1411,6 +1411,32 @@ class InteractionDialog(QtWidgets.QDialog):
             _parse_name_list(self.allow_edit.text()),
             _parse_name_list(self.block_edit.text()),
         )
+class _ActionValueKeyDelegate(QtWidgets.QStyledItemDelegate):
+    def createEditor(self, parent, option, index):
+        editor = super().createEditor(parent, option, index)
+        editor.installEventFilter(self)
+        editor.setProperty("_action_row", index.row())
+        return editor
+
+    def eventFilter(self, editor, event):
+        if event.type() in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride) and isinstance(event, QtGui.QKeyEvent):
+            table = self.parent()
+            row = int(editor.property("_action_row") or -1)
+            if isinstance(table, ActionTableWidget) and row >= 0 and table._row_action_type(row) in ("press", "down", "up"):
+                key_name = _macro_key_from_qt_event(event)
+                if key_name:
+                    item = table.item(row, 1)
+                    if item is None:
+                        item = QtWidgets.QTableWidgetItem("")
+                        table.setItem(row, 1, item)
+                    item.setText(key_name)
+                    table.closeEditor(editor, QtWidgets.QAbstractItemDelegate.EndEditHint.NoHint)
+                    table.setCurrentItem(item)
+                    event.accept()
+                    return True
+        return super().eventFilter(editor, event)
+
+
 class ActionTableWidget(QtWidgets.QTableWidget):
     def __init__(self, parent=None):
         super().__init__(0, 2, parent)
@@ -1422,6 +1448,45 @@ class ActionTableWidget(QtWidgets.QTableWidget):
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.setItemDelegateForColumn(1, _ActionValueKeyDelegate(self))
+
+    def _row_action_type(self, row: int) -> str:
+        widget = self.cellWidget(row, 0)
+        if isinstance(widget, QtWidgets.QComboBox):
+            return str(widget.currentData() or "").strip().lower()
+        item = self.item(row, 0)
+        return item.text().strip().lower() if item else ""
+
+    def _capture_key_event(self, event: QtGui.QKeyEvent) -> bool:
+        if self.currentColumn() != 1:
+            return False
+        row = self.currentRow()
+        if row < 0 or self._row_action_type(row) not in ("press", "down", "up"):
+            return False
+        key_name = _macro_key_from_qt_event(event)
+        if not key_name:
+            return False
+        item = self.item(row, 1)
+        if item is None:
+            item = QtWidgets.QTableWidgetItem("")
+            self.setItem(row, 1, item)
+        item.setText(key_name)
+        self.closePersistentEditor(item)
+        self.setCurrentItem(item)
+        event.accept()
+        return True
+
+    def event(self, event: QtCore.QEvent):
+        if event.type() in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):
+            if isinstance(event, QtGui.QKeyEvent) and self._capture_key_event(event):
+                return True
+        return super().event(event)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent):
+        if self._capture_key_event(event):
+            return
+        super().keyPressEvent(event)
+
     def _type_combo(self, default_type: str = "press") -> QtWidgets.QComboBox:
         combo = QtWidgets.QComboBox()
         combo.setMaxVisibleItems(24)
@@ -4069,12 +4134,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         if not callable(self._open_screenshot_dialog):
             self.screenshot_btn.setEnabled(False)
         self._update_hud_text()
-        QtGui.QShortcut(
-            QtGui.QKeySequence("Ctrl+F1"),
-            self,
-            self._start_region_selection,
-            context=QtCore.Qt.ShortcutContext.ApplicationShortcut,
-        )
     def _validate_dir(self, path: Path) -> Path:
         # 뷰어가 fallback으로 사용하는 기본 스크린샷 폴더는 항상 유지한다.
         try:
@@ -6970,9 +7029,6 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.window_pick_btn.clicked.connect(self._pick_window_target)
         self.sound_file_browse_btn.clicked.connect(self._browse_sound_file)
         self.sound_file_clear_btn.clicked.connect(self.sound_file_edit.clear)
-        self.capture_mouse_pos_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F1"), self)
-        self.capture_mouse_pos_shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        self.capture_mouse_pos_shortcut.activated.connect(self._capture_mouse_position)
         self._toggle_override_enabled()
         self._sync_var_action_fields()
         if action:
@@ -9973,17 +10029,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         layout.addWidget(self.log_view, 1)
         self.resize(900, 600)
     def _install_viewer_shortcuts(self):
-        shortcuts = {
-            "Ctrl+Left": QtCore.Qt.Key.Key_Left,
-            "Ctrl+Right": QtCore.Qt.Key.Key_Right,
-            "Ctrl+Up": QtCore.Qt.Key.Key_Up,
-            "Ctrl+Down": QtCore.Qt.Key.Key_Down,
-        }
-        for seq, key in shortcuts.items():
-            sc = QtGui.QShortcut(QtGui.QKeySequence(seq), self)
-            sc.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            sc.activated.connect(lambda key=key: self._forward_viewer_key(key, QtCore.Qt.KeyboardModifier.ControlModifier))
-            self._viewer_shortcuts.append(sc)
+        self._viewer_shortcuts.clear()
     def show_and_raise(self):
         self.show()
         self.raise_()
@@ -12280,12 +12326,6 @@ class PixelPatternManagerDialog(QtWidgets.QDialog):
         self.clear_point_btn.clicked.connect(self._clear_points)
         self.save_btn.clicked.connect(self._save_and_mark_dirty)
         self.close_btn.clicked.connect(self.accept)
-        QtGui.QShortcut(
-            QtGui.QKeySequence("F3"),
-            self,
-            self._add_point_from_cursor,
-            context=QtCore.Qt.ShortcutContext.ApplicationShortcut,
-        )
         self.resize(520, 640)
     def _load_patterns(self):
         self._loading_patterns = True
@@ -16911,9 +16951,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._show_apply_feedback(ok)
     def _install_shortcuts(self):
         """설정 적용 단축키 등 공용 단축키 등록."""
-        self.apply_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+P"), self)
-        self.apply_shortcut.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
-        self.apply_shortcut.activated.connect(self._handle_apply_click)
+        self.apply_shortcut = None
     # UI ------------------------------------------------------------------
     def _build_ui(self):
         central = QtWidgets.QWidget()
@@ -16942,16 +16980,12 @@ class MacroWindow(QtWidgets.QMainWindow):
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("파일(&F)")
         new_action = QtGui.QAction("새로 만들기", self)
-        new_action.setShortcut("Ctrl+N")
         new_action.triggered.connect(self._new_profile)
         load_action = QtGui.QAction("불러오기", self)
-        load_action.setShortcut("Ctrl+O")
         load_action.triggered.connect(self._load_profile)
         save_action = QtGui.QAction("저장", self)
-        save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(self._save_profile)
         save_as_action = QtGui.QAction("다른 이름으로 저장", self)
-        save_as_action.setShortcut("Ctrl+Shift+S")
         save_as_action.triggered.connect(self._save_profile_as)
         for act in (new_action, load_action, save_action, save_as_action):
             file_menu.addAction(act)

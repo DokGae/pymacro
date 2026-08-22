@@ -14,6 +14,7 @@ from lib.interception import MouseState
 user32 = ctypes.windll.user32 if sys.platform.startswith("win") else None
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_SCANCODE = 0x0008
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
@@ -191,11 +192,23 @@ class KeyboardBackend:
 def _sendinput_key(vk: int, *, is_down: bool = True):
     if user32 is None:
         raise RuntimeError("SendInput is unavailable on this platform.")
-    scan = user32.MapVirtualKeyW(int(vk), 0)
+    vk = int(vk)
+    if vk == int(keyboard.Vk.Pause):
+        flags = 0 if is_down else KEYEVENTF_KEYUP
+        ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=0)
+        inp = INPUT(type=INPUT_KEYBOARD, ki=ki)
+        sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        if sent != 1:
+            raise RuntimeError("SendInput failed")
+        return
+    scan_ex = user32.MapVirtualKeyW(vk, 4)
+    scan = int(scan_ex & 0xFF) if scan_ex else int(user32.MapVirtualKeyW(vk, 0))
     flags = KEYEVENTF_SCANCODE
+    if scan_ex & 0xE000:
+        flags |= KEYEVENTF_EXTENDEDKEY
     if not is_down:
         flags |= KEYEVENTF_KEYUP
-    ki = KEYBDINPUT(wVk=int(vk), wScan=int(scan), dwFlags=flags, time=0, dwExtraInfo=0)
+    ki = KEYBDINPUT(wVk=vk, wScan=int(scan), dwFlags=flags, time=0, dwExtraInfo=0)
     inp = INPUT(type=INPUT_KEYBOARD, ki=ki)
     sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
     if sent != 1:
