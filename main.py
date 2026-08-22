@@ -561,6 +561,23 @@ def _macro_key_text_from_qt_event(event: QtGui.QKeyEvent) -> str | None:
     return normalize_trigger_key("+".join(parts))
 
 
+_KEY_CAPTURE_BYPASS_CTRL_KEYS = {"a", "c", "s", "v", "x", "y", "z"}
+
+
+def _should_bypass_key_capture(event: QtGui.QKeyEvent) -> bool:
+    key_name = _macro_key_from_qt_event(event)
+    if key_name not in _KEY_CAPTURE_BYPASS_CTRL_KEYS:
+        return False
+    modifiers = event.modifiers()
+    if not (modifiers & QtCore.Qt.KeyboardModifier.ControlModifier):
+        return False
+    blocked = (
+        QtCore.Qt.KeyboardModifier.AltModifier
+        | QtCore.Qt.KeyboardModifier.MetaModifier
+    )
+    return not bool(modifiers & blocked)
+
+
 def _looks_like_variable_key_text(text: str) -> bool:
     raw = str(text or "").strip()
     return raw.startswith(("/", "@", "${"))
@@ -579,6 +596,8 @@ class MacroKeyLineEdit(QtWidgets.QLineEdit):
 
     def _should_capture_event(self, event: QtGui.QKeyEvent) -> bool:
         if self._manual_text_mode():
+            return False
+        if _should_bypass_key_capture(event):
             return False
         key_name = _macro_key_from_qt_event(event)
         if not key_name:
@@ -1420,6 +1439,8 @@ class _ActionValueKeyDelegate(QtWidgets.QStyledItemDelegate):
 
     def eventFilter(self, editor, event):
         if event.type() in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride) and isinstance(event, QtGui.QKeyEvent):
+            if _should_bypass_key_capture(event):
+                return False
             table = self.parent()
             row = int(editor.property("_action_row") or -1)
             if isinstance(table, ActionTableWidget) and row >= 0 and table._row_action_type(row) in ("press", "down", "up"):
@@ -1458,6 +1479,8 @@ class ActionTableWidget(QtWidgets.QTableWidget):
         return item.text().strip().lower() if item else ""
 
     def _capture_key_event(self, event: QtGui.QKeyEvent) -> bool:
+        if _should_bypass_key_capture(event):
+            return False
         if self.currentColumn() != 1:
             return False
         row = self.currentRow()
@@ -16991,6 +17014,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         load_action = QtGui.QAction("불러오기", self)
         load_action.triggered.connect(self._load_profile)
         save_action = QtGui.QAction("저장", self)
+        save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(self._save_profile)
         save_as_action = QtGui.QAction("다른 이름으로 저장", self)
         save_as_action.triggered.connect(self._save_profile_as)
