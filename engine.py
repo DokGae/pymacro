@@ -4628,8 +4628,13 @@ class MacroEngine:
         if mode is None:
             return
 
+        changed = False
         suspended = False
-        for idx, runner in list(self._macro_runners.items()):
+        active_indices = set(self._macro_runners.keys())
+        active_indices.update(int(i) for i in self._manual_active_indices)
+        active_indices.update(int(i) for i, on in self._toggle_states.items() if on)
+        active_indices.update(int(i) for i in self._once_latched_indices)
+        for idx in sorted(active_indices):
             if idx == actor_idx:
                 continue
             target_macro: Optional[Macro] = None
@@ -4641,13 +4646,18 @@ class MacroEngine:
                 continue
             if not self._interaction_target_allowed(actor_macro, actor_idx, target_macro, idx):
                 continue
+            runner = self._macro_runners.get(idx)
             toggle_on = bool(self._toggle_states.get(idx, False))
-            is_toggle_runner = runner.is_alive() and toggle_on
+            is_toggle_runner = bool(runner and runner.is_alive() and toggle_on)
             if mode == "stop":
-                runner.stop()
-                self._macro_runners.pop(idx, None)
+                if runner:
+                    runner.stop()
+                    self._macro_runners.pop(idx, None)
                 self._clear_macro_state(idx)
+                changed = True
             elif mode == "suspend":
+                if runner is None:
+                    continue
                 if is_toggle_runner:
                     self._suspended_toggle_indices.add(idx)
                     self._suspended_toggle_states[idx] = toggle_on
@@ -4662,12 +4672,15 @@ class MacroEngine:
                     runner.stop(release_inputs=False, run_stop_actions=False)
                 self._macro_runners.pop(idx, None)
                 self._clear_macro_state(idx)
+                changed = True
                 suspended = True
         if mode == "suspend" and suspended:
             self._guard_macro_idx = actor_idx
         self._select_backend(self._input_mode, log=True, allow_fallback=True)
         # 키 반복(초기 지연) 동안 눌림 상태가 끊겨 보이지 않도록 여유를 둔다.
         self._swallow_stale_sec = max(self.tick * 25, 1.0)
+        if changed:
+            self._emit_state()
 
     @property
     def events(self) -> "queue.Queue[Dict[str, Any]]":
