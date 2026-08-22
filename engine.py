@@ -4842,7 +4842,40 @@ class MacroEngine:
         self._refresh_swallow(self._get_app_context(force=True))
         self._emit_state()
 
-    def toggle_macro_manual(self, idx: int, *, ignore_app_scope: bool = False) -> tuple[bool, str]:
+    def run_macro_once_manual(self, idx: int, *, ignore_app_scope: bool = False) -> tuple[bool, str]:
+        try:
+            macro_idx = int(idx)
+        except Exception:
+            return False, "invalid_index"
+        with self._lock:
+            macros = list(self._profile.macros)
+        if macro_idx < 0 or macro_idx >= len(macros):
+            return False, "not_found"
+        macro = macros[macro_idx]
+        if not self.running:
+            return False, "engine_not_running"
+        if not self.active or self.paused:
+            return False, "engine_inactive"
+        if not getattr(macro, "enabled", True):
+            return False, "macro_disabled"
+        if not ignore_app_scope and not self._macro_matches_app(macro, self._get_app_context()):
+            return False, "scope_mismatch"
+        runner = self._macro_runners.get(macro_idx)
+        if runner is not None and runner.is_alive():
+            return False, "already_running"
+        self._apply_macro_interaction(macro_idx)
+        run_macro = copy.deepcopy(macro)
+        run_macro.cycle_count = 1
+        self._once_latched_indices.add(macro_idx)
+        self._toggle_states[macro_idx] = True
+        runner = MacroRunner(run_macro, self, macro_idx)
+        self._macro_runners[macro_idx] = runner
+        runner.start()
+        self._emit_log(f"1회 수동 실행: {self._macro_display_name(macro, macro_idx)}")
+        self._emit_state()
+        return True, "started"
+
+    def toggle_macro_repeat_manual(self, idx: int, *, ignore_app_scope: bool = False) -> tuple[bool, str]:
         try:
             macro_idx = int(idx)
         except Exception:
@@ -4859,7 +4892,7 @@ class MacroEngine:
                 runner.stop()
             self._toggle_states[macro_idx] = False
             self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != macro_idx}
-            self._emit_log(f"수동 중지: {self._macro_display_name(macro, macro_idx)}")
+            self._emit_log(f"반복 수동 중지: {self._macro_display_name(macro, macro_idx)}")
             self._emit_state()
             return True, "stopped"
         if not self.running:
@@ -4874,16 +4907,12 @@ class MacroEngine:
         if runner is not None and runner.is_alive():
             return False, "already_running"
         self._apply_macro_interaction(macro_idx)
-        run_macro = copy.deepcopy(macro)
-        if any(_normalize_macro_mode(getattr(t, "mode", "hold"), default=getattr(macro, "mode", "hold")) == "once" for t in self._macro_triggers(macro)):
-            run_macro.cycle_count = 1
-            self._once_latched_indices.add(macro_idx)
         self._manual_active_indices.add(macro_idx)
         self._toggle_states[macro_idx] = True
-        runner = MacroRunner(run_macro, self, macro_idx)
+        runner = MacroRunner(copy.deepcopy(macro), self, macro_idx)
         self._macro_runners[macro_idx] = runner
         runner.start()
-        self._emit_log(f"수동 실행: {self._macro_display_name(macro, macro_idx)}")
+        self._emit_log(f"반복 수동 실행: {self._macro_display_name(macro, macro_idx)}")
         self._emit_state()
         return True, "started"
 
@@ -5781,6 +5810,7 @@ class MacroEngine:
                 getattr(macro, "cycle_count", None) not in (None, 0) or terminal_status == "macro_stop"
             ):
                 self._hold_exhausted_indices.add(idx)
+            self._emit_state()
 
     def _loop(self):
         self._emit_state()
@@ -5907,6 +5937,7 @@ class MacroEngine:
         self._hold_exhausted_indices.clear()
 
     def _stop_other_macros(self, except_idx: Optional[int] = None):
+        changed = False
         for idx, runner in list(self._macro_runners.items()):
             if except_idx is not None and idx == except_idx:
                 continue
@@ -5917,8 +5948,12 @@ class MacroEngine:
             runner.stop(release_inputs=False, run_stop_actions=False)
             self._macro_runners.pop(idx, None)
             self._clear_macro_state(idx)
+            changed = True
+        if changed:
+            self._emit_state()
 
     def _suspend_other_macros(self, except_idx: Optional[int] = None):
+        changed = False
         for idx, runner in list(self._macro_runners.items()):
             if except_idx is not None and idx == except_idx:
                 continue
@@ -5943,8 +5978,11 @@ class MacroEngine:
                 runner.stop(release_inputs=False, run_stop_actions=False)
             self._macro_runners.pop(idx, None)
             self._clear_macro_state(idx)
+            changed = True
         if except_idx is not None:
             self._guard_macro_idx = except_idx
+        if changed:
+            self._emit_state()
 
     def _resume_suspended_toggles(self):
         # Restore held inputs for suspended non-toggle macros so their one-time holds survive temporary guard macros.

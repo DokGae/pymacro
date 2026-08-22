@@ -290,14 +290,15 @@ ACTION_TYPE_OPTIONS = [
     ("텔레그램 메시지", "telegram_message"),
     ("컴퓨터 종료", "computer_shutdown"),
 ]
-MACRO_TABLE_COL_RUN = 0
-MACRO_TABLE_COL_ORDER = 1
-MACRO_TABLE_COL_NAME = 2
-MACRO_TABLE_COL_TRIGGER = 3
-MACRO_TABLE_COL_MODE = 4
-MACRO_TABLE_COL_ENABLED = 5
-MACRO_TABLE_COL_SCOPE = 6
-MACRO_TABLE_COL_DESC = 7
+MACRO_TABLE_COL_ORDER = 0
+MACRO_TABLE_COL_NAME = 1
+MACRO_TABLE_COL_TRIGGER = 2
+MACRO_TABLE_COL_MODE = 3
+MACRO_TABLE_COL_ENABLED = 4
+MACRO_TABLE_COL_SCOPE = 5
+MACRO_TABLE_COL_RUN_ONCE = 6
+MACRO_TABLE_COL_RUN_REPEAT = 7
+MACRO_TABLE_COL_DESC = 8
 SOUND_FILE_DIALOG_FILTER = (
     "Audio Files (*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.wma *.mid *.midi);;All Files (*.*)"
 )
@@ -17721,12 +17722,13 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _build_macro_group(self):
         group = QtWidgets.QGroupBox("매크로 목록 (기본 액션 + 조건)")
         layout = QtWidgets.QVBoxLayout(group)
-        self.macro_table = QtWidgets.QTableWidget(0, 8)
-        self.macro_table.setHorizontalHeaderLabels(["실행", "순번", "이름", "트리거", "모드", "활성", "범위", "설명"])
+        self.macro_table = QtWidgets.QTableWidget(0, 9)
+        self.macro_table.setHorizontalHeaderLabels(["순번", "이름", "트리거", "모드", "활성", "범위", "1회실행", "반복실행", "설명"])
         header = self.macro_table.horizontalHeader()
         header.setDefaultSectionSize(90)
         header.setMinimumSectionSize(60)
-        header.resizeSection(MACRO_TABLE_COL_RUN, 54)
+        header.resizeSection(MACRO_TABLE_COL_RUN_ONCE, 72)
+        header.resizeSection(MACRO_TABLE_COL_RUN_REPEAT, 72)
         header.setStretchLastSection(True)
         self.macro_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.macro_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -18597,15 +18599,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             mode_text,
             "ON" if is_enabled else "OFF",
             scope_text,
-            getattr(macro, "description", "") or "",
         ]
-        run_btn = QtWidgets.QToolButton()
-        run_btn.setText("실행")
-        run_btn.setToolTip("버튼 트리거: 토글/홀드는 켜기/끄기, 1회 실행은 1사이클 실행")
-        run_btn.clicked.connect(lambda _checked=False, r=row: self._toggle_macro_manual_from_row(r))
-        self.macro_table.setCellWidget(row, MACRO_TABLE_COL_RUN, run_btn)
-        for offset, val in enumerate(values):
-            col = MACRO_TABLE_COL_ORDER + offset
+        for col, val in enumerate(values):
             item = QtWidgets.QTableWidgetItem(val)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, macro)
             if col in (MACRO_TABLE_COL_ORDER, MACRO_TABLE_COL_MODE, MACRO_TABLE_COL_ENABLED, MACRO_TABLE_COL_SCOPE):
@@ -18613,7 +18608,24 @@ class MacroWindow(QtWidgets.QMainWindow):
             if not is_enabled:
                 item.setBackground(disabled_bg)
             self.macro_table.setItem(row, col, item)
-        self._update_macro_run_button(row)
+        once_btn = QtWidgets.QToolButton()
+        once_btn.setText("1회")
+        once_btn.setToolTip("앱 범위와 무관하게 이 매크로를 1사이클만 실행합니다.")
+        self._configure_macro_run_button(once_btn)
+        once_btn.clicked.connect(lambda _checked=False, r=row: self._run_macro_once_from_row(r))
+        repeat_btn = QtWidgets.QToolButton()
+        repeat_btn.setText("반복")
+        repeat_btn.setToolTip("앱 범위와 무관하게 이 매크로를 반복 실행합니다. 다시 누르면 중지합니다.")
+        self._configure_macro_run_button(repeat_btn)
+        repeat_btn.clicked.connect(lambda _checked=False, r=row: self._toggle_macro_repeat_from_row(r))
+        self.macro_table.setCellWidget(row, MACRO_TABLE_COL_RUN_ONCE, self._macro_run_button_cell(once_btn))
+        self.macro_table.setCellWidget(row, MACRO_TABLE_COL_RUN_REPEAT, self._macro_run_button_cell(repeat_btn))
+        desc_item = QtWidgets.QTableWidgetItem(getattr(macro, "description", "") or "")
+        desc_item.setData(QtCore.Qt.ItemDataRole.UserRole, macro)
+        if not is_enabled:
+            desc_item.setBackground(disabled_bg)
+        self.macro_table.setItem(row, MACRO_TABLE_COL_DESC, desc_item)
+        self._update_macro_run_buttons_for_row(row)
     def _refresh_macros(self):
         self._loading_profile = True
         self.macro_table.setRowCount(0)
@@ -18704,49 +18716,137 @@ class MacroWindow(QtWidgets.QMainWindow):
 
     def _row_for_widget(self, widget: QtWidgets.QWidget) -> int:
         for row in range(self.macro_table.rowCount()):
-            if self.macro_table.cellWidget(row, MACRO_TABLE_COL_RUN) is widget:
-                return row
+            for col in (MACRO_TABLE_COL_RUN_ONCE, MACRO_TABLE_COL_RUN_REPEAT):
+                cell = self.macro_table.cellWidget(row, col)
+                if cell is widget or (cell is not None and cell.isAncestorOf(widget)):
+                    return row
         return -1
 
     def _manual_active_macro_rows(self) -> set[int]:
         return {int(i) for i in getattr(self, "_manual_active_indices", set()) or set()}
 
-    def _update_macro_run_button(self, row: int):
-        btn = self.macro_table.cellWidget(row, MACRO_TABLE_COL_RUN)
-        if not isinstance(btn, QtWidgets.QToolButton):
-            return
+    def _macro_run_button_cell(self, btn: QtWidgets.QToolButton) -> QtWidgets.QWidget:
+        cell = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(cell)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(btn, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        cell.setLayout(layout)
+        return cell
+
+    def _macro_run_button_from_cell(self, row: int, col: int) -> QtWidgets.QToolButton | None:
+        cell = self.macro_table.cellWidget(row, col)
+        if isinstance(cell, QtWidgets.QToolButton):
+            return cell
+        if isinstance(cell, QtWidgets.QWidget):
+            btn = cell.findChild(QtWidgets.QToolButton)
+            if isinstance(btn, QtWidgets.QToolButton):
+                return btn
+        return None
+
+    def _configure_macro_run_button(self, btn: QtWidgets.QToolButton):
+        btn.setAutoRaise(False)
+        btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        btn.setFixedHeight(24)
+        btn.setMinimumWidth(58)
+        btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+
+    def _apply_macro_run_button_style(self, btn: QtWidgets.QToolButton, tone: str):
+        palette = {
+            "once": ("#f8fafc", "#cbd5e1", "#1f2937", "#eef4ff", "#bfdbfe", "#e2e8f0"),
+            "repeat": ("#ecfdf3", "#86c894", "#166534", "#dcfce7", "#63b875", "#bbf7d0"),
+            "stop": ("#dc2626", "#b91c1c", "#ffffff", "#b91c1c", "#991b1b", "#991b1b"),
+        }.get(tone, ("#f8fafc", "#cbd5e1", "#1f2937", "#eef4ff", "#bfdbfe", "#e2e8f0"))
+        bg, border, fg, hover_bg, hover_border, pressed_bg = palette
+        btn.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: 5px;
+                color: {fg};
+                font-size: 11px;
+                font-weight: 600;
+                padding: 2px 8px;
+            }}
+            QToolButton:hover {{
+                background: {hover_bg};
+                border-color: {hover_border};
+            }}
+            QToolButton:pressed {{
+                background: {pressed_bg};
+            }}
+            QToolButton:disabled {{
+                background: #f1f5f9;
+                border-color: #d7dee8;
+                color: #94a3b8;
+            }}
+            """
+        )
+
+    def _update_macro_run_buttons_for_row(self, row: int):
+        once_btn = self._macro_run_button_from_cell(row, MACRO_TABLE_COL_RUN_ONCE)
+        repeat_btn = self._macro_run_button_from_cell(row, MACRO_TABLE_COL_RUN_REPEAT)
+        macro = self._macro_from_row(row)
+        is_enabled = bool(getattr(macro, "enabled", True)) if macro else False
         active = row in self._manual_active_macro_rows()
-        btn.setText("중지" if active else "실행")
-        if active:
-            btn.setStyleSheet("background: #d64545; color: #ffffff; font-weight: bold;")
-        else:
-            btn.setStyleSheet("")
+        if isinstance(once_btn, QtWidgets.QToolButton):
+            once_btn.setText("1회")
+            once_btn.setEnabled(is_enabled and not active)
+            once_btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor if once_btn.isEnabled() else QtCore.Qt.CursorShape.ArrowCursor))
+            self._apply_macro_run_button_style(once_btn, "once")
+        if isinstance(repeat_btn, QtWidgets.QToolButton):
+            repeat_btn.setText("중지" if active else "반복")
+            repeat_btn.setEnabled(active or is_enabled)
+            repeat_btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor if repeat_btn.isEnabled() else QtCore.Qt.CursorShape.ArrowCursor))
+            self._apply_macro_run_button_style(repeat_btn, "stop" if active else "repeat")
 
     def _update_macro_run_buttons(self):
         for row in range(self.macro_table.rowCount()):
-            self._update_macro_run_button(row)
+            self._update_macro_run_buttons_for_row(row)
 
-    def _toggle_macro_manual_from_row(self, row: int):
+    def _resolve_button_row(self, fallback_row: int) -> int:
         sender = self.sender()
         if isinstance(sender, QtWidgets.QWidget):
             live_row = self._row_for_widget(sender)
             if live_row >= 0:
-                row = live_row
+                return live_row
+        return fallback_row
+
+    def _run_macro_once_from_row(self, row: int):
+        row = self._resolve_button_row(row)
         macro = self._macro_from_row(row)
         if not macro:
             return
-        ok, status = self.engine.toggle_macro_manual(row)
+        ok, status = self.engine.run_macro_once_manual(row, ignore_app_scope=True)
         if not ok:
-            messages = {
-                "engine_not_running": "엔진이 실행 중이 아닙니다.",
-                "engine_inactive": "엔진이 비활성/일시정지 상태입니다.",
-                "macro_disabled": "비활성 매크로입니다.",
-                "scope_mismatch": "현재 앱 범위 밖입니다.",
-                "already_running": "이미 다른 방식으로 실행 중입니다.",
-            }
-            self._append_log(f"버튼 실행 실패: {messages.get(status, status)}")
+            self._append_log(f"1회 실행 실패: {self._manual_run_status_text(status)}")
             return
-        self._append_log(f"버튼 실행: {macro.name or macro.trigger_label(include_mode=False)} ({status})")
+        self._append_log(f"1회 실행: {macro.name or macro.trigger_label(include_mode=False)} ({status})")
+
+    def _manual_run_status_text(self, status: str) -> str:
+        messages = {
+            "engine_not_running": "엔진이 실행 중이 아닙니다.",
+            "engine_inactive": "엔진이 비활성/일시정지 상태입니다.",
+            "macro_disabled": "비활성 매크로입니다.",
+            "scope_mismatch": "현재 앱 범위 밖입니다.",
+            "already_running": "이미 실행 중입니다.",
+            "invalid_index": "잘못된 매크로 순번입니다.",
+            "not_found": "매크로를 찾을 수 없습니다.",
+        }
+        return messages.get(status, status)
+
+    def _toggle_macro_repeat_from_row(self, row: int):
+        row = self._resolve_button_row(row)
+        macro = self._macro_from_row(row)
+        if not macro:
+            return
+        ok, status = self.engine.toggle_macro_repeat_manual(row, ignore_app_scope=True)
+        if not ok:
+            self._append_log(f"반복 실행 실패: {self._manual_run_status_text(status)}")
+            return
+        self._append_log(f"반복 실행: {macro.name or macro.trigger_label(include_mode=False)} ({status})")
         self._update_macro_run_buttons()
     def _toggle_macro_enabled_from_row(self, row: int):
         macro = self._macro_from_row(row)
@@ -18764,7 +18864,7 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _on_macro_table_double_clicked(self, index: QtCore.QModelIndex):
         if not index.isValid():
             return
-        if index.column() in (MACRO_TABLE_COL_RUN, MACRO_TABLE_COL_ENABLED):
+        if index.column() in (MACRO_TABLE_COL_RUN_ONCE, MACRO_TABLE_COL_RUN_REPEAT, MACRO_TABLE_COL_ENABLED):
             return
         self._edit_macro()
     def _renumber_macro_rows(self):
