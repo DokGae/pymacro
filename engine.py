@@ -4356,6 +4356,7 @@ class MacroEngine:
         self._active_hold_triggers: Set[tuple[int, int]] = set()
         self._toggle_states: Dict[int, bool] = {}
         self._manual_active_indices: Set[int] = set()
+        self._manual_scope_bypass_indices: Set[int] = set()
         # once 트리거를 toggle처럼 래치해 1사이클 종료까지 유지한다.
         self._once_latched_indices: Set[int] = set()
         self._recent_sends: Dict[str, float] = {}
@@ -4866,6 +4867,7 @@ class MacroEngine:
         self._apply_macro_interaction(macro_idx)
         run_macro = copy.deepcopy(macro)
         run_macro.cycle_count = 1
+        self._manual_scope_bypass_indices.add(macro_idx)
         self._once_latched_indices.add(macro_idx)
         self._toggle_states[macro_idx] = True
         runner = MacroRunner(run_macro, self, macro_idx)
@@ -4891,6 +4893,7 @@ class MacroEngine:
             if runner:
                 runner.stop()
             self._toggle_states[macro_idx] = False
+            self._manual_scope_bypass_indices.discard(macro_idx)
             self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != macro_idx}
             self._emit_log(f"반복 수동 중지: {self._macro_display_name(macro, macro_idx)}")
             self._emit_state()
@@ -4908,6 +4911,7 @@ class MacroEngine:
             return False, "already_running"
         self._apply_macro_interaction(macro_idx)
         self._manual_active_indices.add(macro_idx)
+        self._manual_scope_bypass_indices.add(macro_idx)
         self._toggle_states[macro_idx] = True
         runner = MacroRunner(copy.deepcopy(macro), self, macro_idx)
         self._macro_runners[macro_idx] = runner
@@ -5680,7 +5684,8 @@ class MacroEngine:
                 runner.stop()
             self._clear_macro_state(idx)
             return
-        if not self._macro_matches_app(macro, app_ctx):
+        scope_bypassed = idx in self._manual_scope_bypass_indices
+        if not scope_bypassed and not self._macro_matches_app(macro, app_ctx):
             runner = self._macro_runners.pop(idx, None)
             if runner:
                 runner.stop()
@@ -5698,6 +5703,7 @@ class MacroEngine:
         hold_raw_prev: Dict[int, bool] = {}
         hold_key_sets: Dict[int, Set[str]] = {}
         once_requested = False
+        state_changed = False
         for trig_idx, trig in enumerate(triggers):
             trig_mode = _normalize_macro_mode(getattr(trig, "mode", "hold"), default="hold")
             if trig_mode != "hold":
@@ -5716,6 +5722,7 @@ class MacroEngine:
                     if toggle_on:
                         toggle_on = False
                         self._toggle_states[idx] = False
+                        state_changed = True
                 else:
                     active_holds.discard((idx, trig_idx))
             else:
@@ -5745,9 +5752,17 @@ class MacroEngine:
                         self._once_latched_indices.add(idx)
                         toggle_on = True
                         self._toggle_states[idx] = True
+                        state_changed = True
                     else:
-                        toggle_on = not toggle_on
+                        if manual_active and toggle_on:
+                            manual_active = False
+                            self._manual_active_indices.discard(idx)
+                            self._manual_scope_bypass_indices.discard(idx)
+                            toggle_on = False
+                        else:
+                            toggle_on = not toggle_on
                         self._toggle_states[idx] = toggle_on
+                        state_changed = True
 
         self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != idx} | active_holds
         self._toggle_states[idx] = toggle_on
@@ -5781,6 +5796,8 @@ class MacroEngine:
                 pass
             else:
                 self._toggle_states[idx] = False
+                self._manual_active_indices.discard(idx)
+                self._manual_scope_bypass_indices.discard(idx)
                 if runner.should_finish_first_cycle():
                     if not runner.first_cycle_done():
                         runner.request_stop_after_cycle()
@@ -5806,10 +5823,13 @@ class MacroEngine:
             self._toggle_states[idx] = False
             self._once_latched_indices.discard(idx)
             self._manual_active_indices.discard(idx)
+            self._manual_scope_bypass_indices.discard(idx)
             if macro.mode == "hold" and (
                 getattr(macro, "cycle_count", None) not in (None, 0) or terminal_status == "macro_stop"
             ):
                 self._hold_exhausted_indices.add(idx)
+            self._emit_state()
+        elif state_changed:
             self._emit_state()
 
     def _loop(self):
@@ -5922,6 +5942,7 @@ class MacroEngine:
         self._active_hold_triggers.clear()
         self._toggle_states.clear()
         self._manual_active_indices.clear()
+        self._manual_scope_bypass_indices.clear()
         self._once_latched_indices.clear()
         self._guard_macro_idx = None
         self._suspended_toggle_indices.clear()
@@ -6101,6 +6122,7 @@ class MacroEngine:
         self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != macro_idx}
         self._toggle_states.pop(macro_idx, None)
         self._manual_active_indices.discard(macro_idx)
+        self._manual_scope_bypass_indices.discard(macro_idx)
         self._once_latched_indices.discard(macro_idx)
         if macro_idx not in self._suspended_toggle_indices:
             self._suspended_toggle_cycles.pop(macro_idx, None)
