@@ -71,6 +71,8 @@ ActionType = Literal[
     "telegram_message",
     "computer_shutdown",
     "window_focus",
+    "touch_keyboard_open",
+    "touch_keyboard_close",
 ]
 GroupMode = Literal["all", "first_true", "first_true_continue", "first_true_return", "while", "repeat_n"]
 SoundWaitMode = Literal["once", "duration", "repeat"]
@@ -629,6 +631,84 @@ def _mci_send_string(command: str, *, return_length: int = 0) -> tuple[int, str]
         return code, str(buf.value or "")
     code = int(winmm.mciSendStringW(command, None, 0, None))
     return code, ""
+
+
+def _touch_keyboard_candidates() -> list[str]:
+    candidates: list[str] = []
+    env_keys = ("CommonProgramFiles", "CommonProgramW6432", "ProgramFiles", "ProgramFiles(x86)")
+    for env_key in env_keys:
+        base = os.environ.get(env_key)
+        if not base:
+            continue
+        if env_key.startswith("CommonProgram"):
+            candidates.append(str(Path(base) / "microsoft shared" / "ink" / "TabTip.exe"))
+        else:
+            candidates.append(str(Path(base) / "Common Files" / "microsoft shared" / "ink" / "TabTip.exe"))
+    candidates.append(r"C:\Program Files\Common Files\microsoft shared\ink\TabTip.exe")
+    candidates.append(r"C:\Program Files (x86)\Common Files\microsoft shared\ink\TabTip.exe")
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in candidates:
+        norm = item.lower()
+        if norm in seen:
+            continue
+        seen.add(norm)
+        result.append(item)
+    return result
+
+
+def _shell_execute_show(path: str) -> tuple[bool, Optional[str]]:
+    try:
+        result = int(ctypes.windll.shell32.ShellExecuteW(None, "open", path, None, None, 1))
+    except Exception as exc:
+        return False, str(exc)
+    if result <= 32:
+        return False, f"ShellExecuteW failed: {result}"
+    return True, None
+
+
+def _open_touch_keyboard() -> tuple[bool, str, Optional[str]]:
+    if not sys.platform.startswith("win"):
+        return False, "", "windows_only"
+    windir = os.environ.get("WINDIR") or r"C:\Windows"
+    osk_path = str(Path(windir) / "System32" / "osk.exe")
+    ok, err = _shell_execute_show(osk_path)
+    if ok:
+        return True, osk_path, None
+    for path in _touch_keyboard_candidates():
+        try:
+            if Path(path).exists():
+                ok, err = _shell_execute_show(path)
+                if ok:
+                    return True, path, None
+        except Exception:
+            continue
+    return False, "", err or "touch_keyboard_open_failed"
+
+
+def _close_touch_keyboard() -> tuple[bool, Optional[str]]:
+    if not sys.platform.startswith("win"):
+        return False, "windows_only"
+    ok_any = False
+    errors: list[str] = []
+    for image in ("TabTip.exe", "osk.exe"):
+        try:
+            proc = subprocess.run(
+                ["taskkill", "/im", image, "/f"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=2.0,
+            )
+            if proc.returncode == 0:
+                ok_any = True
+            elif proc.stderr:
+                err = proc.stderr.strip()
+                if err and "not found" not in err.lower():
+                    errors.append(err)
+        except Exception as exc:
+            errors.append(str(exc))
+    return True, None if ok_any or not errors else "; ".join(errors)
 
 
 def _normalize_mouse_trigger_key(key: str) -> str:
@@ -3645,6 +3725,37 @@ class MacroRunner:
                 )
             self.engine._emit_log(f"창 활성화: {process_name} / {title}")
             return end_result(status="window_focus", window_title=title, window_process=process_name)
+
+        if action.type == "touch_keyboard_open":
+            ok, source, err = _open_touch_keyboard()
+            self.engine._emit_event(
+                {
+                    "type": "action",
+                    "action": "touch_keyboard_open",
+                    "ok": ok,
+                    "source": source,
+                }
+            )
+            if not ok:
+                self.engine._emit_log(f"화상 키보드 열기 실패: {err or 'unknown_error'}")
+                return end_result(status="error", error=err or "touch_keyboard_open_failed")
+            self.engine._emit_log(f"화상 키보드 열기: {source}")
+            return end_result(status="touch_keyboard_open", source=source)
+
+        if action.type == "touch_keyboard_close":
+            ok, err = _close_touch_keyboard()
+            self.engine._emit_event(
+                {
+                    "type": "action",
+                    "action": "touch_keyboard_close",
+                    "ok": ok,
+                }
+            )
+            if not ok or err:
+                self.engine._emit_log(f"화상 키보드 닫기 실패: {err or 'unknown_error'}")
+                return end_result(status="error", error=err or "touch_keyboard_close_failed")
+            self.engine._emit_log("화상 키보드 닫기")
+            return end_result(status="touch_keyboard_close")
 
         if action.type == "telegram_message":
             token_raw = str(getattr(action, "telegram_bot_token", "") or "").strip()

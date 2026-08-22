@@ -284,6 +284,8 @@ ACTION_TYPE_OPTIONS = [
     ("소리 알림", "sound_alert"),
     ("다른 매크로 1사이클 실행", "macro_cycle"),
     ("창 활성화/포커스", "window_focus"),
+    ("화상 키보드 열기", "touch_keyboard_open"),
+    ("화상 키보드 닫기", "touch_keyboard_close"),
     ("타이머 설정", "timer"),
     ("텔레그램 메시지", "telegram_message"),
     ("컴퓨터 종료", "computer_shutdown"),
@@ -6048,6 +6050,10 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             class_name = str(getattr(act, "window_class", "") or "").strip()
             target = " / ".join(part for part in (process, title or class_name) if part) or "대상 없음"
             return f"포커스: {target}" + suffix
+        if act.type == "touch_keyboard_open":
+            return "화상 키보드 열기" + suffix
+        if act.type == "touch_keyboard_close":
+            return "화상 키보드 닫기" + suffix
         if act.type == "pixel_get":
             region_text = act.pixel_region_raw or (
                 ",".join(str(v) for v in act.pixel_region) if act.pixel_region else ""
@@ -6688,6 +6694,8 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("소리 알림", "sound_alert"),
             ("다른 매크로 1사이클 실행", "macro_cycle"),
             ("창 활성화/포커스", "window_focus"),
+            ("화상 키보드 열기", "touch_keyboard_open"),
+            ("화상 키보드 닫기", "touch_keyboard_close"),
             ("텔레그램 메시지", "telegram_message"),
             ("컴퓨터 종료", "computer_shutdown"),
             ("현재 매크로 중지 (macro_stop)", "macro_stop"),
