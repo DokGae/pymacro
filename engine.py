@@ -4355,6 +4355,7 @@ class MacroEngine:
         self._hold_raw_state: Dict[tuple[int, int], bool] = {}
         self._active_hold_triggers: Set[tuple[int, int]] = set()
         self._toggle_states: Dict[int, bool] = {}
+        self._manual_active_indices: Set[int] = set()
         # once 트리거를 toggle처럼 래치해 1사이클 종료까지 유지한다.
         self._once_latched_indices: Set[int] = set()
         self._recent_sends: Dict[str, float] = {}
@@ -4841,6 +4842,51 @@ class MacroEngine:
         self._refresh_swallow(self._get_app_context(force=True))
         self._emit_state()
 
+    def toggle_macro_manual(self, idx: int, *, ignore_app_scope: bool = False) -> tuple[bool, str]:
+        try:
+            macro_idx = int(idx)
+        except Exception:
+            return False, "invalid_index"
+        with self._lock:
+            macros = list(self._profile.macros)
+        if macro_idx < 0 or macro_idx >= len(macros):
+            return False, "not_found"
+        macro = macros[macro_idx]
+        if macro_idx in self._manual_active_indices:
+            self._manual_active_indices.discard(macro_idx)
+            runner = self._macro_runners.pop(macro_idx, None)
+            if runner:
+                runner.stop()
+            self._toggle_states[macro_idx] = False
+            self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != macro_idx}
+            self._emit_log(f"수동 중지: {self._macro_display_name(macro, macro_idx)}")
+            self._emit_state()
+            return True, "stopped"
+        if not self.running:
+            return False, "engine_not_running"
+        if not self.active or self.paused:
+            return False, "engine_inactive"
+        if not getattr(macro, "enabled", True):
+            return False, "macro_disabled"
+        if not ignore_app_scope and not self._macro_matches_app(macro, self._get_app_context()):
+            return False, "scope_mismatch"
+        runner = self._macro_runners.get(macro_idx)
+        if runner is not None and runner.is_alive():
+            return False, "already_running"
+        self._apply_macro_interaction(macro_idx)
+        run_macro = copy.deepcopy(macro)
+        if any(_normalize_macro_mode(getattr(t, "mode", "hold"), default=getattr(macro, "mode", "hold")) == "once" for t in self._macro_triggers(macro)):
+            run_macro.cycle_count = 1
+            self._once_latched_indices.add(macro_idx)
+        self._manual_active_indices.add(macro_idx)
+        self._toggle_states[macro_idx] = True
+        runner = MacroRunner(run_macro, self, macro_idx)
+        self._macro_runners[macro_idx] = runner
+        runner.start()
+        self._emit_log(f"수동 실행: {self._macro_display_name(macro, macro_idx)}")
+        self._emit_state()
+        return True, "started"
+
     def start(self):
         if self.running:
             return
@@ -4876,6 +4922,7 @@ class MacroEngine:
             with self._lock:
                 runners = list(self._macro_runners.items())
                 toggle_states = dict(self._toggle_states)
+                manual_active_indices = sorted(int(i) for i in self._manual_active_indices)
                 macros = list(getattr(self._profile, "macros", []) or [])
             for idx, runner in runners:
                 if runner and runner.is_alive():
@@ -4891,6 +4938,7 @@ class MacroEngine:
             active_macro_count = 0
             active_toggle_count = 0
             active_macro_names = []
+            manual_active_indices = []
         return {
             "running": self.running,
             "active": self.active,
@@ -4898,6 +4946,7 @@ class MacroEngine:
             "active_macro_count": active_macro_count,
             "active_toggle_count": active_toggle_count,
             "active_macro_names": active_macro_names,
+            "manual_active_indices": manual_active_indices,
         }
 
     def _emit_event(self, payload: Dict[str, Any]):
@@ -5613,6 +5662,7 @@ class MacroEngine:
             return
         runner = self._macro_runners.get(idx)
         triggers = self._macro_triggers(macro)
+        manual_active = idx in self._manual_active_indices
         was_active_hold = any(k[0] == idx for k in self._active_hold_triggers)
         toggle_on = bool(self._toggle_states.get(idx, False))
         active_holds: Set[tuple[int, int]] = {k for k in self._active_hold_triggers if k[0] == idx}
@@ -5681,7 +5731,7 @@ class MacroEngine:
             else:
                 self._hold_exhausted_indices.discard(idx)
 
-        should_run = toggle_on or bool(active_holds) or once_requested
+        should_run = manual_active or toggle_on or bool(active_holds) or once_requested
         if hold_blocked:
             should_run = False
 
@@ -5726,6 +5776,7 @@ class MacroEngine:
             self._macro_runners.pop(idx, None)
             self._toggle_states[idx] = False
             self._once_latched_indices.discard(idx)
+            self._manual_active_indices.discard(idx)
             if macro.mode == "hold" and (
                 getattr(macro, "cycle_count", None) not in (None, 0) or terminal_status == "macro_stop"
             ):
@@ -5840,6 +5891,7 @@ class MacroEngine:
         self._hold_blocked_by_extra_mods.clear()
         self._active_hold_triggers.clear()
         self._toggle_states.clear()
+        self._manual_active_indices.clear()
         self._once_latched_indices.clear()
         self._guard_macro_idx = None
         self._suspended_toggle_indices.clear()
@@ -6010,6 +6062,7 @@ class MacroEngine:
             self._hold_blocked_by_extra_mods.pop(key, None)
         self._active_hold_triggers = {k for k in self._active_hold_triggers if k[0] != macro_idx}
         self._toggle_states.pop(macro_idx, None)
+        self._manual_active_indices.discard(macro_idx)
         self._once_latched_indices.discard(macro_idx)
         if macro_idx not in self._suspended_toggle_indices:
             self._suspended_toggle_cycles.pop(macro_idx, None)
