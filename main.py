@@ -283,7 +283,7 @@ ACTION_TYPE_OPTIONS = [
     ("대기 (sleep)", "sleep"),
     ("소리 알림", "sound_alert"),
     ("다른 매크로 1사이클 실행", "macro_cycle"),
-    ("창 활성화/포커스", "window_focus"),
+    ("프로그램 제어", "process_control"),
     ("화상 키보드 열기", "touch_keyboard_open"),
     ("화상 키보드 닫기", "touch_keyboard_close"),
     ("타이머 설정", "timer"),
@@ -6046,7 +6046,18 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if act.type == "macro_cycle":
             target = str(getattr(act, "macro_target", "") or "").strip() or "대상 없음"
             return f"{target} (1사이클)" + suffix
-        if act.type == "window_focus":
+        if act.type in ("window_focus", "process_control"):
+            mode = "focus" if act.type == "window_focus" else str(getattr(act, "process_control_action", "focus") or "focus")
+            if mode == "launch":
+                target = str(getattr(act, "process_path", "") or "").strip() or "실행 파일 없음"
+                return f"실행: {target}" + suffix
+            if mode == "terminate":
+                target = (
+                    str(getattr(act, "process_path", "") or "").strip()
+                    or str(getattr(act, "window_process", "") or "").strip()
+                    or "대상 없음"
+                )
+                return f"종료: {target}" + suffix
             title = str(getattr(act, "window_title", "") or "").strip()
             process = str(getattr(act, "window_process", "") or "").strip()
             class_name = str(getattr(act, "window_class", "") or "").strip()
@@ -6695,7 +6706,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("대기 (sleep)", "sleep"),
             ("소리 알림", "sound_alert"),
             ("다른 매크로 1사이클 실행", "macro_cycle"),
-            ("창 활성화/포커스", "window_focus"),
+            ("프로그램 제어", "process_control"),
             ("화상 키보드 열기", "touch_keyboard_open"),
             ("화상 키보드 닫기", "touch_keyboard_close"),
             ("텔레그램 메시지", "telegram_message"),
@@ -6844,7 +6855,25 @@ class ActionEditDialog(QtWidgets.QDialog):
             self._refresh_macro_targets()
             _orig_macro_popup()
         self.macro_target_combo.showPopup = _show_macro_popup
+        self.process_control_action_combo = QtWidgets.QComboBox()
+        self.process_control_action_combo.addItem("창 활성화/포커스", "focus")
+        self.process_control_action_combo.addItem("프로그램 실행", "launch")
+        self.process_control_action_combo.addItem("프로그램 종료", "terminate")
         self.window_pick_btn = QtWidgets.QPushButton("현재 창 목록에서 선택...")
+        self.process_path_edit = QtWidgets.QLineEdit()
+        self.process_path_edit.setPlaceholderText("예: C:\\Program Files\\Purple\\Purple.exe")
+        self.process_path_browse_btn = QtWidgets.QPushButton("EXE 선택...")
+        process_path_row = QtWidgets.QHBoxLayout()
+        process_path_row.setContentsMargins(0, 0, 0, 0)
+        process_path_row.setSpacing(6)
+        process_path_row.addWidget(self.process_path_edit, 1)
+        process_path_row.addWidget(self.process_path_browse_btn)
+        self.process_path_wrap = QtWidgets.QWidget()
+        self.process_path_wrap.setLayout(process_path_row)
+        self.process_args_edit = QtWidgets.QLineEdit()
+        self.process_args_edit.setPlaceholderText("실행 인자(선택)")
+        self.process_cwd_edit = QtWidgets.QLineEdit()
+        self.process_cwd_edit.setPlaceholderText("작업 폴더(선택, 비우면 기본값)")
         self.window_match_mode_combo = QtWidgets.QComboBox()
         self.window_match_mode_combo.addItem("프로세스 + 제목 포함 (추천)", "process_title_contains")
         self.window_match_mode_combo.addItem("제목 포함", "title_contains")
@@ -6999,6 +7028,10 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("라벨 이름", self.label_edit)
         form.addRow("점프 대상 라벨", self.goto_combo)
         form.addRow("실행할 매크로", self.macro_target_combo)
+        form.addRow("프로그램 동작", self.process_control_action_combo)
+        form.addRow("실행 파일", self.process_path_wrap)
+        form.addRow("실행 인자", self.process_args_edit)
+        form.addRow("작업 폴더", self.process_cwd_edit)
         form.addRow("창 선택", self.window_pick_btn)
         form.addRow("창 찾기 방식", self.window_match_mode_combo)
         form.addRow("창 제목", self.window_title_edit)
@@ -7060,6 +7093,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.type_combo.currentIndexChanged.connect(self._update_trigger_warning)
         self.telegram_test_btn.clicked.connect(self._test_telegram_message)
         self.window_pick_btn.clicked.connect(self._pick_window_target)
+        self.process_control_action_combo.currentIndexChanged.connect(self._sync_fields)
+        self.process_path_browse_btn.clicked.connect(self._browse_process_file)
         self.sound_file_browse_btn.clicked.connect(self._browse_sound_file)
         self.sound_file_clear_btn.clicked.connect(self.sound_file_edit.clear)
         self._toggle_override_enabled()
@@ -7085,6 +7120,9 @@ class ActionEditDialog(QtWidgets.QDialog):
     def _sound_wait_mode(self) -> str:
         mode = self.sound_wait_mode_combo.currentData()
         return str(mode or "once")
+    def _process_control_action(self) -> str:
+        mode = self.process_control_action_combo.currentData()
+        return str(mode or "focus")
     def _refresh_var_name_combo(self, preserve: str | None = None):
         names: list[str] = []
         if callable(self._variable_provider):
@@ -7208,7 +7246,15 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.window_title_edit.setText(str(info.get("title", "") or ""))
             self.window_process_edit.setText(str(info.get("process_name", "") or ""))
             self.window_class_edit.setText(str(info.get("class_name", "") or ""))
+            if info.get("process_path"):
+                self.process_path_edit.setText(str(info.get("process_path") or ""))
             _set_combo_data(self.window_match_mode_combo, "process_title_contains", fallback="process_title_contains")
+    def _browse_process_file(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "실행 파일 선택", "", "Executables (*.exe);;All Files (*.*)")
+        if path:
+            self.process_path_edit.setText(path)
+            if not self.window_process_edit.text().strip():
+                self.window_process_edit.setText(Path(path).name)
     def _test_telegram_message(self):
         token_raw = self.telegram_token_edit.text().strip()
         chat_raw = self.telegram_chat_id_edit.text().strip()
@@ -7416,7 +7462,11 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_label = typ == "label"
         show_goto = typ == "goto"
         show_macro_target = typ == "macro_cycle"
-        show_window_focus = typ == "window_focus"
+        show_process_control = typ in ("window_focus", "process_control")
+        process_action = "focus" if typ == "window_focus" else self._process_control_action()
+        show_window_focus = show_process_control and process_action == "focus"
+        show_process_launch = show_process_control and process_action == "launch"
+        show_process_terminate = show_process_control and process_action == "terminate"
         show_var = typ == "set_var"
         show_telegram = typ == "telegram_message"
         show_timer = typ == "timer"
@@ -7469,18 +7519,31 @@ class ActionEditDialog(QtWidgets.QDialog):
             self._refresh_macro_targets()
         self._set_field_visible(self.macro_target_combo, show_macro_target)
         self.macro_target_combo.setEnabled(show_macro_target)
-        for w in (
-            self.window_pick_btn,
-            self.window_match_mode_combo,
-            self.window_title_edit,
-            self.window_process_edit,
-            self.window_class_edit,
-            self.window_restore_check,
-            self.window_fail_stop_check,
-            self.window_wait_spin,
-        ):
-            self._set_field_visible(w, show_window_focus)
-            w.setEnabled(show_window_focus)
+        self._set_field_visible(self.process_control_action_combo, show_process_control)
+        self.process_control_action_combo.setEnabled(show_process_control)
+        self._set_field_visible(self.process_path_wrap, show_process_launch or show_process_terminate)
+        for w in (self.process_path_edit, self.process_path_browse_btn):
+            w.setEnabled(show_process_launch or show_process_terminate)
+        self._set_field_visible(self.process_args_edit, show_process_launch)
+        self.process_args_edit.setEnabled(show_process_launch)
+        self._set_field_visible(self.process_cwd_edit, show_process_launch)
+        self.process_cwd_edit.setEnabled(show_process_launch)
+        self._set_field_visible(self.window_pick_btn, show_window_focus or show_process_terminate)
+        self.window_pick_btn.setEnabled(show_window_focus or show_process_terminate)
+        self._set_field_visible(self.window_match_mode_combo, show_window_focus)
+        self.window_match_mode_combo.setEnabled(show_window_focus)
+        self._set_field_visible(self.window_title_edit, show_window_focus)
+        self.window_title_edit.setEnabled(show_window_focus)
+        self._set_field_visible(self.window_process_edit, show_window_focus or show_process_terminate)
+        self.window_process_edit.setEnabled(show_window_focus or show_process_terminate)
+        self._set_field_visible(self.window_class_edit, show_window_focus)
+        self.window_class_edit.setEnabled(show_window_focus)
+        self._set_field_visible(self.window_restore_check, show_window_focus)
+        self.window_restore_check.setEnabled(show_window_focus)
+        self._set_field_visible(self.window_fail_stop_check, show_process_control)
+        self.window_fail_stop_check.setEnabled(show_process_control)
+        self._set_field_visible(self.window_wait_spin, show_window_focus)
+        self.window_wait_spin.setEnabled(show_window_focus)
         if show_var:
             self._refresh_var_name_combo(self._current_var_name())
         self._set_field_visible(self.var_name_edit, show_var)
@@ -7560,7 +7623,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "조건 오류", str(exc))
     def _load(self, act: Action):
-        self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(act.type)))
+        load_type = "process_control" if act.type == "window_focus" else act.type
+        self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(load_type)))
         self.name_edit.setText(act.name or "")
         self.desc_edit.setText(getattr(act, "description", "") or "")
         self.enabled_check.setChecked(getattr(act, "enabled", True))
@@ -7633,6 +7697,14 @@ class ActionEditDialog(QtWidgets.QDialog):
             getattr(act, "window_match_mode", "process_title_contains"),
             fallback="process_title_contains",
         )
+        _set_combo_data(
+            self.process_control_action_combo,
+            "focus" if act.type == "window_focus" else getattr(act, "process_control_action", "focus"),
+            fallback="focus",
+        )
+        self.process_path_edit.setText(str(getattr(act, "process_path", "") or ""))
+        self.process_args_edit.setText(str(getattr(act, "process_args", "") or ""))
+        self.process_cwd_edit.setText(str(getattr(act, "process_cwd", "") or ""))
         self.window_title_edit.setText(str(getattr(act, "window_title", "") or ""))
         self.window_process_edit.setText(str(getattr(act, "window_process", "") or ""))
         self.window_class_edit.setText(str(getattr(act, "window_class", "") or ""))
@@ -7839,7 +7911,9 @@ class ActionEditDialog(QtWidgets.QDialog):
             if not macro_target:
                 raise ValueError("실행할 매크로를 선택하세요.")
             act.macro_target = macro_target
-        elif typ == "window_focus":
+        elif typ in ("window_focus", "process_control"):
+            act.type = "process_control"
+            act.process_control_action = "focus" if typ == "window_focus" else self._process_control_action()
             act.window_match_mode = str(self.window_match_mode_combo.currentData() or "process_title_contains")
             act.window_title = self.window_title_edit.text().strip() or None
             act.window_process = self.window_process_edit.text().strip() or None
@@ -7847,18 +7921,28 @@ class ActionEditDialog(QtWidgets.QDialog):
             act.window_restore = self.window_restore_check.isChecked()
             act.window_fail_stop = self.window_fail_stop_check.isChecked()
             act.window_wait_ms = max(0, int(self.window_wait_spin.value()))
-            if not any((act.window_title, act.window_process, act.window_class)):
-                raise ValueError("창 제목/프로세스명/클래스명 중 하나는 입력하세요.")
-            if act.window_match_mode in ("title_contains", "title_exact") and not act.window_title:
-                raise ValueError("제목 기준 매칭은 창 제목을 입력하세요.")
-            if act.window_match_mode == "class_exact" and not act.window_class:
-                raise ValueError("클래스명 기준 매칭은 클래스명을 입력하세요.")
-            if act.window_match_mode == "process_exact" and not act.window_process:
-                raise ValueError("프로세스명 기준 매칭은 프로세스명을 입력하세요.")
-            if act.window_match_mode == "process_class" and (not act.window_process or not act.window_class):
-                raise ValueError("프로세스 + 클래스명 매칭은 프로세스명과 클래스명을 입력하세요.")
-            if act.window_match_mode == "process_title_contains" and (not act.window_process or not act.window_title):
-                raise ValueError("프로세스 + 제목 포함 매칭은 프로세스명과 창 제목을 입력하세요.")
+            act.process_path = self.process_path_edit.text().strip() or None
+            act.process_args = self.process_args_edit.text().strip() or None
+            act.process_cwd = self.process_cwd_edit.text().strip() or None
+            if act.process_control_action == "launch":
+                if not act.process_path:
+                    raise ValueError("실행할 프로그램 파일을 선택하세요.")
+            elif act.process_control_action == "terminate":
+                if not (act.window_process or act.process_path):
+                    raise ValueError("종료할 프로세스명 또는 실행 파일 경로를 입력하세요.")
+            else:
+                if not any((act.window_title, act.window_process, act.window_class)):
+                    raise ValueError("창 제목/프로세스명/클래스명 중 하나는 입력하세요.")
+                if act.window_match_mode in ("title_contains", "title_exact") and not act.window_title:
+                    raise ValueError("제목 기준 매칭은 창 제목을 입력하세요.")
+                if act.window_match_mode == "class_exact" and not act.window_class:
+                    raise ValueError("클래스명 기준 매칭은 클래스명을 입력하세요.")
+                if act.window_match_mode == "process_exact" and not act.window_process:
+                    raise ValueError("프로세스명 기준 매칭은 프로세스명을 입력하세요.")
+                if act.window_match_mode == "process_class" and (not act.window_process or not act.window_class):
+                    raise ValueError("프로세스 + 클래스명 매칭은 프로세스명과 클래스명을 입력하세요.")
+                if act.window_match_mode == "process_title_contains" and (not act.window_process or not act.window_title):
+                    raise ValueError("프로세스 + 제목 포함 매칭은 프로세스명과 창 제목을 입력하세요.")
         elif typ == "set_var":
             var_name = self._current_var_name()
             if not var_name:

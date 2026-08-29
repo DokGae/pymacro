@@ -15,6 +15,7 @@ import time
 import traceback
 import json
 import ssl
+import shlex
 from datetime import date as dt_date
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,7 +40,7 @@ from lib.pixel import (
     find_color_in_region,
     find_pattern_in_region,
 )
-from lib.processes import get_foreground_process
+from lib.processes import get_foreground_process, terminate_processes
 from lib.windows import focus_window
 
 ConditionType = Literal["key", "pixel", "all", "any", "var", "timer", "schedule"]
@@ -70,6 +71,7 @@ ActionType = Literal[
     "timer",
     "telegram_message",
     "computer_shutdown",
+    "process_control",
     "window_focus",
     "touch_keyboard_open",
     "touch_keyboard_close",
@@ -1623,6 +1625,10 @@ class Action:
     window_restore: bool = True
     window_wait_ms: int = 150
     window_fail_stop: bool = True
+    process_control_action: str = "focus"
+    process_path: Optional[str] = None
+    process_args: Optional[str] = None
+    process_cwd: Optional[str] = None
     key_delay_override_enabled: bool = False
     key_delay_override: Optional[KeyDelayConfig] = None
 
@@ -1933,6 +1939,11 @@ class Action:
             window_wait_ms = max(0, int(data.get("window_wait_ms", 150) or 0))
         except Exception:
             window_wait_ms = 150
+        process_control_action = str(data.get("process_control_action", data.get("program_action", "focus")) or "focus")
+        if typ == "window_focus":
+            process_control_action = "focus"
+        if process_control_action not in ("focus", "launch", "terminate"):
+            process_control_action = "focus"
         return cls(
             type=typ,
             name=data.get("name"),
@@ -1993,6 +2004,10 @@ class Action:
             window_restore=bool(data.get("window_restore", True)),
             window_wait_ms=window_wait_ms,
             window_fail_stop=bool(data.get("window_fail_stop", True)),
+            process_control_action=process_control_action,
+            process_path=str(data.get("process_path", data.get("program_path", "")) or "") or None,
+            process_args=str(data.get("process_args", data.get("program_args", "")) or "") or None,
+            process_cwd=str(data.get("process_cwd", data.get("program_cwd", "")) or "") or None,
             key_delay_override_enabled=override_enabled,
             key_delay_override=key_delay_override,
         )
@@ -2051,6 +2066,10 @@ class Action:
             "window_restore": bool(getattr(self, "window_restore", True)),
             "window_wait_ms": max(0, int(getattr(self, "window_wait_ms", 150) or 0)),
             "window_fail_stop": bool(getattr(self, "window_fail_stop", True)),
+            "process_control_action": getattr(self, "process_control_action", "focus"),
+            "process_path": self.process_path,
+            "process_args": self.process_args,
+            "process_cwd": self.process_cwd,
             "key_delay_override_enabled": getattr(self, "key_delay_override_enabled", False),
             "key_delay_override": self.key_delay_override.to_dict() if getattr(self, "key_delay_override", None) else None,
         }
@@ -3690,7 +3709,69 @@ class MacroRunner:
                 error=sound_error,
             )
 
-        if action.type == "window_focus":
+        if action.type in ("window_focus", "process_control"):
+            control_action = "focus" if action.type == "window_focus" else str(getattr(action, "process_control_action", "focus") or "focus")
+            fail_stop = bool(getattr(action, "window_fail_stop", True))
+            if control_action == "launch":
+                program_path = str(getattr(action, "process_path", "") or "").strip()
+                if not program_path:
+                    self.engine._emit_log("프로그램 실행 실패: 실행 파일 경로가 비어 있습니다.")
+                    return end_result(signal="break" if fail_stop else None, status="error", error="empty_process_path")
+                args_text = str(getattr(action, "process_args", "") or "").strip()
+                cwd_text = str(getattr(action, "process_cwd", "") or "").strip()
+                try:
+                    cmd = [program_path]
+                    if args_text:
+                        cmd.extend(shlex.split(args_text))
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=cwd_text or None,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except Exception as exc:
+                    self.engine._emit_log(f"프로그램 실행 실패: {program_path} ({exc})")
+                    return end_result(signal="break" if fail_stop else None, status="error", error="process_launch_failed")
+                self.engine._emit_event(
+                    {
+                        "type": "action",
+                        "action": "process_control",
+                        "process_control_action": "launch",
+                        "ok": True,
+                        "process_path": program_path,
+                        "pid": getattr(proc, "pid", None),
+                    }
+                )
+                self.engine._emit_log(f"프로그램 실행: {program_path}")
+                return end_result(status="process_launch", process_path=program_path, pid=getattr(proc, "pid", None))
+
+            if control_action == "terminate":
+                process_name = str(getattr(action, "window_process", "") or "").strip()
+                process_path = str(getattr(action, "process_path", "") or "").strip()
+                if not process_name and not process_path:
+                    self.engine._emit_log("프로그램 종료 실패: 프로세스명 또는 실행 파일 경로가 비어 있습니다.")
+                    return end_result(signal="break" if fail_stop else None, status="error", error="empty_process_spec")
+                terminated, errors = terminate_processes(process_name=process_name, process_path=process_path)
+                ok = terminated > 0
+                self.engine._emit_event(
+                    {
+                        "type": "action",
+                        "action": "process_control",
+                        "process_control_action": "terminate",
+                        "ok": ok,
+                        "process_name": process_name,
+                        "process_path": process_path,
+                        "terminated": terminated,
+                        "errors": errors[:5],
+                    }
+                )
+                if not ok:
+                    err = "; ".join(errors[:3]) if errors else "process_not_found"
+                    self.engine._emit_log(f"프로그램 종료 실패: {process_name or process_path} ({err})")
+                    return end_result(signal="break" if fail_stop else None, status="error", error=err or "process_terminate_failed")
+                self.engine._emit_log(f"프로그램 종료: {process_name or process_path} ({terminated}개)")
+                return end_result(status="process_terminate", process_name=process_name, process_path=process_path, terminated=terminated)
+
             spec = {
                 "title": str(getattr(action, "window_title", "") or "").strip(),
                 "class_name": str(getattr(action, "window_class", "") or "").strip(),
@@ -3699,7 +3780,7 @@ class MacroRunner:
             }
             if not any(spec.get(k) for k in ("title", "class_name", "process_name")):
                 self.engine._emit_log("창 활성화 실패: 대상 조건이 비어 있습니다.")
-                return end_result(signal="break" if getattr(action, "window_fail_stop", True) else None, status="error", error="empty_window_spec")
+                return end_result(signal="break" if fail_stop else None, status="error", error="empty_window_spec")
             wait_ms = max(0, int(getattr(action, "window_wait_ms", 150) or 0))
             ok, info, err = focus_window(spec, restore=bool(getattr(action, "window_restore", True)), wait_ms=wait_ms)
             title = str((info or {}).get("title", "") or spec.get("title") or "")
@@ -3717,7 +3798,7 @@ class MacroRunner:
             if not ok:
                 self.engine._emit_log(f"창 활성화 실패: {process_name} / {title} ({err or 'unknown_error'})")
                 return end_result(
-                    signal="break" if getattr(action, "window_fail_stop", True) else None,
+                    signal="break" if fail_stop else None,
                     status="error",
                     error=err or "window_focus_failed",
                     window_title=title,

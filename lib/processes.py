@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_READ = 0x0010
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_TERMINATE = 0x0001
 ERROR_INSUFFICIENT_BUFFER = 122
 _MAX_PATH_LEN = 1024
 
@@ -25,6 +26,10 @@ if sys.platform.startswith("win"):
     CloseHandle = kernel32.CloseHandle
     CloseHandle.argtypes = [wintypes.HANDLE]
     CloseHandle.restype = wintypes.BOOL
+
+    TerminateProcess = kernel32.TerminateProcess
+    TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    TerminateProcess.restype = wintypes.BOOL
 
     QueryFullProcessImageNameW = kernel32.QueryFullProcessImageNameW
     QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
@@ -65,6 +70,14 @@ def _normalize_path(path: str | None) -> str:
         return os.path.normcase(os.path.abspath(path))
     except Exception:
         return os.path.normcase(path)
+
+
+def _process_name_matches(process_name: str | None, wanted_name: str | None) -> bool:
+    if not wanted_name:
+        return True
+    current = os.path.basename(process_name or "").casefold()
+    wanted = os.path.basename(wanted_name or "").casefold()
+    return bool(current and wanted and current == wanted)
 
 
 def _image_path_from_handle(handle: wintypes.HANDLE) -> Optional[str]:
@@ -151,3 +164,47 @@ def get_foreground_process() -> Optional[Dict[str, Any]]:
     if not pid.value:
         return None
     return _process_info(pid.value)
+
+
+def terminate_processes(
+    *,
+    process_name: str | None = None,
+    process_path: str | None = None,
+    max_count: Optional[int] = None,
+) -> tuple[int, list[str]]:
+    if not kernel32:
+        return 0, ["unsupported_platform"]
+    wanted_path = _normalize_path(process_path)
+    wanted_name = os.path.basename(process_name or process_path or "")
+    if not wanted_name and not wanted_path:
+        return 0, ["empty_process_spec"]
+    current_pid = os.getpid()
+    terminated = 0
+    errors: list[str] = []
+    for info in list_processes():
+        pid = int(info.get("pid", 0) or 0)
+        if not pid or pid == current_pid:
+            continue
+        if wanted_path:
+            info_path = _normalize_path(info.get("path"))
+            if info_path != wanted_path:
+                continue
+        elif not _process_name_matches(info.get("name"), wanted_name):
+            continue
+        handle = None
+        try:
+            handle = OpenProcess(PROCESS_TERMINATE, False, pid)
+            if not handle:
+                errors.append(f"pid={pid}: open_failed")
+                continue
+            if not TerminateProcess(handle, 1):
+                errors.append(f"pid={pid}: terminate_failed")
+                continue
+            terminated += 1
+            if max_count is not None and terminated >= max_count:
+                break
+        except Exception as exc:
+            errors.append(f"pid={pid}: {exc}")
+        finally:
+            _safe_close(handle)
+    return terminated, errors
