@@ -17050,7 +17050,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.poll_timer.start()
         if bool(self._macro_status_popup_state.get("visible", False)):
             QtCore.QTimer.singleShot(0, self._restore_macro_status_popup)
-        self._status_hint = "상단 버튼=활성/일시정지/비활성화, 기능 메뉴=디버거/픽셀 테스트"
+        self._status_hint = "상단 ON/OFF=트리거 감지, 적용=현재 프로필 반영, 기능 메뉴=디버거/픽셀 테스트"
         self.statusBar().showMessage(self._status_hint)
         self._set_capture_status(self.screenshot_manager.is_running)
     def _show_apply_feedback(self, ok: bool):
@@ -17654,9 +17654,6 @@ class MacroWindow(QtWidgets.QMainWindow):
             if tooltip:
                 btn.setToolTip(tooltip)
             return btn
-        self.start_btn = _flat_btn("시작", "엔진 시작")
-        self.stop_btn = _flat_btn("정지", "엔진 정지")
-        self.pause_btn = _flat_btn("일시정지", "일시정지/재개")
         self.active_toggle_btn = QtWidgets.QPushButton("OFF")
         self.active_toggle_btn.setCheckable(True)
         self.active_toggle_btn.setMinimumSize(68, 26)
@@ -17675,11 +17672,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         control_grid.setContentsMargins(0, 0, 0, 0)
         control_grid.setHorizontalSpacing(4)
         control_grid.setVerticalSpacing(2)
-        control_grid.addWidget(self.start_btn, 0, 0)
-        control_grid.addWidget(self.stop_btn, 0, 1)
-        control_grid.addWidget(self.pause_btn, 0, 2)
-        control_grid.addWidget(self.active_toggle_btn, 1, 0)
-        control_grid.addWidget(self.apply_btn, 1, 1)
+        control_grid.addWidget(self.active_toggle_btn, 0, 0)
+        control_grid.addWidget(self.apply_btn, 0, 1)
         row.addLayout(control_grid, stretch=3)
         container.setStyleSheet(
             f"#statusStrip {{ border: 1px solid {theme['panel_border']}; border-radius: 8px; background: {theme['panel_bg']}; color: {theme['text']}; }}"
@@ -17916,10 +17910,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         group.setVisible(self._log_enabled)
         return group
     def _connect_signals(self):
-        self.start_btn.clicked.connect(self.engine.start)
-        self.stop_btn.clicked.connect(self.engine.stop)
         self.active_toggle_btn.clicked.connect(self._toggle_engine_active)
-        self.pause_btn.clicked.connect(self.engine.toggle_pause)
         self.apply_btn.clicked.connect(self._handle_apply_click)
         self.recent_load_btn.clicked.connect(lambda: self._load_selected_profile(self.recent_list))
         self.fav_load_btn.clicked.connect(lambda: self._load_selected_profile(self.favorite_list))
@@ -20130,7 +20121,10 @@ class MacroWindow(QtWidgets.QMainWindow):
 
     def _toggle_engine_active(self, checked: bool):
         if checked:
-            self.engine.activate()
+            if not getattr(self.engine, "running", False):
+                self.engine.start()
+            else:
+                self.engine.activate()
         else:
             self.engine.deactivate()
 
