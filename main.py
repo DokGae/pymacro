@@ -6058,6 +6058,9 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                     or "대상 없음"
                 )
                 return f"종료: {target}" + suffix
+            if mode == "restart":
+                target = str(getattr(act, "process_path", "") or "").strip() or "실행 파일 없음"
+                return f"재실행: {target}" + suffix
             title = str(getattr(act, "window_title", "") or "").strip()
             process = str(getattr(act, "window_process", "") or "").strip()
             class_name = str(getattr(act, "window_class", "") or "").strip()
@@ -6859,6 +6862,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.process_control_action_combo.addItem("창 활성화/포커스", "focus")
         self.process_control_action_combo.addItem("프로그램 실행", "launch")
         self.process_control_action_combo.addItem("프로그램 종료", "terminate")
+        self.process_control_action_combo.addItem("프로그램 재실행", "restart")
         self.window_pick_btn = QtWidgets.QPushButton("현재 창 목록에서 선택...")
         self.process_path_edit = QtWidgets.QLineEdit()
         self.process_path_edit.setPlaceholderText("예: C:\\Program Files\\Purple\\Purple.exe")
@@ -7467,6 +7471,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_window_focus = show_process_control and process_action == "focus"
         show_process_launch = show_process_control and process_action == "launch"
         show_process_terminate = show_process_control and process_action == "terminate"
+        show_process_restart = show_process_control and process_action == "restart"
         show_var = typ == "set_var"
         show_telegram = typ == "telegram_message"
         show_timer = typ == "timer"
@@ -7521,21 +7526,21 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.macro_target_combo.setEnabled(show_macro_target)
         self._set_field_visible(self.process_control_action_combo, show_process_control)
         self.process_control_action_combo.setEnabled(show_process_control)
-        self._set_field_visible(self.process_path_wrap, show_process_launch or show_process_terminate)
+        self._set_field_visible(self.process_path_wrap, show_process_launch or show_process_terminate or show_process_restart)
         for w in (self.process_path_edit, self.process_path_browse_btn):
-            w.setEnabled(show_process_launch or show_process_terminate)
-        self._set_field_visible(self.process_args_edit, show_process_launch)
-        self.process_args_edit.setEnabled(show_process_launch)
-        self._set_field_visible(self.process_cwd_edit, show_process_launch)
-        self.process_cwd_edit.setEnabled(show_process_launch)
+            w.setEnabled(show_process_launch or show_process_terminate or show_process_restart)
+        self._set_field_visible(self.process_args_edit, show_process_launch or show_process_restart)
+        self.process_args_edit.setEnabled(show_process_launch or show_process_restart)
+        self._set_field_visible(self.process_cwd_edit, show_process_launch or show_process_restart)
+        self.process_cwd_edit.setEnabled(show_process_launch or show_process_restart)
         self._set_field_visible(self.window_pick_btn, show_process_control)
         self.window_pick_btn.setEnabled(show_process_control)
         self._set_field_visible(self.window_match_mode_combo, show_window_focus)
         self.window_match_mode_combo.setEnabled(show_window_focus)
         self._set_field_visible(self.window_title_edit, show_window_focus)
         self.window_title_edit.setEnabled(show_window_focus)
-        self._set_field_visible(self.window_process_edit, show_window_focus or show_process_terminate)
-        self.window_process_edit.setEnabled(show_window_focus or show_process_terminate)
+        self._set_field_visible(self.window_process_edit, show_window_focus or show_process_terminate or show_process_restart)
+        self.window_process_edit.setEnabled(show_window_focus or show_process_terminate or show_process_restart)
         self._set_field_visible(self.window_class_edit, show_window_focus)
         self.window_class_edit.setEnabled(show_window_focus)
         self._set_field_visible(self.window_restore_check, show_window_focus)
@@ -7930,6 +7935,9 @@ class ActionEditDialog(QtWidgets.QDialog):
             elif act.process_control_action == "terminate":
                 if not (act.window_process or act.process_path):
                     raise ValueError("종료할 프로세스명 또는 실행 파일 경로를 입력하세요.")
+            elif act.process_control_action == "restart":
+                if not act.process_path:
+                    raise ValueError("재실행할 프로그램 파일을 선택하세요.")
             else:
                 if not any((act.window_title, act.window_process, act.window_class)):
                     raise ValueError("창 제목/프로세스명/클래스명 중 하나는 입력하세요.")

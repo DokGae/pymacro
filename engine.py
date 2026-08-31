@@ -1942,7 +1942,7 @@ class Action:
         process_control_action = str(data.get("process_control_action", data.get("program_action", "focus")) or "focus")
         if typ == "window_focus":
             process_control_action = "focus"
-        if process_control_action not in ("focus", "launch", "terminate"):
+        if process_control_action not in ("focus", "launch", "terminate", "restart"):
             process_control_action = "focus"
         return cls(
             type=typ,
@@ -3716,13 +3716,12 @@ class MacroRunner:
         if action.type in ("window_focus", "process_control"):
             control_action = "focus" if action.type == "window_focus" else str(getattr(action, "process_control_action", "focus") or "focus")
             fail_stop = bool(getattr(action, "window_fail_stop", True))
-            if control_action == "launch":
+            def launch_process() -> tuple[subprocess.Popen | None, str | None, str, str, str]:
                 program_path = str(getattr(action, "process_path", "") or "").strip()
-                if not program_path:
-                    self.engine._emit_log("프로그램 실행 실패: 실행 파일 경로가 비어 있습니다.")
-                    return end_result(signal="break" if fail_stop else None, status="error", error="empty_process_path")
                 args_text = str(getattr(action, "process_args", "") or "").strip()
                 cwd_text = str(getattr(action, "process_cwd", "") or "").strip()
+                if not program_path:
+                    return None, "empty_process_path", program_path, args_text, cwd_text
                 try:
                     cmd = [program_path]
                     if args_text:
@@ -3734,7 +3733,16 @@ class MacroRunner:
                         stderr=subprocess.DEVNULL,
                     )
                 except Exception as exc:
-                    self.engine._emit_log(f"프로그램 실행 실패: {program_path} ({exc})")
+                    return None, str(exc), program_path, args_text, cwd_text
+                return proc, None, program_path, args_text, cwd_text
+
+            if control_action == "launch":
+                proc, launch_error, program_path, _args_text, _cwd_text = launch_process()
+                if launch_error == "empty_process_path":
+                    self.engine._emit_log("프로그램 실행 실패: 실행 파일 경로가 비어 있습니다.")
+                    return end_result(signal="break" if fail_stop else None, status="error", error="empty_process_path")
+                if launch_error or proc is None:
+                    self.engine._emit_log(f"프로그램 실행 실패: {program_path} ({launch_error})")
                     return end_result(signal="break" if fail_stop else None, status="error", error="process_launch_failed")
                 self.engine._emit_event(
                     {
@@ -3749,14 +3757,47 @@ class MacroRunner:
                 self.engine._emit_log(f"프로그램 실행: {program_path}")
                 return end_result(status="process_launch", process_path=program_path, pid=getattr(proc, "pid", None))
 
-            if control_action == "terminate":
+            if control_action in ("terminate", "restart"):
                 process_name = str(getattr(action, "window_process", "") or "").strip()
                 process_path = str(getattr(action, "process_path", "") or "").strip()
-                if not process_name and not process_path:
+                if control_action == "terminate" and not process_name and not process_path:
                     self.engine._emit_log("프로그램 종료 실패: 프로세스명 또는 실행 파일 경로가 비어 있습니다.")
                     return end_result(signal="break" if fail_stop else None, status="error", error="empty_process_spec")
+                if control_action == "restart" and not process_path:
+                    self.engine._emit_log("프로그램 재실행 실패: 실행 파일 경로가 비어 있습니다.")
+                    return end_result(signal="break" if fail_stop else None, status="error", error="empty_process_path")
                 terminated, errors = terminate_processes(process_name=process_name, process_path=process_path)
                 ok = terminated > 0
+                if control_action == "restart":
+                    if errors and not ok:
+                        err = "; ".join(errors[:3])
+                        self.engine._emit_log(f"프로그램 재실행 실패: 종료 실패 {process_name or process_path} ({err})")
+                        return end_result(signal="break" if fail_stop else None, status="error", error=err or "process_terminate_failed")
+                    if ok:
+                        time.sleep(0.3)
+                    proc, launch_error, program_path, _args_text, _cwd_text = launch_process()
+                    launch_ok = launch_error is None and proc is not None
+                    self.engine._emit_event(
+                        {
+                            "type": "action",
+                            "action": "process_control",
+                            "process_control_action": "restart",
+                            "ok": launch_ok,
+                            "process_name": process_name,
+                            "process_path": process_path,
+                            "terminated": terminated,
+                            "pid": getattr(proc, "pid", None) if proc is not None else None,
+                            "errors": errors[:5],
+                        }
+                    )
+                    if not launch_ok:
+                        self.engine._emit_log(f"프로그램 재실행 실패: {program_path} ({launch_error})")
+                        return end_result(signal="break" if fail_stop else None, status="error", error="process_restart_failed")
+                    if terminated:
+                        self.engine._emit_log(f"프로그램 재실행: {program_path} (종료 {terminated}개, PID {getattr(proc, 'pid', None)})")
+                    else:
+                        self.engine._emit_log(f"프로그램 재실행: 실행 중인 대상 없음, 새로 실행 {program_path} (PID {getattr(proc, 'pid', None)})")
+                    return end_result(status="process_restart", process_name=process_name, process_path=program_path, terminated=terminated, pid=getattr(proc, "pid", None))
                 self.engine._emit_event(
                     {
                         "type": "action",
