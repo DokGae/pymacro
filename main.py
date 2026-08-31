@@ -17657,9 +17657,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.start_btn = _flat_btn("시작", "엔진 시작")
         self.stop_btn = _flat_btn("정지", "엔진 정지")
         self.pause_btn = _flat_btn("일시정지", "일시정지/재개")
-        self.active_toggle_btn = QtWidgets.QPushButton("감지 OFF")
+        self.active_toggle_btn = QtWidgets.QPushButton("OFF")
         self.active_toggle_btn.setCheckable(True)
-        self.active_toggle_btn.setMinimumSize(140, 26)
+        self.active_toggle_btn.setMinimumSize(68, 26)
         self.active_toggle_btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
         self.active_toggle_btn.setToolTip("매크로 트리거 감지를 켜거나 끕니다.")
         self.apply_btn = _flat_btn("적용", "프로필 적용")
@@ -17678,8 +17678,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         control_grid.addWidget(self.start_btn, 0, 0)
         control_grid.addWidget(self.stop_btn, 0, 1)
         control_grid.addWidget(self.pause_btn, 0, 2)
-        control_grid.addWidget(self.active_toggle_btn, 1, 0, 1, 2)
-        control_grid.addWidget(self.apply_btn, 1, 2)
+        control_grid.addWidget(self.active_toggle_btn, 1, 0)
+        control_grid.addWidget(self.apply_btn, 1, 1)
         row.addLayout(control_grid, stretch=3)
         container.setStyleSheet(
             f"#statusStrip {{ border: 1px solid {theme['panel_border']}; border-radius: 8px; background: {theme['panel_bg']}; color: {theme['text']}; }}"
@@ -20141,7 +20141,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         btn.blockSignals(True)
         btn.setChecked(bool(active))
         btn.blockSignals(False)
-        btn.setText("감지 ON" if active else "감지 OFF")
+        btn.setText("ON" if active else "OFF")
         if active:
             bg, border, fg, hover_bg, pressed_bg = "#16a34a", "#15803d", "#ffffff", "#22c55e", "#15803d"
         else:
