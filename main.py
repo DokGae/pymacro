@@ -17657,8 +17657,11 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.start_btn = _flat_btn("시작", "엔진 시작")
         self.stop_btn = _flat_btn("정지", "엔진 정지")
         self.pause_btn = _flat_btn("일시정지", "일시정지/재개")
-        self.activate_btn = _flat_btn("활성화", "엔진 활성화")
-        self.deactivate_btn = _flat_btn("비활성", "엔진 비활성화")
+        self.active_toggle_btn = QtWidgets.QPushButton("감지 OFF")
+        self.active_toggle_btn.setCheckable(True)
+        self.active_toggle_btn.setMinimumSize(140, 26)
+        self.active_toggle_btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.active_toggle_btn.setToolTip("매크로 트리거 감지를 켜거나 끕니다.")
         self.apply_btn = _flat_btn("적용", "프로필 적용")
         self._apply_btn_default_style = self.apply_btn.styleSheet()
         self._apply_btn_working_style = (
@@ -17675,13 +17678,13 @@ class MacroWindow(QtWidgets.QMainWindow):
         control_grid.addWidget(self.start_btn, 0, 0)
         control_grid.addWidget(self.stop_btn, 0, 1)
         control_grid.addWidget(self.pause_btn, 0, 2)
-        control_grid.addWidget(self.activate_btn, 1, 0)
-        control_grid.addWidget(self.deactivate_btn, 1, 1)
+        control_grid.addWidget(self.active_toggle_btn, 1, 0, 1, 2)
         control_grid.addWidget(self.apply_btn, 1, 2)
         row.addLayout(control_grid, stretch=3)
         container.setStyleSheet(
             f"#statusStrip {{ border: 1px solid {theme['panel_border']}; border-radius: 8px; background: {theme['panel_bg']}; color: {theme['text']}; }}"
         )
+        self._set_engine_active_toggle(False)
         return container
     def _build_device_group(self):
         group = QtWidgets.QFrame()
@@ -17817,6 +17820,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         header = self.macro_table.horizontalHeader()
         header.setDefaultSectionSize(90)
         header.setMinimumSectionSize(60)
+        header.resizeSection(MACRO_TABLE_COL_ENABLED, 84)
         header.resizeSection(MACRO_TABLE_COL_RUN_ONCE, 72)
         header.resizeSection(MACRO_TABLE_COL_RUN_REPEAT, 72)
         header.setStretchLastSection(True)
@@ -17914,8 +17918,7 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _connect_signals(self):
         self.start_btn.clicked.connect(self.engine.start)
         self.stop_btn.clicked.connect(self.engine.stop)
-        self.activate_btn.clicked.connect(self.engine.activate)
-        self.deactivate_btn.clicked.connect(self.engine.deactivate)
+        self.active_toggle_btn.clicked.connect(self._toggle_engine_active)
         self.pause_btn.clicked.connect(self.engine.toggle_pause)
         self.apply_btn.clicked.connect(self._handle_apply_click)
         self.recent_load_btn.clicked.connect(lambda: self._load_selected_profile(self.recent_list))
@@ -18691,7 +18694,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             macro.name or "",
             trigger_text,
             mode_text,
-            "ON" if is_enabled else "OFF",
+            "",
             scope_text,
         ]
         for col, val in enumerate(values):
@@ -18702,6 +18705,12 @@ class MacroWindow(QtWidgets.QMainWindow):
             if not is_enabled:
                 item.setBackground(disabled_bg)
             self.macro_table.setItem(row, col, item)
+        enabled_btn = QtWidgets.QToolButton()
+        enabled_btn.setCheckable(True)
+        enabled_btn.setChecked(is_enabled)
+        enabled_btn.clicked.connect(lambda _checked=False, r=row: self._toggle_macro_enabled_from_row(r))
+        self._configure_macro_enabled_button(enabled_btn, is_enabled)
+        self.macro_table.setCellWidget(row, MACRO_TABLE_COL_ENABLED, self._macro_run_button_cell(enabled_btn))
         once_btn = QtWidgets.QToolButton()
         once_btn.setText("1회")
         once_btn.setToolTip("앱 범위와 무관하게 이 매크로를 1사이클만 실행합니다.")
@@ -18810,7 +18819,7 @@ class MacroWindow(QtWidgets.QMainWindow):
 
     def _row_for_widget(self, widget: QtWidgets.QWidget) -> int:
         for row in range(self.macro_table.rowCount()):
-            for col in (MACRO_TABLE_COL_RUN_ONCE, MACRO_TABLE_COL_RUN_REPEAT):
+            for col in (MACRO_TABLE_COL_ENABLED, MACRO_TABLE_COL_RUN_ONCE, MACRO_TABLE_COL_RUN_REPEAT):
                 cell = self.macro_table.cellWidget(row, col)
                 if cell is widget or (cell is not None and cell.isAncestorOf(widget)):
                     return row
@@ -18845,6 +18854,37 @@ class MacroWindow(QtWidgets.QMainWindow):
         btn.setFixedHeight(24)
         btn.setMinimumWidth(58)
         btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+
+    def _configure_macro_enabled_button(self, btn: QtWidgets.QToolButton, enabled: bool):
+        btn.setText("활성" if enabled else "비활성")
+        btn.setToolTip("클릭해서 매크로 활성 상태를 전환합니다.")
+        btn.setAutoRaise(False)
+        btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        btn.setFixedSize(68, 24)
+        if enabled:
+            bg, border, fg, hover_bg, pressed_bg = "#16a34a", "#15803d", "#ffffff", "#22c55e", "#15803d"
+        else:
+            bg, border, fg, hover_bg, pressed_bg = "#f1f5f9", "#cbd5e1", "#475569", "#e2e8f0", "#cbd5e1"
+        btn.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: 12px;
+                color: {fg};
+                font-size: 11px;
+                font-weight: 700;
+                padding: 2px 8px;
+            }}
+            QToolButton:hover {{
+                background: {hover_bg};
+            }}
+            QToolButton:pressed {{
+                background: {pressed_bg};
+            }}
+            """
+        )
 
     def _apply_macro_run_button_style(self, btn: QtWidgets.QToolButton, tone: str):
         palette = {
@@ -18943,6 +18983,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._append_log(f"반복 실행: {macro.name or macro.trigger_label(include_mode=False)} ({status})")
         self._update_macro_run_buttons()
     def _toggle_macro_enabled_from_row(self, row: int):
+        row = self._resolve_button_row(row)
         macro = self._macro_from_row(row)
         if not macro:
             return
@@ -20079,12 +20120,50 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._update_macro_run_buttons()
         self._set_label(self.running_label, "실행중" if running else "정지", running)
         self._set_label(self.active_label, "활성" if active else "비활성", active)
+        self._set_engine_active_toggle(active)
         self._set_label(self.paused_label, "일시정지" if paused else "정상", paused)
         backend = state.get("backend") or {}
         prev = self._last_backend_state or {}
         self._last_backend_state = backend
         self._update_keyboard_summary(backend, prev)
         self._update_macro_status_popup(state)
+
+    def _toggle_engine_active(self, checked: bool):
+        if checked:
+            self.engine.activate()
+        else:
+            self.engine.deactivate()
+
+    def _set_engine_active_toggle(self, active: bool):
+        if not hasattr(self, "active_toggle_btn"):
+            return
+        btn = self.active_toggle_btn
+        btn.blockSignals(True)
+        btn.setChecked(bool(active))
+        btn.blockSignals(False)
+        btn.setText("감지 ON" if active else "감지 OFF")
+        if active:
+            bg, border, fg, hover_bg, pressed_bg = "#16a34a", "#15803d", "#ffffff", "#22c55e", "#15803d"
+        else:
+            bg, border, fg, hover_bg, pressed_bg = "#f8fafc", "#cbd5e1", "#475569", "#eef2f7", "#e2e8f0"
+        btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: 13px;
+                color: {fg};
+                font-weight: 700;
+                padding: 3px 14px;
+            }}
+            QPushButton:hover {{
+                background: {hover_bg};
+            }}
+            QPushButton:pressed {{
+                background: {pressed_bg};
+            }}
+            """
+        )
     def _set_label(self, label: QtWidgets.QLabel, text: str, on: bool):
         label.setText(text)
         base = getattr(self, "_status_badge_style", "")
