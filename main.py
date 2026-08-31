@@ -9582,9 +9582,7 @@ class MacroDialog(QtWidgets.QDialog):
         # 빌더 체크박스/입력값을 우선 반영해 텍스트를 최신 상태로 맞춘다.
         self._sync_trigger_from_builder()
         triggers = self._collect_triggers()
-        if not triggers:
-            raise ValueError("트리거 키를 하나 이상 입력하세요.")
-        primary = triggers[0]
+        primary = triggers[0] if triggers else None
         name = self.name_edit.text().strip() or None
         description = self.desc_edit.text().strip() or None
         suppress = self.suppress_checkbox.isChecked()
@@ -9604,9 +9602,9 @@ class MacroDialog(QtWidgets.QDialog):
         cycle_val = self.cycle_spin.value()
         cycle_count = cycle_val if cycle_val > 0 else None
         return Macro(
-            trigger_key=primary.key,
-            mode=primary.mode,
-            hold_press_seconds=primary.hold_press_seconds,
+            trigger_key=primary.key if primary else "",
+            mode=primary.mode if primary else self._current_trigger_mode(),
+            hold_press_seconds=primary.hold_press_seconds if primary else None,
             triggers=triggers,
             actions=actions,
             stop_actions=stop_actions,
@@ -18669,7 +18667,11 @@ class MacroWindow(QtWidgets.QMainWindow):
         trigger_text = ", ".join(labels[:3]) + ("..." if len(labels) > 3 else "")
         if not trigger_text:
             trigger_text = getattr(macro, "trigger_key", "") or ""
+        if not trigger_text:
+            trigger_text = "트리거 없음"
         mode_text = ", ".join(dict.fromkeys(modes)) if modes else (getattr(macro, "mode", "") or "")
+        if not modes and not triggers and not (getattr(macro, "trigger_key", "") or ""):
+            mode_text = "수동 실행"
         return trigger_text, mode_text
     def _set_macro_row(self, row: int, macro: Macro):
         scope_text = self._macro_scope_text(macro)

@@ -2416,9 +2416,9 @@ class Macro:
                 if trig and trig.key:
                     triggers.append(trig)
         primary_key = normalize_trigger_key(str(data.get("trigger_key") or data.get("key") or ""))
-        if not triggers:
+        if not triggers and primary_key:
             triggers.append(MacroTrigger(key=primary_key, mode=primary_mode, hold_press_seconds=hold_press_seconds))
-        primary_trigger = triggers[0]
+        primary_trigger = triggers[0] if triggers else MacroTrigger(key="", mode=primary_mode, hold_press_seconds=hold_press_seconds)
         return cls(
             trigger_key=primary_trigger.key,
             mode=primary_trigger.mode,
@@ -2449,10 +2449,10 @@ class Macro:
             t = MacroTrigger.from_any(trig, default_mode=self.mode, default_hold=self.hold_press_seconds)
             if t and t.key:
                 normalized.append(t)
-        if not normalized:
+        if not normalized and self.trigger_key:
             normalized.append(MacroTrigger(key=self.trigger_key, mode=self.mode, hold_press_seconds=self.hold_press_seconds))
         self.triggers = normalized
-        primary = self.triggers[0]
+        primary = self.triggers[0] if self.triggers else MacroTrigger(key="", mode=self.mode, hold_press_seconds=self.hold_press_seconds)
         self.trigger_key = normalize_trigger_key(primary.key)
         self.mode = _normalize_macro_mode(primary.mode, default="hold")
         try:
@@ -2468,7 +2468,11 @@ class Macro:
         return parse_trigger_keys(self.trigger_key)
 
     def trigger_list(self) -> List[MacroTrigger]:
-        return list(self.triggers or []) or [MacroTrigger(key=self.trigger_key, mode=self.mode, hold_press_seconds=self.hold_press_seconds)]
+        if self.triggers:
+            return list(self.triggers)
+        if self.trigger_key:
+            return [MacroTrigger(key=self.trigger_key, mode=self.mode, hold_press_seconds=self.hold_press_seconds)]
+        return []
 
     def primary_trigger(self) -> MacroTrigger:
         lst = self.trigger_list()
@@ -5152,9 +5156,12 @@ class MacroEngine:
             t = MacroTrigger.from_any(trig, default_mode=getattr(macro, "mode", "hold"), default_hold=getattr(macro, "hold_press_seconds", None))
             if t and t.key:
                 triggers.append(t)
-        if not triggers:
+        if not triggers and getattr(macro, "trigger_key", ""):
             triggers.append(MacroTrigger(key=macro.trigger_key, mode=getattr(macro, "mode", "hold"), hold_press_seconds=getattr(macro, "hold_press_seconds", None)))
         macro.triggers = triggers
+        if not triggers:
+            macro.trigger_key = ""
+            return triggers
         primary = triggers[0]
         macro.trigger_key = primary.key
         macro.mode = _normalize_macro_mode(primary.mode, default="hold")
