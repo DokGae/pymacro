@@ -16742,10 +16742,12 @@ class MacroStatusPopup(QtWidgets.QDialog):
         super().__init__(parent)
         self._save_state_cb = save_state_cb
         self._app_closing = False
+        self._app_closing_visible: bool | None = None
+        self._restoring_state = False
         self.setWindowTitle("매크로 상태")
         self.setWindowFlag(QtCore.Qt.WindowType.Tool, True)
-        self.setMinimumSize(260, 126)
-        self.resize(300, 138)
+        self.setMinimumSize(280, 146)
+        self.resize(320, 158)
         self.setStyleSheet(
             """
             MacroStatusPopup {
@@ -16829,7 +16831,11 @@ class MacroStatusPopup(QtWidgets.QDialog):
         bottom_row.addWidget(self.always_on_top_check)
         layout.addLayout(bottom_row)
 
-        self._restore_state(state or {})
+        self._restoring_state = True
+        try:
+            self._restore_state(state or {})
+        finally:
+            self._restoring_state = False
         self.update_state({})
 
     def _toggle_always_on_top(self, checked: bool):
@@ -16848,9 +16854,20 @@ class MacroStatusPopup(QtWidgets.QDialog):
         geo = state.get("geometry")
         if isinstance(geo, list) and len(geo) == 4:
             try:
-                self.setGeometry(*(int(v) for v in geo))
+                rect = QtCore.QRect(*(int(v) for v in geo))
+                if self._is_reasonable_geometry(rect):
+                    self.setGeometry(rect)
             except Exception:
                 pass
+
+    def _is_reasonable_geometry(self, rect: QtCore.QRect) -> bool:
+        if rect.width() < self.minimumWidth() or rect.height() < self.minimumHeight():
+            return False
+        app = QtWidgets.QApplication.instance()
+        screens = app.screens() if app else []
+        if not screens:
+            return True
+        return any(screen.availableGeometry().intersects(rect) for screen in screens)
 
     def _collect_state(self, *, visible: bool | None = None) -> dict:
         g = self.geometry()
@@ -16861,11 +16878,18 @@ class MacroStatusPopup(QtWidgets.QDialog):
         }
 
     def _save_state(self, *, visible: bool | None = None):
+        if self._restoring_state:
+            return
         if callable(self._save_state_cb):
             try:
                 self._save_state_cb(self._collect_state(visible=visible))
             except Exception:
                 pass
+
+    def prepare_app_close(self):
+        self._app_closing = True
+        self._app_closing_visible = self.isVisible()
+        self._save_state(visible=self._app_closing_visible)
 
     def update_state(self, state: dict):
         running = bool(state.get("running", False))
@@ -16906,6 +16930,10 @@ class MacroStatusPopup(QtWidgets.QDialog):
         )
         self.detail_label.setText(detail)
 
+    def set_profile_text(self, text: str):
+        label = str(text or "").strip() or "새 프로필"
+        self.setWindowTitle(label)
+
     def moveEvent(self, event: QtGui.QMoveEvent):
         super().moveEvent(event)
         self._save_state()
@@ -16915,7 +16943,13 @@ class MacroStatusPopup(QtWidgets.QDialog):
         self._save_state()
 
     def closeEvent(self, event: QtGui.QCloseEvent):
-        self._save_state(visible=bool(self._app_closing and self.isVisible()))
+        if self._app_closing:
+            visible = self._app_closing_visible
+            if visible is None:
+                visible = self.isVisible()
+            self._save_state(visible=visible)
+        else:
+            self._save_state(visible=False)
         return super().closeEvent(event)
 
 
@@ -17161,6 +17195,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 state=self._macro_status_popup_state,
                 save_state_cb=self._persist_macro_status_popup_state,
             )
+        self._update_macro_status_popup_profile()
         self._update_macro_status_popup(self.engine.snapshot_state())
         self._macro_status_popup.show()
         self._macro_status_popup.raise_()
@@ -17174,12 +17209,22 @@ class MacroWindow(QtWidgets.QMainWindow):
         popup = getattr(self, "_macro_status_popup", None)
         if popup is None or not popup.isVisible():
             return
+        self._update_macro_status_popup_profile()
         if state is None:
             try:
                 state = self.engine.snapshot_state()
             except Exception:
                 state = {}
         popup.update_state(state or {})
+
+    def _update_macro_status_popup_profile(self):
+        popup = getattr(self, "_macro_status_popup", None)
+        if popup is None:
+            return
+        try:
+            popup.set_profile_text(self._current_profile_display_text())
+        except Exception:
+            pass
 
     def _open_screenshot_dialog(self):
         if self._screenshot_dialog is None:
@@ -18362,6 +18407,10 @@ class MacroWindow(QtWidgets.QMainWindow):
             return f"{name} · {parent}"
         except Exception:
             return path
+    def _current_profile_display_text(self) -> str:
+        if self.current_profile_path:
+            return self._profile_display_text(self.current_profile_path)
+        return "새 프로필"
     def _record_recent_profile(self, path: str | None):
         if not path:
             return
@@ -18468,6 +18517,7 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _refresh_profile_header(self):
         path = self.current_profile_path
         self._update_title()
+        self._update_macro_status_popup_profile()
         if hasattr(self, "profile_path_label"):
             if path:
                 self.profile_path_label.setText(_elide_middle(str(path), 72))
@@ -20433,10 +20483,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 pass
         if self._macro_status_popup:
             try:
-                self._macro_status_popup._app_closing = True
-                self._persist_macro_status_popup_state(
-                    self._macro_status_popup._collect_state(visible=self._macro_status_popup.isVisible())
-                )
+                self._macro_status_popup.prepare_app_close()
             except Exception:
                 pass
         self._fail_capture_hotkey_prev = False
