@@ -2787,6 +2787,11 @@ class KeySwallower:
         self._enabled = False
         self._keys: Set[int] = set()
         self._mouse_buttons: Set[str] = set()
+        self._key_modifiers: Dict[int, List[frozenset[int]]] = {}
+        self._mouse_modifiers: Dict[str, List[frozenset[int]]] = {}
+        self._modifier_codes: Set[int] = set()
+        self._swallowed_keys: Set[int] = set()
+        self._swallowed_mouse: Set[str] = set()
         self._pressed_keys: Set[int] = set()
         self._pressed_mouse: Set[str] = set()
         self._pressed_key_ts: Dict[int, float] = {}
@@ -2838,26 +2843,58 @@ class KeySwallower:
         self._pressed_mouse.clear()
         self._pressed_key_ts.clear()
         self._pressed_mouse_ts.clear()
+        self._swallowed_keys.clear()
+        self._swallowed_mouse.clear()
 
     def set_keys(self, keys: List[str]):
+        self.set_triggers(keys)
+
+    def set_triggers(self, triggers: List[str]):
         scs: Set[int] = set()
         mouse_buttons: Set[str] = set()
-        for k in keys:
-            mouse_key = _normalize_mouse_trigger_key(k)
-            if mouse_key:
-                mouse_buttons.add(mouse_key)
-                continue
-            try:
-                sc = to_scan_code(k)
-            except Exception:
-                continue
-            if sc > 0:
-                scs.add(sc)
+        key_modifiers: Dict[int, List[frozenset[int]]] = {}
+        mouse_modifiers: Dict[str, List[frozenset[int]]] = {}
+        modifier_codes: Set[int] = set()
+        for trigger in triggers:
+            parts = parse_trigger_keys(trigger)
+            modifiers: Set[int] = set()
+            for part in parts:
+                if part not in _TRIGGER_MOD_KEYS:
+                    continue
+                try:
+                    modifier_sc = to_scan_code(part)
+                except Exception:
+                    continue
+                if modifier_sc > 0:
+                    modifiers.add(modifier_sc)
+                    modifier_codes.add(modifier_sc)
+            required = frozenset(modifiers)
+            for k in (part for part in parts if part not in _TRIGGER_MOD_KEYS):
+                mouse_key = _normalize_mouse_trigger_key(k)
+                if mouse_key:
+                    mouse_buttons.add(mouse_key)
+                    mouse_modifiers.setdefault(mouse_key, []).append(required)
+                    continue
+                try:
+                    sc = to_scan_code(k)
+                except Exception:
+                    continue
+                if sc > 0:
+                    scs.add(sc)
+                    key_modifiers.setdefault(sc, []).append(required)
         with self._lock:
-            if scs == self._keys and mouse_buttons == self._mouse_buttons:
+            if (
+                scs == self._keys
+                and mouse_buttons == self._mouse_buttons
+                and key_modifiers == self._key_modifiers
+                and mouse_modifiers == self._mouse_modifiers
+            ):
                 return
             self._keys = scs
             self._mouse_buttons = mouse_buttons
+            self._key_modifiers = key_modifiers
+            self._mouse_modifiers = mouse_modifiers
+            self._modifier_codes = modifier_codes
             self._clear_pressed_state()
 
     def set_enabled(self, enabled: bool):
@@ -2965,8 +3002,9 @@ class KeySwallower:
                     enabled = self._enabled
                     codes = set(self._keys)
                     mouse_buttons = set(self._mouse_buttons)
+                    modifier_codes = set(self._modifier_codes)
 
-                desired_keyboard_filter = KeyFilter.All if (enabled and codes) else KeyFilter(0)
+                desired_keyboard_filter = KeyFilter.All if (enabled and (codes or modifier_codes)) else KeyFilter(0)
                 desired_mouse_filter = self._mouse_filter(mouse_buttons) if enabled else MouseFilter(0)
 
                 if desired_keyboard_filter != current_keyboard_filter:
@@ -2991,18 +3029,32 @@ class KeySwallower:
                     continue
                 stroke = device.stroke
                 tracked_key = device.is_keyboard and stroke.code in codes
+                tracked_modifier = device.is_keyboard and stroke.code in modifier_codes
                 tracked_mouse = False
-                if tracked_key:
+                swallow = False
+                if tracked_key or tracked_modifier:
                     is_down = stroke.state in (KeyState.Down, KeyState.E0Down, KeyState.E1Down)
                     is_up = stroke.state in (KeyState.Up, KeyState.E0Up, KeyState.E1Up)
                     now = time.monotonic()
                     with self._lock:
-                        if is_down:
+                        if tracked_modifier and is_down:
                             self._pressed_keys.add(stroke.code)
                             self._pressed_key_ts[stroke.code] = now
+                        elif tracked_modifier and is_up:
+                            self._pressed_keys.discard(stroke.code)
+                            self._pressed_key_ts.pop(stroke.code, None)
+                        elif is_down:
+                            self._pressed_keys.add(stroke.code)
+                            self._pressed_key_ts[stroke.code] = now
+                            requirements = self._key_modifiers.get(stroke.code, [])
+                            swallow = any(req.issubset(self._pressed_keys) for req in requirements)
+                            if swallow:
+                                self._swallowed_keys.add(stroke.code)
                         elif is_up:
                             self._pressed_keys.discard(stroke.code)
                             self._pressed_key_ts.pop(stroke.code, None)
+                            swallow = stroke.code in self._swallowed_keys
+                            self._swallowed_keys.discard(stroke.code)
                 elif device.is_mouse:
                     mouse_key, is_down, is_up = self._mouse_event(int(getattr(stroke, "state", 0) or 0), mouse_buttons)
                     if mouse_key:
@@ -3012,11 +3064,16 @@ class KeySwallower:
                             if is_down:
                                 self._pressed_mouse.add(mouse_key)
                                 self._pressed_mouse_ts[mouse_key] = now
+                                requirements = self._mouse_modifiers.get(mouse_key, [])
+                                swallow = any(req.issubset(self._pressed_keys) for req in requirements)
+                                if swallow:
+                                    self._swallowed_mouse.add(mouse_key)
                             elif is_up:
                                 self._pressed_mouse.discard(mouse_key)
                                 self._pressed_mouse_ts.pop(mouse_key, None)
+                                swallow = mouse_key in self._swallowed_mouse
+                                self._swallowed_mouse.discard(mouse_key)
 
-                swallow = tracked_key or tracked_mouse
                 if not swallow:
                     device.send()
             except Exception:
@@ -5216,20 +5273,17 @@ class MacroEngine:
         ctx = app_ctx if app_ctx is not None else self._get_app_context()
         keys: List[str] = []
         seen: Set[str] = set()
-        mod_keys = _TRIGGER_MOD_KEYS
         for m in self._profile.macros:
             if not getattr(m, "enabled", True) or not m.suppress_trigger:
                 continue
             if not self._macro_matches_app(m, ctx):
                 continue
             for trig in self._macro_triggers(m):
-                for k in parse_trigger_keys(trig.key):
-                    if k in mod_keys:
-                        continue  # modifier는 삼키지 않아야 다른 앱 단축키/조합이 깨지지 않는다
-                    if k in seen:
-                        continue
-                    seen.add(k)
-                    keys.append(k)
+                normalized = normalize_trigger_key(trig.key)
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                keys.append(normalized)
         return keys
 
     def _swallow_keys(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -5238,7 +5292,7 @@ class MacroEngine:
 
     def _refresh_swallow(self, app_ctx: Optional[Dict[str, Any]] = None):
         keys = self._swallow_keys(app_ctx)
-        self._swallower.set_keys(keys)
+        self._swallower.set_triggers(keys)
         # 스레드가 예외로 죽었을 때 자동으로 다시 올려준다.
         self._swallower.start()
         self._swallower.set_enabled(bool(keys) and self.active and not self.paused and self._active_backend_mode == "hardware")
