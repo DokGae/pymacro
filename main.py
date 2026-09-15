@@ -3721,9 +3721,29 @@ class _ImageCanvas(QtWidgets.QWidget):
             text_pos = QtCore.QPoint(color_box.right() + 8, color_box.top() + 20)
         else:
             text_pos = pos + QtCore.QPoint(18, 18)
-        painter.setPen(QtGui.QColor("#e8f4ff"))
         text = f"{self._sample['pos'][0]},{self._sample['pos'][1]}  #{hex_text}"
-        painter.drawText(text_pos, text)
+        metrics = painter.fontMetrics()
+        text_size = metrics.size(QtCore.Qt.TextFlag.TextSingleLine, text)
+        label_rect = QtCore.QRect(
+            int(text_pos.x()),
+            int(text_pos.y() - metrics.ascent()),
+            int(text_size.width() + 16),
+            int(text_size.height() + 8),
+        )
+        label_margin = 8
+        if label_rect.right() > self.width() - label_margin:
+            label_rect.moveRight(self.width() - label_margin)
+        if label_rect.bottom() > self.height() - label_margin:
+            label_rect.moveBottom(self.height() - label_margin)
+        if label_rect.left() < label_margin:
+            label_rect.moveLeft(label_margin)
+        if label_rect.top() < label_margin:
+            label_rect.moveTop(label_margin)
+        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 150), 1))
+        painter.setBrush(QtGui.QColor(8, 12, 18, 220))
+        painter.drawRoundedRect(label_rect, 4, 4)
+        painter.setPen(QtGui.QColor("#ffffff"))
+        painter.drawText(label_rect, QtCore.Qt.AlignmentFlag.AlignCenter, text)
     def mouseMoveEvent(self, event: QtGui.QMouseEvent):
         self._last_mouse_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         if self._dragging and self._scale > 0:
