@@ -2589,7 +2589,7 @@ class ConditionDialog(QtWidgets.QDialog):
         viewer_row = QtWidgets.QHBoxLayout()
         self.viewer_btn = QtWidgets.QPushButton("이미지 뷰어/피커")
         self.debug_test_btn = QtWidgets.QPushButton("디버그 테스트")
-        self._viewer_status_hint = "F1=좌표, Ctrl+F1=범위, F2=색상, F3=패턴포인트, F5=새로고침, Delete=삭제"
+        self._viewer_status_hint = "F1 좌표 복사 | Ctrl+F1 범위 선택 | F2 색상 복사 | Ctrl+←/→ 이미지 이동"
         self.viewer_status = QtWidgets.QLabel(self._viewer_status_hint)
         self.viewer_status.setStyleSheet("color: gray;")
         last_dir = self._image_viewer_state.get("last_dir") if isinstance(self._image_viewer_state, dict) else None
@@ -3810,14 +3810,11 @@ class _ImageCanvas(QtWidgets.QWidget):
         super().mouseReleaseEvent(event)
     def wheelEvent(self, event: QtGui.QWheelEvent):
         delta = event.angleDelta().y()
-        if delta == 0:
+        if delta == 0 or not (event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier):
             return super().wheelEvent(event)
         steps = 1 if delta > 0 else -1
         anchor = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        if event.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier:
-            self.zoom_step(steps, anchor=anchor)
-        else:
-            self.zoom_step(steps, anchor=anchor)
+        self.zoom_step(steps, anchor=anchor)
         event.accept()
     def resizeEvent(self, event: QtGui.QResizeEvent):
         self._update_draw_rect()
@@ -4090,6 +4087,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.path_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         self.hud_label = QtWidgets.QLabel("")
         self.hud_label.setStyleSheet("color: #d9e7ff; background: rgba(30,40,60,0.6); padding: 4px;")
+        self.hud_label.setWordWrap(True)
         self.path_label.setStyleSheet("color: #9fb2cc;")
         right_layout.addWidget(self.path_label)
         right_layout.addWidget(self.hud_label)
@@ -5223,8 +5221,10 @@ class ImageViewerDialog(QtWidgets.QDialog):
         hk_stop = hk.get("stop") or "-"
         hk_cap = hk.get("capture") or "-"
         self.hud_label.setText(
-            f"핫키: 좌클릭 드래그 이동, Alt+휠/± 확대, 0 리셋, F1 좌표 복사, Ctrl+F1 범위 복사, F2 색상 복사(우클릭), "
-            f"F5 새로고침, Delete 선택 삭제, Ctrl+←/→ 이미지 이동, ESC 닫기 | 트리: 더블클릭 열기/접기, 드래그앤드롭 이동(CTRL=복사) "
+            f"이미지: 드래그 이동 | Ctrl+휠 또는 +/- 확대·축소 | 0 화면 맞춤 | 방향키 좌표 미세 이동 "
+            f"| 복사: F1 좌표 | Ctrl+F1 범위 | F2 색상 "
+            f"| 파일: Ctrl+←/→ 이전·다음 이미지 | F5 새로고침 | Delete 삭제 | Esc 닫기 "
+            f"| 트리: 더블클릭 열기·접기 | 드래그 이동 | Ctrl+드래그 복사 "
             f"| 스크린샷: 시작={hk_start}, 정지={hk_stop}, 단일={hk_cap}"
         )
     def _open_screenshot(self):
