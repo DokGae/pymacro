@@ -3877,12 +3877,12 @@ class _FavoriteStarDelegate(QtWidgets.QStyledItemDelegate):
         self._toggle_favorite = toggle_favorite
     @staticmethod
     def _star_rect(option: QtWidgets.QStyleOptionViewItem) -> QtCore.QRect:
-        return QtCore.QRect(option.rect.right() - 25, option.rect.top(), 24, option.rect.height())
+        return QtCore.QRect(option.rect.left(), option.rect.top(), 24, option.rect.height())
     def paint(self, painter, option, index):
         opt = QtWidgets.QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
         star_rect = self._star_rect(opt)
-        opt.rect.adjust(0, 0, -28, 0)
+        opt.rect.adjust(28, 0, 0, 0)
         style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
         style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
         favorite = bool(self._is_favorite(index))

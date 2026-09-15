@@ -82,8 +82,32 @@ class ScreenCaptureManager:
         self._writer_thread: Optional[threading.Thread] = None
         self._hotkey_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._filename_lock = threading.Lock()
+        self._next_file_number: Optional[int] = None
         self._seq = 0
         self._capture_listeners: list[Callable[[Path], None]] = []
+
+    def _next_numbered_output_path(self, ext: str) -> Path:
+        """Return the next simple numeric filename, continuing across restarts."""
+        _ensure_dir(self.output_dir)
+        with self._filename_lock:
+            if self._next_file_number is None:
+                highest = 0
+                try:
+                    for path in self.output_dir.iterdir():
+                        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}:
+                            if path.stem.isdigit():
+                                highest = max(highest, int(path.stem))
+                except Exception:
+                    highest = 0
+                self._next_file_number = highest + 1
+            number = self._next_file_number
+            output_path = self.output_dir / f"{number}.{ext}"
+            while output_path.exists():
+                number += 1
+                output_path = self.output_dir / f"{number}.{ext}"
+            self._next_file_number = number + 1
+            return output_path
 
     # ---------------------- 캡처 루프 ----------------------
     def _capture_loop(self):
@@ -115,8 +139,7 @@ class ScreenCaptureManager:
                 continue
 
             ext = "png" if self.image_format == "png" else "jpg"
-            filename = f"{seq:06d}_{ts}.{ext}"
-            output_path = self.output_dir / filename
+            output_path = self._next_numbered_output_path(ext)
 
             if self.image_format == "png":
                 mss.tools.to_png(rgb, size, output=str(output_path), level=self.png_compress_level)
@@ -324,12 +347,10 @@ class ScreenCaptureManager:
         _ensure_dir(self.output_dir)
         with mss.mss() as sct:
             monitor = sct.monitors[0]
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             self._seq += 1
             shot = sct.grab(monitor)
             ext = "png" if self.image_format == "png" else "jpg"
-            filename = f"{self._seq:06d}_{timestamp}.{ext}"
-            output_path = self.output_dir / filename
+            output_path = self._next_numbered_output_path(ext)
             if self.image_format == "png":
                 mss.tools.to_png(shot.rgb, shot.size, output=str(output_path), level=self.png_compress_level)
             else:
