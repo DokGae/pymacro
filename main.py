@@ -6775,6 +6775,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_pos_edit = QtWidgets.QLineEdit()
         self.mouse_pos_edit.setPlaceholderText("x,y (비우면 현재 위치, F1로 현재 좌표 입력)")
         self.mouse_pos_edit.setToolTip("F1: 현재 마우스 좌표 입력")
+        self.mouse_pos_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F1), self)
+        self.mouse_pos_shortcut.setContext(QtCore.Qt.ShortcutContext.WindowShortcut)
+        self.mouse_pos_shortcut.activated.connect(self._capture_mouse_position)
         self.mouse_move_duration_spin = QtWidgets.QSpinBox()
         self.mouse_move_duration_spin.setRange(0, 60000)
         self.mouse_move_duration_spin.setSingleStep(10)
@@ -7225,14 +7228,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         if self._current_type() not in mouse_types:
             return
         if self._current_type() == "mouse_move" and self._mouse_move_pos_mode() == "relative":
-            QtWidgets.QToolTip.showText(
-                QtGui.QCursor.pos(),
-                "상대 이동 모드: dx,dy 값을 직접 입력하세요.",
-                self,
-                QtCore.QRect(),
-                1500,
-            )
-            return
+            self._set_mouse_move_pos_mode("absolute")
         pos = _current_cursor_pos()
         if pos is None:
             qpos = QtGui.QCursor.pos()
