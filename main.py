@@ -8034,12 +8034,21 @@ class ActionEditDialog(QtWidgets.QDialog):
                 setattr(act, "_as_elif", True)
         return act
 class AppScopeDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None, *, scope: str = "global", targets=None, apply_all_cb=None):
+    def __init__(
+        self,
+        parent=None,
+        *,
+        scope: str = "global",
+        targets=None,
+        apply_all_cb=None,
+        scope_presets_provider=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("앱 동작 범위 설정")
         self.setModal(True)
         self.resize(520, 420)
         self._apply_all_cb = apply_all_cb
+        self._scope_presets_provider = scope_presets_provider
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
         self.scope_combo = QtWidgets.QComboBox()
@@ -8069,6 +8078,14 @@ class AppScopeDialog(QtWidgets.QDialog):
         file_row.addWidget(self.process_remove_btn)
         file_row.addStretch()
         target_layout.addLayout(file_row)
+        preset_row = QtWidgets.QHBoxLayout()
+        self.scope_preset_combo = QtWidgets.QComboBox()
+        self.scope_preset_combo.setMinimumContentsLength(25)
+        self.scope_preset_add_btn = QtWidgets.QPushButton("가져오기")
+        preset_row.addWidget(QtWidgets.QLabel("다른 매크로의 앱 설정"))
+        preset_row.addWidget(self.scope_preset_combo, stretch=1)
+        preset_row.addWidget(self.scope_preset_add_btn)
+        target_layout.addLayout(preset_row)
         self.app_target_list = QtWidgets.QListWidget()
         self.app_target_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         target_layout.addWidget(self.app_target_list)
@@ -8092,12 +8109,14 @@ class AppScopeDialog(QtWidgets.QDialog):
         self.process_pick_btn.clicked.connect(self._pick_process_file)
         self.process_active_btn.clicked.connect(self._add_active_process)
         self.process_remove_btn.clicked.connect(self._remove_selected_targets)
+        self.scope_preset_add_btn.clicked.connect(self._add_scope_preset)
         self.apply_all_btn.clicked.connect(self._apply_all)
         self._set_target_list(targets or [])
         idx = self.scope_combo.findData(scope or "global")
         self.scope_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self._update_scope_ui()
         self._refresh_process_list()
+        self._refresh_scope_presets()
     def _apply_all(self):
         if not self._apply_all_cb:
             return
@@ -8175,6 +8194,31 @@ class AppScopeDialog(QtWidgets.QDialog):
         data = self.process_combo.currentData()
         if isinstance(data, dict):
             self._add_target_entry(data.get("name"), data.get("path"))
+    def _refresh_scope_presets(self):
+        self.scope_preset_combo.clear()
+        try:
+            presets = self._scope_presets_provider() if callable(self._scope_presets_provider) else []
+        except Exception:
+            presets = []
+        for preset in presets or []:
+            if not isinstance(preset, dict):
+                continue
+            targets = preset.get("targets") or []
+            if targets:
+                self.scope_preset_combo.addItem(str(preset.get("label") or "매크로"), targets)
+        available = self.scope_preset_combo.count() > 0
+        if not available:
+            self.scope_preset_combo.addItem("등록된 앱 설정이 없습니다.", None)
+        self.scope_preset_combo.setEnabled(available)
+        self.scope_preset_add_btn.setEnabled(available)
+    def _add_scope_preset(self):
+        targets = self.scope_preset_combo.currentData()
+        if not isinstance(targets, list):
+            return
+        for raw in targets:
+            target = AppTarget.from_any(raw)
+            if target:
+                self._add_target_entry(target.name, target.path)
     def _add_active_process(self):
         try:
             info = get_foreground_process()
@@ -8215,6 +8259,7 @@ class MacroDialog(QtWidgets.QDialog):
         screenshot_manager=None,
         apply_scope_all=None,
         macro_list_provider=None,
+        app_scope_presets_provider=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("매크로 편집")
@@ -8239,6 +8284,7 @@ class MacroDialog(QtWidgets.QDialog):
         self._open_pattern_manager = getattr(parent_for_patterns, "_open_pattern_manager", None)
         self._apply_scope_all_cb = apply_scope_all
         self._macro_list_provider = macro_list_provider
+        self._app_scope_presets_provider = app_scope_presets_provider
         self._scope: str = "global"
         self._app_targets: list[AppTarget] = []
         self._updating_trigger_builder = False
@@ -8801,7 +8847,13 @@ class MacroDialog(QtWidgets.QDialog):
     def _set_scope_label(self):
         self.scope_summary.setText(self._scope_summary_text())
     def _open_scope_dialog(self):
-        dlg = AppScopeDialog(self, scope=self._scope, targets=self._app_targets, apply_all_cb=self._apply_scope_all_cb)
+        dlg = AppScopeDialog(
+            self,
+            scope=self._scope,
+            targets=self._app_targets,
+            apply_all_cb=self._apply_scope_all_cb,
+            scope_presets_provider=self._app_scope_presets_provider,
+        )
         if _run_dialog_non_modal(dlg):
             self._scope = dlg.selected_scope()
             self._app_targets = dlg.selected_targets()
@@ -18845,6 +18897,36 @@ class MacroWindow(QtWidgets.QMainWindow):
             seen.add(key)
             uniq.append(item)
         return uniq
+    def _app_scope_picker_items(self, exclude: Macro | None = None) -> list[dict]:
+        items: list[dict] = []
+        for macro in self._collect_macros():
+            if exclude is not None and macro is exclude:
+                continue
+            if (getattr(macro, "scope", "global") or "global") != "app":
+                continue
+            targets: list[AppTarget] = []
+            labels: list[str] = []
+            for raw in getattr(macro, "app_targets", []) or []:
+                target = AppTarget.from_any(raw)
+                if not target:
+                    continue
+                targets.append(copy.deepcopy(target))
+                label = target.name or (Path(target.path).name if target.path else "")
+                if label and label not in labels:
+                    labels.append(label)
+            if not targets:
+                continue
+            name = (getattr(macro, "name", "") or "").strip()
+            try:
+                trigger = macro.trigger_label(include_mode=False)
+            except Exception:
+                trigger = (getattr(macro, "trigger_key", "") or "").strip()
+            macro_label = name or trigger or "매크로"
+            app_summary = ", ".join(labels[:3])
+            if len(labels) > 3:
+                app_summary += ", ..."
+            items.append({"label": f"{macro_label} ({app_summary})", "targets": targets})
+        return items
     def _get_selected_row(self) -> int:
         selected = self.macro_table.selectionModel().selectedRows()
         return selected[0].row() if selected else -1
@@ -19119,6 +19201,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             screenshot_manager=self.screenshot_manager,
             apply_scope_all=self._apply_scope_to_all_macros,
             macro_list_provider=lambda: self._macro_picker_items(),
+            app_scope_presets_provider=lambda: self._app_scope_picker_items(),
         )
         if _run_dialog_non_modal(dlg):
             try:
@@ -19156,6 +19239,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             screenshot_manager=self.screenshot_manager,
             apply_scope_all=self._apply_scope_to_all_macros,
             macro_list_provider=lambda m=macro: self._macro_picker_items(exclude=m),
+            app_scope_presets_provider=lambda m=macro: self._app_scope_picker_items(exclude=m),
         )
         if _run_dialog_non_modal(dlg):
             try:
