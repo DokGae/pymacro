@@ -4059,6 +4059,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._auto_refresh_enabled = bool(state.get("auto_refresh"))
         self._sidebar_collapsed = bool(state.get("sidebar_collapsed", False))
         self._sidebar_width = max(220, int(state.get("sidebar_width", 320) or 320))
+        self._favorites_collapsed = bool(state.get("favorites_collapsed", False))
         self._debug_frame_cache_path: Path | None = None
         self._debug_frame_cache_mtime: float | None = None
         self._debug_frame_cache_frame: np.ndarray | None = None
@@ -4132,10 +4133,21 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.root_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         root_row.addWidget(self.root_label, 1)
         side_layout.addLayout(root_row)
-        fav_box = QtWidgets.QGroupBox("즐겨찾기")
-        fav_layout = QtWidgets.QVBoxLayout(fav_box)
+        self.fav_box = QtWidgets.QGroupBox("즐겨찾기")
+        fav_layout = QtWidgets.QVBoxLayout(self.fav_box)
         fav_layout.setContentsMargins(6, 6, 6, 6)
         fav_layout.setSpacing(6)
+        fav_header = QtWidgets.QHBoxLayout()
+        fav_header.addStretch()
+        self.fav_collapse_btn = QtWidgets.QToolButton()
+        self.fav_collapse_btn.setCheckable(True)
+        self.fav_collapse_btn.setFixedSize(26, 24)
+        fav_header.addWidget(self.fav_collapse_btn)
+        fav_layout.addLayout(fav_header)
+        self.fav_content = QtWidgets.QWidget()
+        fav_content_layout = QtWidgets.QVBoxLayout(self.fav_content)
+        fav_content_layout.setContentsMargins(0, 0, 0, 0)
+        fav_content_layout.setSpacing(6)
         fav_btns = QtWidgets.QGridLayout()
         fav_btns.setSpacing(4)
         self.add_group_btn = QtWidgets.QPushButton("그룹 추가")
@@ -4148,14 +4160,15 @@ class ImageViewerDialog(QtWidgets.QDialog):
         fav_btns.addWidget(self.add_fav_btn, 1, 0)
         fav_btns.addWidget(self.remove_fav_btn, 1, 1)
         fav_btns.addWidget(self.clean_fav_btn, 2, 0, 1, 2)
-        fav_layout.addLayout(fav_btns)
+        fav_content_layout.addLayout(fav_btns)
         self.fav_tree = QtWidgets.QTreeWidget()
         self.fav_tree.setHeaderHidden(True)
         self.fav_tree.setIndentation(14)
         self.fav_tree.setUniformRowHeights(True)
         self.fav_tree.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        fav_layout.addWidget(self.fav_tree, 1)
-        side_layout.addWidget(fav_box)
+        fav_content_layout.addWidget(self.fav_tree, 1)
+        fav_layout.addWidget(self.fav_content)
+        side_layout.addWidget(self.fav_box)
         self.file_tree = _FileTreeView()
         side_layout.addWidget(self.file_tree, 1)
         splitter.addWidget(self.sidebar)
@@ -4234,6 +4247,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.canvas.zoomChanged.connect(self._on_zoom_changed)
         self.add_group_btn.clicked.connect(self._add_favorite_group)
         self.remove_group_btn.clicked.connect(self._remove_favorite_group)
+        self.fav_collapse_btn.toggled.connect(self._set_favorites_collapsed)
         self.add_fav_btn.clicked.connect(self._add_current_to_favorites)
         self.remove_fav_btn.clicked.connect(self._remove_selected_favorite)
         self.clean_fav_btn.clicked.connect(self._clean_missing_favorites_with_notice)
@@ -4250,6 +4264,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._set_tree_root(self._root_dir)
         self._apply_sort()
         self._refresh_favorites_tree()
+        self.fav_collapse_btn.setChecked(self._favorites_collapsed)
+        self._set_favorites_collapsed(self._favorites_collapsed, persist=False)
         self.sidebar_toggle_btn.setChecked(self._sidebar_collapsed)
         self._set_sidebar_collapsed(self._sidebar_collapsed, persist=False)
         if not callable(self._open_screenshot_dialog):
@@ -4375,6 +4391,23 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self.sidebar_toggle_btn.blockSignals(False)
         if persist:
             self._persist_state()
+    def _set_favorites_collapsed(self, collapsed: bool, *, persist: bool = True):
+        collapsed = bool(collapsed)
+        self._favorites_collapsed = collapsed
+        self.fav_content.setVisible(not collapsed)
+        self.fav_collapse_btn.setText("▶" if collapsed else "▼")
+        self.fav_collapse_btn.setToolTip("즐겨찾기 펼치기" if collapsed else "즐겨찾기 접기")
+        if self.fav_collapse_btn.isChecked() != collapsed:
+            self.fav_collapse_btn.blockSignals(True)
+            self.fav_collapse_btn.setChecked(collapsed)
+            self.fav_collapse_btn.blockSignals(False)
+        self.fav_box.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Maximum if collapsed else QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        self.fav_box.updateGeometry()
+        if persist:
+            self._persist_state()
     def _persist_state(self):
         if not self._sidebar_collapsed:
             sizes = self.main_splitter.sizes()
@@ -4391,6 +4424,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             "sort_order": "desc" if self._sort_order == QtCore.Qt.SortOrder.DescendingOrder else "asc",
             "sidebar_collapsed": self._sidebar_collapsed,
             "sidebar_width": self._sidebar_width,
+            "favorites_collapsed": self._favorites_collapsed,
         }
         if callable(self._save_state):
             try:
@@ -4415,6 +4449,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             "last_file": str(self._current_file()) if self._current_file() else None,
             "sidebar_collapsed": self._sidebar_collapsed,
             "sidebar_width": self._sidebar_width,
+            "favorites_collapsed": self._favorites_collapsed,
         }
     def set_start_dir(self, path: Path, *, refresh: bool = False):
         new_dir = self._validate_dir(path)
