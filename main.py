@@ -3882,6 +3882,10 @@ class _FavoriteStarDelegate(QtWidgets.QStyledItemDelegate):
         opt = QtWidgets.QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
         star_rect = self._star_rect(opt)
+        selected = bool(opt.state & QtWidgets.QStyle.StateFlag.State_Selected)
+        if selected:
+            active = bool(opt.state & QtWidgets.QStyle.StateFlag.State_Active)
+            painter.fillRect(opt.rect, QtGui.QColor("#1769aa" if active else "#315b7d"))
         opt.rect.adjust(28, 0, 0, 0)
         style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
         style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
@@ -3890,7 +3894,11 @@ class _FavoriteStarDelegate(QtWidgets.QStyledItemDelegate):
         font = painter.font()
         font.setPointSize(max(11, font.pointSize() + 2))
         painter.setFont(font)
-        painter.setPen(QtGui.QColor("#ffd54f") if favorite else QtGui.QColor("#687487"))
+        painter.setPen(
+            QtGui.QColor("#ffd54f")
+            if favorite
+            else QtGui.QColor("#ffffff" if selected else "#687487")
+        )
         painter.drawText(star_rect, QtCore.Qt.AlignmentFlag.AlignCenter, "★" if favorite else "☆")
         painter.restore()
     def editorEvent(self, event, model, option, index):
@@ -3927,6 +3935,7 @@ class _FileTreeView(QtWidgets.QTreeView):
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
         self.setIndentation(16)
+        self.setRootIsDecorated(False)
         self.setExpandsOnDoubleClick(True)
     def set_root_path(self, root: Path):
         self._root_path = Path(root)
@@ -4048,6 +4057,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._pending_state: dict | None = None
         self._block_tree_selection = False
         self._auto_refresh_enabled = bool(state.get("auto_refresh"))
+        self._sidebar_collapsed = bool(state.get("sidebar_collapsed", False))
+        self._sidebar_width = max(220, int(state.get("sidebar_width", 320) or 320))
         self._debug_frame_cache_path: Path | None = None
         self._debug_frame_cache_mtime: float | None = None
         self._debug_frame_cache_frame: np.ndarray | None = None
@@ -4078,6 +4089,10 @@ class ImageViewerDialog(QtWidgets.QDialog):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
         top = QtWidgets.QHBoxLayout()
+        self.sidebar_toggle_btn = QtWidgets.QToolButton()
+        self.sidebar_toggle_btn.setText("☰")
+        self.sidebar_toggle_btn.setCheckable(True)
+        self.sidebar_toggle_btn.setFixedSize(30, 28)
         self.root_btn = QtWidgets.QPushButton("루트 변경")
         self.open_folder_btn = QtWidgets.QPushButton("탐색기에서 열기")
         self.refresh_btn = QtWidgets.QPushButton("새로고침")
@@ -4088,6 +4103,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.move_to_coord_btn = QtWidgets.QPushButton("좌표로 이동")
         self.screenshot_btn = QtWidgets.QPushButton("스크린샷")
         self.close_btn = QtWidgets.QPushButton("종료")
+        top.addWidget(self.sidebar_toggle_btn)
         top.addWidget(self.root_btn)
         top.addWidget(self.open_folder_btn)
         top.addWidget(self.refresh_btn)
@@ -4100,11 +4116,12 @@ class ImageViewerDialog(QtWidgets.QDialog):
         top.addWidget(self.screenshot_btn)
         top.addWidget(self.close_btn)
         layout.addLayout(top)
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        splitter = self.main_splitter
         layout.addWidget(splitter, 1)
         # 좌측: 즐겨찾기 + 파일 트리
-        sidebar = QtWidgets.QWidget()
-        side_layout = QtWidgets.QVBoxLayout(sidebar)
+        self.sidebar = QtWidgets.QWidget()
+        side_layout = QtWidgets.QVBoxLayout(self.sidebar)
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(6)
         root_row = QtWidgets.QHBoxLayout()
@@ -4141,7 +4158,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         side_layout.addWidget(fav_box)
         self.file_tree = _FileTreeView()
         side_layout.addWidget(self.file_tree, 1)
-        splitter.addWidget(sidebar)
+        splitter.addWidget(self.sidebar)
         # 우측: 뷰어
         right = QtWidgets.QWidget()
         right_layout = QtWidgets.QVBoxLayout(right)
@@ -4164,7 +4181,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([320, 900])
+        splitter.setSizes([self._sidebar_width, 900])
         # 파일 모델/트리 연결
         self._fs_model = QtGui.QFileSystemModel(self)
         self._fs_model.setReadOnly(False)
@@ -4202,6 +4219,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.file_tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         # 시그널 연결
         self.root_btn.clicked.connect(self._choose_root)
+        self.sidebar_toggle_btn.toggled.connect(self._set_sidebar_collapsed)
         self.open_folder_btn.clicked.connect(self._open_current_folder)
         self.refresh_btn.clicked.connect(lambda _=False: self._refresh_folder(show_latest=True))
         self.delete_btn.clicked.connect(self._delete_selection)
@@ -4220,7 +4238,6 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.remove_fav_btn.clicked.connect(self._remove_selected_favorite)
         self.clean_fav_btn.clicked.connect(self._clean_missing_favorites_with_notice)
         self.fav_tree.currentItemChanged.connect(self._on_favorite_selection_changed)
-        self.fav_tree.itemDoubleClicked.connect(self._on_favorite_double_clicked)
         self.file_tree.dropRequested.connect(self._handle_drop)
         self.file_tree.ctrlArrow.connect(self._on_tree_ctrl_arrow)
         self.file_tree.deleteRequested.connect(self._delete_selection)
@@ -4233,6 +4250,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._set_tree_root(self._root_dir)
         self._apply_sort()
         self._refresh_favorites_tree()
+        self.sidebar_toggle_btn.setChecked(self._sidebar_collapsed)
+        self._set_sidebar_collapsed(self._sidebar_collapsed, persist=False)
         if not callable(self._open_screenshot_dialog):
             self.screenshot_btn.setEnabled(False)
         self._update_hud_text()
@@ -4338,7 +4357,29 @@ class ImageViewerDialog(QtWidgets.QDialog):
         if 0 <= self._current_index < len(self._image_files):
             return self._image_files[self._current_index]
         return None
+    def _set_sidebar_collapsed(self, collapsed: bool, *, persist: bool = True):
+        collapsed = bool(collapsed)
+        if collapsed and self.sidebar.isVisible():
+            sizes = self.main_splitter.sizes()
+            if sizes and sizes[0] > 0:
+                self._sidebar_width = max(220, int(sizes[0]))
+        self._sidebar_collapsed = collapsed
+        self.sidebar.setVisible(not collapsed)
+        if not collapsed:
+            total = max(self.width(), sum(self.main_splitter.sizes()), self._sidebar_width + 400)
+            self.main_splitter.setSizes([self._sidebar_width, max(400, total - self._sidebar_width)])
+        self.sidebar_toggle_btn.setToolTip("왼쪽 패널 펼치기" if collapsed else "왼쪽 패널 접기")
+        if self.sidebar_toggle_btn.isChecked() != collapsed:
+            self.sidebar_toggle_btn.blockSignals(True)
+            self.sidebar_toggle_btn.setChecked(collapsed)
+            self.sidebar_toggle_btn.blockSignals(False)
+        if persist:
+            self._persist_state()
     def _persist_state(self):
+        if not self._sidebar_collapsed:
+            sizes = self.main_splitter.sizes()
+            if sizes and sizes[0] > 0:
+                self._sidebar_width = max(220, int(sizes[0]))
         data = {
             "last_dir": str(self._current_folder),
             "root_dir": str(self._root_dir),
@@ -4348,6 +4389,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
             "last_file": str(self._current_file()) if self._current_file() else None,
             "sort_col": self._sort_column,
             "sort_order": "desc" if self._sort_order == QtCore.Qt.SortOrder.DescendingOrder else "asc",
+            "sidebar_collapsed": self._sidebar_collapsed,
+            "sidebar_width": self._sidebar_width,
         }
         if callable(self._save_state):
             try:
@@ -4370,6 +4413,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
             "favorites": self._favorites,
             "fav_group": self._current_fav_group,
             "last_file": str(self._current_file()) if self._current_file() else None,
+            "sidebar_collapsed": self._sidebar_collapsed,
+            "sidebar_width": self._sidebar_width,
         }
     def set_start_dir(self, path: Path, *, refresh: bool = False):
         new_dir = self._validate_dir(path)
@@ -4816,6 +4861,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
             if hasattr(self, "file_tree"):
                 self.file_tree.viewport().update()
             self._persist_state()
+        if data.get("type") == "fav":
+            self._open_favorite_path(data)
     def _add_favorite_group(self):
         name, ok = QtWidgets.QInputDialog.getText(self, "즐겨찾기 그룹 추가", "그룹 이름을 입력하세요.")
         if not ok or not name.strip():
@@ -4901,21 +4948,24 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._current_fav_group = data.get("name") or self._current_fav_group
             self._persist_state()
             return
-        if data.get("type") == "fav":
-            path = Path(data.get("path"))
-            if not path.exists():
-                QtWidgets.QMessageBox.information(self, "경로 없음", f"{path} 가 존재하지 않습니다.")
-                return
-            if path.is_dir():
-                if not self._is_under_root(path):
-                    self._set_tree_root(path)
-                self._set_current_folder(path, refresh=True, auto_select_first=True)
-                return
-            if self._is_image_file(path):
-                parent = path.parent
-                if not self._is_under_root(parent):
-                    self._set_tree_root(parent)
-                self._select_file(path)
+        self._open_favorite_path(data)
+    def _open_favorite_path(self, data: dict):
+        if data.get("type") != "fav":
+            return
+        path = Path(data.get("path"))
+        if not path.exists():
+            self._clean_missing_favorites_with_notice()
+            return
+        if path.is_dir():
+            if not self._is_under_root(path):
+                self._set_tree_root(path)
+            self._set_current_folder(path, refresh=True, auto_select_first=True)
+            return
+        if self._is_image_file(path):
+            parent = path.parent
+            if not self._is_under_root(parent):
+                self._set_tree_root(parent)
+            self._select_file(path)
     def _on_tree_ctrl_arrow(self, delta: int):
         """Ctrl+좌/우: 트리에서 현재 선택 기준 다음/이전 이미지로 이동."""
         sel_model = self.file_tree.selectionModel()
