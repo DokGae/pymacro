@@ -3869,6 +3869,45 @@ class _ImageFilterProxyModel(QtCore.QSortFilterProxyModel):
             return True
         name = getattr(model, "fileName", lambda x: "")(idx).lower()
         return any(name.endswith(ext) for ext in self._allow_exts)
+class _FavoriteStarDelegate(QtWidgets.QStyledItemDelegate):
+    def __init__(self, tree, is_favorite, toggle_favorite):
+        super().__init__(tree)
+        self._tree = tree
+        self._is_favorite = is_favorite
+        self._toggle_favorite = toggle_favorite
+    @staticmethod
+    def _star_rect(option: QtWidgets.QStyleOptionViewItem) -> QtCore.QRect:
+        return QtCore.QRect(option.rect.right() - 25, option.rect.top(), 24, option.rect.height())
+    def paint(self, painter, option, index):
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        star_rect = self._star_rect(opt)
+        opt.rect.adjust(0, 0, -28, 0)
+        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
+        style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+        favorite = bool(self._is_favorite(index))
+        painter.save()
+        font = painter.font()
+        font.setPointSize(max(11, font.pointSize() + 2))
+        painter.setFont(font)
+        painter.setPen(QtGui.QColor("#ffd54f") if favorite else QtGui.QColor("#687487"))
+        painter.drawText(star_rect, QtCore.Qt.AlignmentFlag.AlignCenter, "★" if favorite else "☆")
+        painter.restore()
+    def editorEvent(self, event, model, option, index):
+        event_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        if (
+            event.type() == QtCore.QEvent.Type.MouseButtonRelease
+            and event.button() == QtCore.Qt.MouseButton.LeftButton
+            and self._star_rect(option).contains(event_pos)
+        ):
+            self._toggle_favorite(index)
+            return True
+        if event.type() == QtCore.QEvent.Type.ToolTip and self._star_rect(option).contains(event_pos):
+            action = "해제" if self._is_favorite(index) else "추가"
+            global_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+            QtWidgets.QToolTip.showText(global_pos, f"현재 그룹 즐겨찾기 {action}", self._tree)
+            return True
+        return super().editorEvent(event, model, option, index)
 class _FileTreeView(QtWidgets.QTreeView):
     dropRequested = QtCore.pyqtSignal(list, Path, QtCore.Qt.DropAction)
     ctrlArrow = QtCore.pyqtSignal(int)
@@ -4141,6 +4180,16 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._proxy_model.setSourceModel(self._fs_model)
         self.file_tree.setModel(self._proxy_model)
         self.file_tree.set_path_resolver(self._path_from_index)
+        self._favorite_star_delegate = _FavoriteStarDelegate(
+            self.file_tree,
+            self._is_index_favorite,
+            self._toggle_index_favorite,
+        )
+        self.file_tree.setItemDelegateForColumn(0, self._favorite_star_delegate)
+        self.file_tree.setStyleSheet(
+            "QTreeView::item:selected { background: #1769aa; color: #ffffff; }"
+            "QTreeView::item:selected:!active { background: #315b7d; color: #ffffff; }"
+        )
         self.file_tree.set_root_path(self._root_dir)
         header = self.file_tree.header()
         header.setSectionsClickable(True)
@@ -4416,6 +4465,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
                     copied += 1
                 else:
                     shutil.move(str(src_path), str(dest))
+                    self._replace_favorite_path(src_path, dest)
                     moved += 1
             except Exception as exc:
                 errors.append(f"{src_path.name}: {exc}")
@@ -4631,6 +4681,32 @@ class ImageViewerDialog(QtWidgets.QDialog):
             return os.path.normcase(os.path.abspath(os.path.normpath(str(path_value))))
         except Exception:
             return str(path_value or "").strip().lower()
+    def _is_index_favorite(self, index: QtCore.QModelIndex) -> bool:
+        path = self._path_from_index(index)
+        group = self._current_fav_group
+        if not path or not group:
+            return False
+        key = self._favorite_path_key(path)
+        return any(self._favorite_path_key(value) == key for value in self._favorites.get(group, []))
+    def _toggle_index_favorite(self, index: QtCore.QModelIndex):
+        path = self._path_from_index(index)
+        if not path or not path.exists():
+            self.status_label.setText("즐겨찾기 변경: 선택한 항목이 존재하지 않습니다.")
+            return
+        group = self._current_fav_group or next(iter(self._favorites))
+        favorites = self._favorites.setdefault(group, [])
+        key = self._favorite_path_key(path)
+        existing = next((value for value in favorites if self._favorite_path_key(value) == key), None)
+        if existing is None:
+            favorites.append(str(path))
+            action = "추가"
+        else:
+            favorites.remove(existing)
+            action = "해제"
+        self._refresh_favorites_tree(clean_missing=False)
+        self._persist_state()
+        self.file_tree.viewport().update()
+        self.status_label.setText(f"즐겨찾기 {action}: {path.name} ({group})")
     def _normalize_favorites(self, raw_favorites) -> dict[str, list[str]]:
         normalized: dict[str, list[str]] = {}
         if not isinstance(raw_favorites, dict):
@@ -4672,7 +4748,15 @@ class ImageViewerDialog(QtWidgets.QDialog):
             replaced: list[str] = []
             seen: set[str] = set()
             for value in items:
-                candidate = str(new_path) if self._favorite_path_key(value) == old_key else value
+                candidate = value
+                if self._favorite_path_key(value) == old_key:
+                    candidate = str(new_path)
+                else:
+                    try:
+                        relative = Path(value).relative_to(old_path)
+                        candidate = str(new_path / relative)
+                    except (TypeError, ValueError):
+                        pass
                 key = self._favorite_path_key(candidate)
                 if key in seen:
                     changed = True
@@ -4720,6 +4804,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
             if group == self._current_fav_group:
                 self.fav_tree.setCurrentItem(g_item)
         self.fav_tree.blockSignals(False)
+        if hasattr(self, "file_tree"):
+            self.file_tree.viewport().update()
     def _on_favorite_selection_changed(self, current, previous=None):
         data = current.data(0, QtCore.Qt.ItemDataRole.UserRole) if current else None
         if not isinstance(data, dict):
@@ -4727,6 +4813,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
         group = data.get("name") if data.get("type") == "group" else data.get("group")
         if group and group in self._favorites and group != self._current_fav_group:
             self._current_fav_group = group
+            if hasattr(self, "file_tree"):
+                self.file_tree.viewport().update()
             self._persist_state()
     def _add_favorite_group(self):
         name, ok = QtWidgets.QInputDialog.getText(self, "즐겨찾기 그룹 추가", "그룹 이름을 입력하세요.")
