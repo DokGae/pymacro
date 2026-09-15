@@ -6778,6 +6778,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_pos_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F1), self)
         self.mouse_pos_shortcut.setContext(QtCore.Qt.ShortcutContext.WindowShortcut)
         self.mouse_pos_shortcut.activated.connect(self._capture_mouse_position)
+        self.mouse_pos_hint_label = QtWidgets.QLabel("F1을 누르면 현재 마우스 좌표를 입력합니다.")
+        self.mouse_pos_hint_label.setStyleSheet("color: #666; font-size: 11px;")
         self.mouse_move_duration_spin = QtWidgets.QSpinBox()
         self.mouse_move_duration_spin.setRange(0, 60000)
         self.mouse_move_duration_spin.setSingleStep(10)
@@ -7020,6 +7022,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("마우스 버튼", self.mouse_button_combo)
         form.addRow("마우스 이동 기준", self.mouse_pos_mode_combo)
         form.addRow("마우스 좌표 x,y (선택)", self.mouse_pos_edit)
+        form.addRow("", self.mouse_pos_hint_label)
         form.addRow("마우스 이동 시간", self.mouse_move_duration_spin)
         form.addRow("휠 방향", self.wheel_direction_combo)
         form.addRow("휠 횟수", self.wheel_amount_spin)
@@ -7220,9 +7223,11 @@ class ActionEditDialog(QtWidgets.QDialog):
         if relative:
             self.mouse_pos_edit.setPlaceholderText("dx,dy (예: 120,-80)")
             self.mouse_pos_edit.setToolTip("현재 마우스 위치 기준 상대 이동량입니다. 예: 50,-20")
+            self.mouse_pos_hint_label.setText("F1을 누르면 절대 좌표로 전환하고 현재 마우스 좌표를 입력합니다.")
         else:
             self.mouse_pos_edit.setPlaceholderText("x,y (비우면 현재 위치, F1로 현재 좌표 입력)")
             self.mouse_pos_edit.setToolTip("F1: 현재 마우스 좌표 입력")
+            self.mouse_pos_hint_label.setText("F1을 누르면 현재 마우스 좌표를 입력합니다.")
     def _capture_mouse_position(self):
         mouse_types = {"mouse_click", "mouse_down", "mouse_up", "mouse_move"}
         if self._current_type() not in mouse_types:
@@ -7488,6 +7493,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.mouse_pos_mode_combo.setEnabled(show_mouse_move_mode)
         self._set_field_visible(self.mouse_pos_edit, show_mouse_pos)
         self.mouse_pos_edit.setEnabled(show_mouse_pos)
+        self._set_field_visible(self.mouse_pos_hint_label, show_mouse_pos)
+        self.mouse_pos_hint_label.setEnabled(show_mouse_pos)
         self._set_field_visible(self.mouse_move_duration_spin, show_mouse_move_duration)
         self.mouse_move_duration_spin.setEnabled(show_mouse_move_duration)
         for w in (self.wheel_direction_combo, self.wheel_amount_spin, self.wheel_interval_spin):
