@@ -2589,7 +2589,7 @@ class ConditionDialog(QtWidgets.QDialog):
         viewer_row = QtWidgets.QHBoxLayout()
         self.viewer_btn = QtWidgets.QPushButton("이미지 뷰어/피커")
         self.debug_test_btn = QtWidgets.QPushButton("디버그 테스트")
-        self._viewer_status_hint = "F1 좌표 복사 | Ctrl+F1 범위 선택 | F2 색상 복사 | Ctrl+←/→ 이미지 이동"
+        self._viewer_status_hint = "F1 좌표 복사 | Ctrl+F1 범위 선택 | F2 색상 복사 | Ctrl+Enter 좌표로 이동"
         self.viewer_status = QtWidgets.QLabel(self._viewer_status_hint)
         self.viewer_status.setStyleSheet("color: gray;")
         last_dir = self._image_viewer_state.get("last_dir") if isinstance(self._image_viewer_state, dict) else None
@@ -4045,6 +4045,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.delete_all_btn = QtWidgets.QPushButton("폴더 비우기")
         self.auto_refresh_chk = QtWidgets.QCheckBox("단일 캡처 후 새로고침")
         self.region_select_btn = QtWidgets.QPushButton("범위 선택")
+        self.move_to_coord_btn = QtWidgets.QPushButton("좌표로 이동")
         self.screenshot_btn = QtWidgets.QPushButton("스크린샷")
         self.close_btn = QtWidgets.QPushButton("종료")
         top.addWidget(self.root_btn)
@@ -4055,6 +4056,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         top.addWidget(self.auto_refresh_chk)
         top.addStretch(1)
         top.addWidget(self.region_select_btn)
+        top.addWidget(self.move_to_coord_btn)
         top.addWidget(self.screenshot_btn)
         top.addWidget(self.close_btn)
         layout.addLayout(top)
@@ -4155,6 +4157,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.auto_refresh_chk.setChecked(self._auto_refresh_enabled)
         self.auto_refresh_chk.toggled.connect(self._persist_state)
         self.region_select_btn.clicked.connect(self._start_region_selection)
+        self.move_to_coord_btn.clicked.connect(self._move_cursor_to_coordinate)
         self.screenshot_btn.clicked.connect(self._open_screenshot)
         self.close_btn.clicked.connect(self.close)
         self.canvas.sampleChanged.connect(self._on_sample_changed)
@@ -4978,7 +4981,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self._delete_selection()
             return
         if ctrl and key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
-            self._rename_current_file()
+            self._move_cursor_to_coordinate()
             return
         if key in (
             QtCore.Qt.Key.Key_Left,
@@ -5043,6 +5046,49 @@ class ImageViewerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._fill_condition_dialog_region(txt)
+    def _move_cursor_to_coordinate(self):
+        image = getattr(self.canvas, "_image", None)
+        if image is None:
+            self.status_label.setText("좌표로 이동: 이미지가 없습니다.")
+            return
+        default_text = ""
+        if self._last_sample and self._last_sample.get("pos"):
+            x, y = self._last_sample["pos"]
+            default_text = f"{x},{y}"
+        text, accepted = QtWidgets.QInputDialog.getText(
+            self,
+            "좌표로 이동",
+            f"이미지 좌표 x,y를 입력하세요. (범위: 0~{image.width() - 1}, 0~{image.height() - 1})",
+            QtWidgets.QLineEdit.EchoMode.Normal,
+            default_text,
+        )
+        if not accepted:
+            return
+        parts = [part.strip() for part in str(text).split(",")]
+        try:
+            if len(parts) != 2:
+                raise ValueError
+            x, y = int(parts[0]), int(parts[1])
+        except (TypeError, ValueError):
+            QtWidgets.QMessageBox.warning(self, "좌표 오류", "좌표를 x,y 형식의 정수로 입력하세요. 예: 320,240")
+            return
+        if not (0 <= x < image.width() and 0 <= y < image.height()):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "좌표 오류",
+                f"이미지 범위 안의 좌표를 입력하세요.\nX: 0~{image.width() - 1}, Y: 0~{image.height() - 1}",
+            )
+            return
+        self.canvas._view_center = QtCore.QPointF(x, y)
+        self.canvas._update_draw_rect()
+        self.canvas.set_sample_from_image_pos((x, y))
+        sample = getattr(self.canvas, "_sample", None)
+        if not sample:
+            return
+        widget_pos = sample["widget_pos"]
+        QtGui.QCursor.setPos(self.canvas.mapToGlobal(widget_pos))
+        self.canvas.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        self.status_label.setText(f"좌표로 이동: {x},{y}")
     def _fill_condition_dialog_region(self, region_text: str):
         """현재 열려 있는 조건 편집/노드 창의 region 필드를 채운다."""
         try:
@@ -5242,7 +5288,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         hk_cap = hk.get("capture") or "-"
         self.hud_label.setText(
             f"이미지: 드래그 이동 | Ctrl+휠 또는 +/- 확대·축소 | 0 화면 맞춤 | 방향키 좌표 미세 이동 "
-            f"| 복사: F1 좌표 | Ctrl+F1 범위 | F2 색상 "
+            f"| 복사: F1 좌표 | Ctrl+F1 범위 | F2 색상 | 이동: Ctrl+Enter 좌표 입력 "
             f"| 파일: Ctrl+←/→ 이전·다음 이미지 | F5 새로고침 | Delete 삭제 | Esc 닫기 "
             f"| 트리: 더블클릭 열기·접기 | 드래그 이동 | Ctrl+드래그 복사 "
             f"| 스크린샷: 시작={hk_start}, 정지={hk_stop}, 단일={hk_cap}"
