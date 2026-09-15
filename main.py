@@ -4395,7 +4395,14 @@ class ImageViewerDialog(QtWidgets.QDialog):
         collapsed = bool(collapsed)
         self._favorites_collapsed = collapsed
         self.fav_content.setVisible(not collapsed)
-        self.fav_collapse_btn.setText("▶" if collapsed else "▼")
+        arrow = (
+            QtWidgets.QStyle.StandardPixmap.SP_ArrowDown
+            if collapsed
+            else QtWidgets.QStyle.StandardPixmap.SP_ArrowUp
+        )
+        self.fav_collapse_btn.setText("")
+        self.fav_collapse_btn.setIcon(self.style().standardIcon(arrow))
+        self.fav_collapse_btn.setIconSize(QtCore.QSize(14, 14))
         self.fav_collapse_btn.setToolTip("즐겨찾기 펼치기" if collapsed else "즐겨찾기 접기")
         if self.fav_collapse_btn.isChecked() != collapsed:
             self.fav_collapse_btn.blockSignals(True)
