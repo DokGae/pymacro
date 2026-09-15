@@ -4015,6 +4015,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._favorites = state.get("favorites") if isinstance(state, dict) else {}
         if not isinstance(self._favorites, dict):
             self._favorites = {}
+        self._favorites = self._normalize_favorites(self._favorites)
         if not self._favorites:
             self._favorites = {"기본": []}
         self._current_fav_group = state.get("fav_group") if isinstance(state, dict) else None
@@ -4079,16 +4080,18 @@ class ImageViewerDialog(QtWidgets.QDialog):
         fav_layout = QtWidgets.QVBoxLayout(fav_box)
         fav_layout.setContentsMargins(6, 6, 6, 6)
         fav_layout.setSpacing(6)
-        fav_btns = QtWidgets.QHBoxLayout()
+        fav_btns = QtWidgets.QGridLayout()
         fav_btns.setSpacing(4)
         self.add_group_btn = QtWidgets.QPushButton("그룹 추가")
         self.remove_group_btn = QtWidgets.QPushButton("그룹 삭제")
-        self.add_fav_btn = QtWidgets.QPushButton("현재 추가")
-        self.remove_fav_btn = QtWidgets.QPushButton("삭제")
-        fav_btns.addWidget(self.add_group_btn)
-        fav_btns.addWidget(self.remove_group_btn)
-        fav_btns.addWidget(self.add_fav_btn)
-        fav_btns.addWidget(self.remove_fav_btn)
+        self.add_fav_btn = QtWidgets.QPushButton("선택 추가")
+        self.remove_fav_btn = QtWidgets.QPushButton("선택 삭제")
+        self.clean_fav_btn = QtWidgets.QPushButton("없는 항목 정리")
+        fav_btns.addWidget(self.add_group_btn, 0, 0)
+        fav_btns.addWidget(self.remove_group_btn, 0, 1)
+        fav_btns.addWidget(self.add_fav_btn, 1, 0)
+        fav_btns.addWidget(self.remove_fav_btn, 1, 1)
+        fav_btns.addWidget(self.clean_fav_btn, 2, 0, 1, 2)
         fav_layout.addLayout(fav_btns)
         self.fav_tree = QtWidgets.QTreeWidget()
         self.fav_tree.setHeaderHidden(True)
@@ -4166,6 +4169,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.remove_group_btn.clicked.connect(self._remove_favorite_group)
         self.add_fav_btn.clicked.connect(self._add_current_to_favorites)
         self.remove_fav_btn.clicked.connect(self._remove_selected_favorite)
+        self.clean_fav_btn.clicked.connect(self._clean_missing_favorites_with_notice)
+        self.fav_tree.currentItemChanged.connect(self._on_favorite_selection_changed)
         self.fav_tree.itemDoubleClicked.connect(self._on_favorite_double_clicked)
         self.file_tree.dropRequested.connect(self._handle_drop)
         self.file_tree.ctrlArrow.connect(self._on_tree_ctrl_arrow)
@@ -4570,6 +4575,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "이름 변경 실패", str(exc))
             return
+        self._replace_favorite_path(target, new_path)
         self._set_current_folder(new_path.parent, refresh=True, auto_select_first=False)
         if new_path.is_file() and self._is_image_file(new_path):
             self._select_file(new_path)
@@ -4611,6 +4617,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             try:
                 p.unlink()
                 removed += 1
+                self._remove_favorite_paths([p])
             except Exception as exc:
                 failed.append(f"{p.name}: {exc}")
         self._refresh_folder()
@@ -4618,13 +4625,84 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self.status_label.setText(f"삭제 완료: {removed}건{suffix}")
         if failed:
             QtWidgets.QMessageBox.warning(self, "삭제 실패", "\n".join(failed[:5]))
-    def _refresh_favorites_tree(self):
+    @staticmethod
+    def _favorite_path_key(path_value) -> str:
+        try:
+            return os.path.normcase(os.path.abspath(os.path.normpath(str(path_value))))
+        except Exception:
+            return str(path_value or "").strip().lower()
+    def _normalize_favorites(self, raw_favorites) -> dict[str, list[str]]:
+        normalized: dict[str, list[str]] = {}
+        if not isinstance(raw_favorites, dict):
+            return normalized
+        for raw_group, raw_items in raw_favorites.items():
+            group = str(raw_group or "").strip()
+            if not group:
+                continue
+            items: list[str] = []
+            seen: set[str] = set()
+            for raw_path in raw_items if isinstance(raw_items, (list, tuple)) else []:
+                path_text = str(raw_path or "").strip()
+                key = self._favorite_path_key(path_text)
+                if not path_text or not key or key in seen:
+                    continue
+                seen.add(key)
+                items.append(path_text)
+            normalized[group] = items
+        return normalized
+    def _clean_missing_favorites(self) -> int:
+        removed = 0
+        for group, items in list(self._favorites.items()):
+            kept = [path for path in items if Path(path).exists()]
+            removed += len(items) - len(kept)
+            self._favorites[group] = kept
+        return removed
+    def _clean_missing_favorites_with_notice(self):
+        removed = self._clean_missing_favorites()
+        self._refresh_favorites_tree(clean_missing=False)
+        self._persist_state()
+        if removed:
+            self.status_label.setText(f"즐겨찾기 정리: 존재하지 않는 항목 {removed}개 제거")
+        else:
+            self.status_label.setText("즐겨찾기 정리: 제거할 항목이 없습니다.")
+    def _replace_favorite_path(self, old_path: Path, new_path: Path):
+        old_key = self._favorite_path_key(old_path)
+        changed = False
+        for group, items in self._favorites.items():
+            replaced: list[str] = []
+            seen: set[str] = set()
+            for value in items:
+                candidate = str(new_path) if self._favorite_path_key(value) == old_key else value
+                key = self._favorite_path_key(candidate)
+                if key in seen:
+                    changed = True
+                    continue
+                seen.add(key)
+                replaced.append(candidate)
+                changed = changed or candidate != value
+            self._favorites[group] = replaced
+        if changed:
+            self._refresh_favorites_tree(clean_missing=False)
+    def _remove_favorite_paths(self, paths) -> int:
+        keys = {self._favorite_path_key(path) for path in paths}
+        removed = 0
+        for group, items in self._favorites.items():
+            kept = [value for value in items if self._favorite_path_key(value) not in keys]
+            removed += len(items) - len(kept)
+            self._favorites[group] = kept
+        if removed:
+            self._refresh_favorites_tree(clean_missing=False)
+        return removed
+    def _refresh_favorites_tree(self, *, clean_missing: bool = True):
         if not hasattr(self, "fav_tree"):
             return
+        if clean_missing:
+            self._clean_missing_favorites()
         self.fav_tree.blockSignals(True)
         self.fav_tree.clear()
         for group, items in self._favorites.items():
-            g_item = QtWidgets.QTreeWidgetItem([group])
+            g_item = QtWidgets.QTreeWidgetItem([f"{group} ({len(items)})"])
+            g_item.setToolTip(0, group)
             g_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, {"type": "group", "name": group})
             for path_str in items:
                 path = Path(path_str)
@@ -4642,6 +4720,14 @@ class ImageViewerDialog(QtWidgets.QDialog):
             if group == self._current_fav_group:
                 self.fav_tree.setCurrentItem(g_item)
         self.fav_tree.blockSignals(False)
+    def _on_favorite_selection_changed(self, current, previous=None):
+        data = current.data(0, QtCore.Qt.ItemDataRole.UserRole) if current else None
+        if not isinstance(data, dict):
+            return
+        group = data.get("name") if data.get("type") == "group" else data.get("group")
+        if group and group in self._favorites and group != self._current_fav_group:
+            self._current_fav_group = group
+            self._persist_state()
     def _add_favorite_group(self):
         name, ok = QtWidgets.QInputDialog.getText(self, "즐겨찾기 그룹 추가", "그룹 이름을 입력하세요.")
         if not ok or not name.strip():
@@ -4684,20 +4770,28 @@ class ImageViewerDialog(QtWidgets.QDialog):
             return
         self._rename_path(target)
     def _add_current_to_favorites(self):
-        target = self._current_file() or self._current_folder
-        if not target:
+        selected = self._selected_tree_paths()
+        targets = selected or [self._current_file() or self._current_folder]
+        targets = [target for target in targets if target]
+        if not targets:
             QtWidgets.QMessageBox.information(self, "추가할 항목 없음", "현재 선택된 파일이나 폴더가 없습니다.")
             return
         group = self._current_fav_group or next(iter(self._favorites))
         favs = self._favorites.setdefault(group, [])
-        path_str = str(target)
-        if path_str not in favs:
+        added = 0
+        for target in targets:
+            path_str = str(target)
+            path_key = self._favorite_path_key(path_str)
+            if any(self._favorite_path_key(value) == path_key for value in favs):
+                continue
             favs.append(path_str)
+            added += 1
+        if added:
             self._refresh_favorites_tree()
             self._persist_state()
-            self.status_label.setText(f"즐겨찾기 추가: {target}")
+            self.status_label.setText(f"즐겨찾기 추가: {group} 그룹에 {added}개")
         else:
-            self.status_label.setText("이미 즐겨찾기에 있습니다.")
+            self.status_label.setText("선택한 항목이 이미 즐겨찾기에 있습니다.")
     def _remove_selected_favorite(self):
         item = self.fav_tree.currentItem()
         data = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item else None
@@ -5226,12 +5320,15 @@ class ImageViewerDialog(QtWidgets.QDialog):
         if res != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         removed = 0
+        removed_paths: list[Path] = []
         for p in files:
             try:
                 p.unlink()
                 removed += 1
+                removed_paths.append(p)
             except Exception:
                 pass
+        self._remove_favorite_paths(removed_paths)
         self._set_current_folder(folder, refresh=True, auto_select_first=False)
         self.status_label.setText(f"삭제 완료: {removed}개 삭제")
     def _refresh_folder(self, *, show_latest: bool = False):
@@ -5268,6 +5365,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "삭제 실패", str(exc))
             return
+        self._remove_favorite_paths([target])
         next_idx = min(self._current_index, len(self._image_files) - 2)
         self._set_current_folder(self._current_folder, refresh=True, auto_select_first=False)
         if self._image_files:
