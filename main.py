@@ -5827,6 +5827,8 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         self.setItemDelegate(_NoHoverDelegate(self))
         self._disabled_base_color = QtGui.QColor("#ffe8e8")
         self._disabled_text_color = QtGui.QColor("#9c5c5c")
+        self._ifnot_row_color = QtGui.QColor("#fff2d8")
+        self._ifnot_text_color = QtGui.QColor("#8a5200")
         self._disabled_icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical)
         self._drop_feedback: dict | None = None
         self._drag_pixmap_mode: str | None = None
@@ -5901,7 +5903,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         current = index
         while current.isValid():
             item = self.itemFromIndex(current)
-            if item and self._is_block_marker(item.data(0, QtCore.Qt.ItemDataRole.UserRole)):
+            data = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item else None
+            if data == "__else__":
+                parent = item.parent() if item else None
+                return self.indexFromItem(parent) if parent else current
+            if item and self._is_block_marker(data):
                 return current
             current = current.parent()
         return None
@@ -5911,6 +5917,12 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         right = rect.right() - margin
         return QtCore.QRect(right - size, rect.center().y() - size // 2, size, size)
     def _draw_block_background(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
+        item = self.itemFromIndex(index)
+        if item and item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "__else__":
+            color = QtGui.QColor(self._ifnot_row_color)
+            color.setAlpha(220)
+            painter.fillRect(option.rect, color)
+            return
         block_index = self._block_root_index(index)
         if not block_index:
             return
@@ -6172,8 +6184,12 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 if isinstance(data, Action):
                     self._apply_once_style(item, data)
                 else:
+                    if data == "__else__":
+                        brush = QtGui.QBrush(self._ifnot_text_color)
+                    else:
+                        brush = default_brush
                     for col in range(item.columnCount()):
-                        item.setForeground(col, default_brush)
+                        item.setForeground(col, brush)
                 item.setIcon(1, QtGui.QIcon())
             for i in range(item.childCount()):
                 stack.append(item.child(i))
@@ -6327,6 +6343,8 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         super().mousePressEvent(event)
     def _format_value(self, act: Action) -> str:
         suffix_bits = []
+        if getattr(act, "parallel_enabled", False):
+            suffix_bits.append(f"병렬 · {act.parallel_interval_sec:g}초마다")
         if getattr(act, "once_per_macro", False):
             suffix_bits.append("1회")
         if getattr(act, "force_first_run", False):
@@ -6459,11 +6477,14 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
     def _format_desc(self, act: Action) -> str:
         return getattr(act, "description", "") or ""
     def _apply_once_style(self, item: QtWidgets.QTreeWidgetItem, act: Action):
-        """색상으로 1회 실행/첫 입력 보장 액션을 표시."""
+        """병렬은 주황색, 1회 실행/첫 입력 보장은 파란색으로 구분한다."""
         default_brush = QtGui.QBrush(self.palette().color(QtGui.QPalette.ColorRole.Text))
         once_brush = QtGui.QBrush(QtGui.QColor("#1f6feb"))
         has_flag = getattr(act, "once_per_macro", False) or getattr(act, "force_first_run", False)
         brush = once_brush if has_flag else default_brush
+        if getattr(act, "parallel_enabled", False):
+            dark = self.palette().color(QtGui.QPalette.ColorRole.Base).lightness() < 128
+            brush = QtGui.QBrush(QtGui.QColor("#f2a65a" if dark else "#c56a16"))
         for col in range(item.columnCount()):
             item.setForeground(col, brush)
     def _append_action_item(self, act: Action, parent_item=None, insert_row: int | None = None):
@@ -6489,6 +6510,8 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             else:
                 self.insertTopLevelItem(insert_row, item)
         else:
+            if insert_row is None:
+                insert_row = self._default_child_insert_row(parent_item)
             if insert_row is None or insert_row < 0 or insert_row > parent_item.childCount():
                 parent_item.addChild(item)
             else:
@@ -6503,7 +6526,7 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 elif_header = self._create_elif_header(item, econd, edesc)
                 for child in eacts:
                     self._append_action_item(child, elif_header)
-            if act.else_actions:
+            if getattr(act, "has_else_branch", False) or act.else_actions:
                 else_header = self._ensure_else_header(item, create_if_missing=True)
                 for child in act.else_actions:
                     self._append_action_item(child, else_header)
@@ -6518,6 +6541,15 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             return self._append_action_item(act, parent, row)
         row = self.indexOfTopLevelItem(after_item) + 1
         return self._append_action_item(act, None, row)
+    def _default_child_insert_row(self, parent_item: QtWidgets.QTreeWidgetItem) -> int | None:
+        data = parent_item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if not isinstance(data, Action) or data.type != "if":
+            return None
+        for i in range(parent_item.childCount()):
+            marker = parent_item.child(i).data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if marker == "__else__" or (isinstance(marker, dict) and marker.get("marker") == "__elif__"):
+                return i
+        return None
     def _find_else_header(self, item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QTreeWidgetItem | None:
         for i in range(item.childCount()):
             child = item.child(i)
@@ -6528,10 +6560,10 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         found = self._find_else_header(item)
         if found or not create_if_missing:
             return found
-        else_header = QtWidgets.QTreeWidgetItem(["", "ELSE", "", "", "", ""])
+        else_header = QtWidgets.QTreeWidgetItem(["", "IF NOT", "", "", "", ""])
         else_header.setData(0, QtCore.Qt.ItemDataRole.UserRole, "__else__")
         else_header.setFlags(
-            QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable | QtCore.Qt.ItemFlag.ItemIsDragEnabled
+            QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
         )
         self._set_drop_enabled(else_header, True)
         item.addChild(else_header)
@@ -6568,6 +6600,10 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         if header:
             idx = item.indexOfChild(header)
             item.takeChild(idx)
+        data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if isinstance(data, Action):
+            data.has_else_branch = False
+            data.else_actions = []
         self.renumber()
     def load_actions(self, actions: List[Action]):
         # Block signals/repaints during bulk load to avoid per-item itemChanged churn.
@@ -6591,17 +6627,22 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
         self.viewport().update()
     def renumber(self):
         counter = 1
-        stack: list[QtWidgets.QTreeWidgetItem | None] = [
-            self.topLevelItem(i) for i in reversed(range(self.topLevelItemCount()))
-        ]
-        while stack:
-            item = stack.pop()
+        def walk(item: QtWidgets.QTreeWidgetItem | None, parent_seq: str | None = None):
+            nonlocal counter
             if item is None:
-                continue
-            item.setText(0, str(counter))
-            counter += 1
-            for i in reversed(range(item.childCount())):
-                stack.append(item.child(i))
+                return
+            data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if data == "__else__" and parent_seq:
+                seq = f"{parent_seq}-NOT"
+                item.setText(0, seq)
+            else:
+                seq = str(counter)
+                item.setText(0, seq)
+                counter += 1
+            for i in range(item.childCount()):
+                walk(item.child(i), seq)
+        for i in range(self.topLevelItemCount()):
+            walk(self.topLevelItem(i), None)
         self._apply_enabled_styles()
     def _is_descendant(self, item: QtWidgets.QTreeWidgetItem, ancestor: QtWidgets.QTreeWidgetItem) -> bool:
         parent = item.parent()
@@ -6756,6 +6797,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             if target_for_insert is None and indicator != QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport:
                 indicator = QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport
             parent, insert_row = compute_parent_and_row(indicator, target_for_insert, allowed_child)
+            if parent is not None and any(getattr(it.data(0, QtCore.Qt.ItemDataRole.UserRole), "parallel_enabled", False) for it in selected):
+                QtWidgets.QToolTip.showText(event.globalPosition().toPoint() if hasattr(event, "globalPosition") else self.mapToGlobal(event.position().toPoint()), "병렬 항목은 트리 최상위에 배치하세요.", self)
+                event.ignore()
+                self._clear_drop_feedback()
+                return
             new_items: list[QtWidgets.QTreeWidgetItem] = []
             for item in selected:
                 clone = self._clone_tree_item(item)
@@ -6784,6 +6830,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 self._clear_drop_feedback()
                 return
             parent, insert_row = compute_parent_and_row(indicator, target_for_insert, allowed_child)
+            if parent is not None and any(getattr(it.data(0, QtCore.Qt.ItemDataRole.UserRole), "parallel_enabled", False) for it in items):
+                QtWidgets.QToolTip.showText(self.mapToGlobal(event.position().toPoint()), "병렬 항목은 트리 최상위에 배치하세요.", self)
+                event.ignore()
+                self._clear_drop_feedback()
+                return
             expanded = self._expanded_keys()
             # detach selected items (reverse order to keep indices valid)
             for item in reversed(items):
@@ -6821,11 +6872,13 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 pass
         act.actions = []
         act.else_actions = []
+        act.has_else_branch = False
         act.elif_blocks = []
         for idx in range(item.childCount()):
             child = item.child(idx)
             marker = child.data(0, QtCore.Qt.ItemDataRole.UserRole)
             if marker == "__else__":
+                act.has_else_branch = True
                 for j in range(child.childCount()):
                     child_action = self._action_from_item(child.child(j))
                     if child_action:
@@ -6988,6 +7041,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         parent=None,
         action: Action | None = None,
         *,
+        parallel_allowed: bool = True,
         variable_provider=None,
         add_variable=None,
         label_provider=None,
@@ -7006,6 +7060,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         macro_list_provider=None,
     ):
         super().__init__(parent)
+        self._parallel_allowed = parallel_allowed
         self.setWindowTitle("액션 설정")
         self.setModal(False)
         self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
@@ -7035,6 +7090,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._condition: Condition | None = None
         self._existing_children: List[Action] = []
         self._existing_else: List[Action] = []
+        self._existing_has_else = False
         self._existing_elifs: List[tuple[Condition, List[Action]]] = []
         self._updating_action_key_builder = False
         layout = QtWidgets.QVBoxLayout(self)
@@ -7304,6 +7360,17 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.pause_keep_check = QtWidgets.QCheckBox("일시중지 중에도 눌림 유지")
         self.pause_keep_check.setToolTip("끄면 일시중지/대기 시 자동으로 뗐다가 재개 시 다시 눌러줍니다. 켜면 일시중지 중에도 계속 누른 상태로 유지합니다.")
         self.pixel_target_edit = QtWidgets.QLineEdit("momo")
+        self.parallel_check = QtWidgets.QCheckBox("병렬 실행")
+        self.parallel_check.setToolTip("그룹 내부 액션은 순서대로, IF 조건은 매 주기 새로 검사합니다. 메인 액션과 별도로 실행됩니다.")
+        self.parallel_interval_spin = QtWidgets.QDoubleSpinBox()
+        self.parallel_interval_spin.setRange(0.01, 86400)
+        self.parallel_interval_spin.setDecimals(2)
+        self.parallel_interval_spin.setSingleStep(0.1)
+        self.parallel_interval_spin.setValue(1.0)
+        self.parallel_interval_spin.setSuffix(" 초마다")
+        self.parallel_interval_spin.setToolTip("실행 시작 간격입니다. 이전 실행이 끝나지 않으면 해당 회차는 건너뜁니다.")
+        self.parallel_hint = QtWidgets.QLabel()
+        self.parallel_hint.setWordWrap(True)
         self.group_mode_combo = QtWidgets.QComboBox()
         self.group_mode_combo.addItem("모두 실행", "all")
         self.group_mode_combo.addItem("첫 참만 실행", "first_true")
@@ -7410,6 +7477,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("픽셀 변수명", self.pixel_target_edit)
         form.addRow("그룹 모드", self.group_mode_combo)
         form.addRow("그룹 반복 횟수", self.group_repeat_spin)
+        form.addRow(self.parallel_check)
+        form.addRow("병렬 실행 주기", self.parallel_interval_spin)
+        form.addRow("", self.parallel_hint)
         form.addRow("연속 실패(횟수)", self.if_confirm_spin)
         form.addRow("조건", self.cond_label)
         form.addRow(self.delay_override_group)
@@ -7429,6 +7499,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.edit_cond_btn.clicked.connect(self._edit_condition)
         self.type_combo.currentIndexChanged.connect(self._sync_fields)
         self.group_mode_combo.currentIndexChanged.connect(self._sync_fields)
+        self.parallel_check.toggled.connect(self._sync_fields)
         self.sound_wait_mode_combo.currentIndexChanged.connect(self._sync_fields)
         for chk in (
             self.action_mod_ctrl,
@@ -7796,6 +7867,25 @@ class ActionEditDialog(QtWidgets.QDialog):
         return self.type_combo.currentData()
     def _sync_fields(self):
         typ = self._current_type()
+        show_parallel = typ in ("group", "if")
+        parallel = show_parallel and self.parallel_check.isChecked()
+        self._set_field_visible(self.parallel_check, show_parallel)
+        self.parallel_check.setEnabled(self._parallel_allowed or parallel)
+        self._set_field_visible(self.parallel_interval_spin, show_parallel)
+        self.parallel_interval_spin.setEnabled(parallel and self._parallel_allowed)
+        self._set_field_visible(self.parallel_hint, show_parallel)
+        if not self._parallel_allowed:
+            hint = "병렬 실행은 기본 액션 트리 최상위의 그룹·IF에서 설정할 수 있습니다."
+        elif parallel and typ == "group" and self.group_mode_combo.currentData() == "while":
+            hint = "무한 반복 그룹은 break로 끝나야 다음 주기가 실행됩니다. 주기마다 한 번 실행하려면 그룹 모드를 ‘모두 실행’으로 선택하세요."
+        else:
+            hint = "매크로 시작 즉시 실행하고 지정 주기로 반복합니다. 메인 순서에서는 건너뛰며, 매크로 종료·중지 시 함께 멈춥니다."
+        self.parallel_hint.setText(hint)
+        self.once_check.setEnabled(not parallel)
+        self.force_first_check.setEnabled(not parallel)
+        if parallel:
+            self.once_check.setChecked(False)
+            self.force_first_check.setChecked(False)
         mouse_types = ("mouse_click", "mouse_down", "mouse_up", "mouse_move")
         show_key = typ in ("press", "down", "up")
         show_mouse_btn = typ in ("mouse_click", "mouse_down", "mouse_up")
@@ -7982,6 +8072,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.enabled_check.setChecked(getattr(act, "enabled", True))
         self.once_check.setChecked(getattr(act, "once_per_macro", False))
         self.force_first_check.setChecked(getattr(act, "force_first_run", False))
+        self.parallel_interval_spin.setValue(getattr(act, "parallel_interval_sec", 1.0))
+        self.parallel_check.setChecked(getattr(act, "parallel_enabled", False))
         self.key_edit.setText(getattr(act, "key_raw", None) or act.key or "")
         if getattr(act, "repeat_raw", None):
             repeat_raw_txt = str(act.repeat_raw).strip()
@@ -8117,6 +8209,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._toggle_override_enabled()
         self._existing_children = copy.deepcopy(getattr(act, "actions", []))
         self._existing_else = copy.deepcopy(getattr(act, "else_actions", []))
+        self._existing_has_else = bool(getattr(act, "has_else_branch", False) or self._existing_else)
         self._sync_fields()
         self._update_trigger_warning()
     def _update_trigger_warning(self):
@@ -8146,6 +8239,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.key_warn_label.setVisible(bool(warn))
     def get_action(self) -> Action:
         typ = self._current_type()
+        parallel = typ in ("group", "if") and self.parallel_check.isChecked()
+        if parallel and not self._parallel_allowed:
+            raise ValueError("병렬 실행은 기본 액션 트리 최상위에서만 설정할 수 있습니다.")
         name = self.name_edit.text().strip() or None
         description = self.desc_edit.text().strip() or None
         enabled = self.enabled_check.isChecked()
@@ -8156,11 +8252,14 @@ class ActionEditDialog(QtWidgets.QDialog):
             name=name,
             description=description,
             enabled=enabled,
-            once_per_macro=self.once_check.isChecked(),
-            force_first_run=self.force_first_check.isChecked(),
+            once_per_macro=self.once_check.isChecked() and not parallel,
+            force_first_run=self.force_first_check.isChecked() and not parallel,
+            parallel_enabled=parallel,
+            parallel_interval_sec=self.parallel_interval_spin.value(),
         )
         act.actions = copy.deepcopy(self._existing_children)
         act.else_actions = copy.deepcopy(self._existing_else)
+        act.has_else_branch = bool(self._existing_has_else or act.else_actions)
         act.elif_blocks = copy.deepcopy(self._existing_elifs) if typ_for_build == "if" else []
         if typ in ("press", "down", "up"):
             key = self.key_edit.text().strip()
@@ -8777,27 +8876,25 @@ class MacroDialog(QtWidgets.QDialog):
         layout.addLayout(move_row)
         btns = QtWidgets.QHBoxLayout()
         self.add_btn = QtWidgets.QPushButton("액션 추가")
-        self.add_child_btn = QtWidgets.QPushButton("자식 액션 추가")
+        self.add_child_btn = QtWidgets.QPushButton("하위 액션 추가")
+        self.add_else_btn = QtWidgets.QPushButton("IF NOT 추가")
         self.keyboard_record_btn = QtWidgets.QPushButton("키보드 녹화")
         self.mouse_record_btn = QtWidgets.QPushButton("마우스 녹화")
         self.edit_btn = QtWidgets.QPushButton("편집")
         self.copy_btn = QtWidgets.QPushButton("복사")
         self.paste_btn = QtWidgets.QPushButton("붙여넣기")
         self.del_btn = QtWidgets.QPushButton("삭제")
-        self.add_else_btn = QtWidgets.QPushButton("ELSE 추가")
-        self.del_else_btn = QtWidgets.QPushButton("ELSE 제거")
         self.expand_all_btn = QtWidgets.QPushButton("전체 펼치기")
         self.collapse_all_btn = QtWidgets.QPushButton("전체 접기")
         btns.addWidget(self.add_btn)
         btns.addWidget(self.add_child_btn)
+        btns.addWidget(self.add_else_btn)
         btns.addWidget(self.keyboard_record_btn)
         btns.addWidget(self.mouse_record_btn)
         btns.addWidget(self.edit_btn)
         btns.addWidget(self.copy_btn)
         btns.addWidget(self.paste_btn)
         btns.addWidget(self.del_btn)
-        btns.addWidget(self.add_else_btn)
-        btns.addWidget(self.del_else_btn)
         btns.addWidget(self.expand_all_btn)
         btns.addWidget(self.collapse_all_btn)
         btns.addStretch()
@@ -8858,14 +8955,13 @@ class MacroDialog(QtWidgets.QDialog):
         self.interaction_btn.clicked.connect(self._open_interaction_dialog)
         self.add_btn.clicked.connect(self._add_action)
         self.add_child_btn.clicked.connect(lambda: self._add_action(as_child=True))
+        self.add_else_btn.clicked.connect(self._add_else_branch)
         self.keyboard_record_btn.clicked.connect(self._record_keyboard_actions)
         self.mouse_record_btn.clicked.connect(self._record_mouse_actions)
         self.edit_btn.clicked.connect(self._edit_action)
         self.copy_btn.clicked.connect(self._copy_action)
         self.paste_btn.clicked.connect(self._paste_action)
         self.del_btn.clicked.connect(self._delete_action)
-        self.add_else_btn.clicked.connect(self._add_else_branch)
-        self.del_else_btn.clicked.connect(self._delete_else_branch)
         self.expand_all_btn.clicked.connect(self.action_tree.expandAll)
         self.collapse_all_btn.clicked.connect(self.action_tree.collapse_all)
         self.move_up_btn.clicked.connect(lambda: self._move_selected(-1, self.move_up_btn))
@@ -9387,10 +9483,14 @@ class MacroDialog(QtWidgets.QDialog):
                     "일부 이벤트 제외",
                     f"미지원 마우스 이벤트 {skipped}개는 제외하고 그룹에 추가했습니다.",
                 )
-    def _add_action(self, *, as_child: bool = False, tree: ActionTreeWidget | None = None):
+    def _add_action(self, *, as_child: bool = False, tree: ActionTreeWidget | None = None, branch: str | None = None):
         target_tree = tree or self.action_tree
+        selected = self._selected_item(target_tree)
+        parallel_allowed = (target_tree is not self.stop_action_tree and not as_child and not branch
+                            and (selected is None or selected.parent() is None))
         dlg = ActionEditDialog(
             self,
+            parallel_allowed=parallel_allowed,
             variable_provider=self._variable_provider,
             add_variable=self._add_variable,
             label_provider=lambda: self._available_labels(target_tree),
@@ -9421,7 +9521,25 @@ class MacroDialog(QtWidgets.QDialog):
                 return
             parent = None
             new_item = None
-            if as_child:
+            if branch in ("then", "else"):
+                if_item = self._selected_if_item(target_tree)
+                data = if_item.data(0, QtCore.Qt.ItemDataRole.UserRole) if if_item else None
+                if not if_item or not isinstance(data, Action) or data.type != "if":
+                    QtWidgets.QMessageBox.information(self, "선택 없음", "분기에 추가할 if를 선택하세요.")
+                    return
+                if branch == "else":
+                    data.has_else_branch = True
+                    parent = target_tree._ensure_else_header(if_item, create_if_missing=True)
+                    if parent is None:
+                        QtWidgets.QMessageBox.information(self, "추가 불가", "ELSE 분기를 만들 수 없습니다.")
+                        return
+                    new_item = target_tree._append_action_item(act, parent)
+                else:
+                    parent = if_item
+                    insert_row = target_tree._default_child_insert_row(if_item)
+                    new_item = target_tree._append_action_item(act, parent, insert_row)
+                target_tree.expandItem(if_item)
+            elif as_child:
                 parent = target
                 if parent and not target_tree._can_have_children_item(parent):
                     QtWidgets.QMessageBox.information(self, "추가 불가", "if/group/elif/else 아래에만 자식을 둘 수 있습니다.")
@@ -9521,6 +9639,8 @@ class MacroDialog(QtWidgets.QDialog):
             new_blocks.append((copy.deepcopy(c), copy.deepcopy(a), desc_text or "", enabled_val))
         normalized_blocks = [(cond, acts, desc) for cond, acts, desc, _ in new_blocks]
         target_act.elif_blocks = (target_act.elif_blocks or []) + normalized_blocks
+        if getattr(new_act, "has_else_branch", False) or new_act.else_actions:
+            target_act.has_else_branch = True
         if new_act.else_actions:
             if target_act.else_actions:
                 target_act.else_actions.extend(copy.deepcopy(new_act.else_actions))
@@ -9536,7 +9656,7 @@ class MacroDialog(QtWidgets.QDialog):
                     data["enabled"] = False
             for child in acts:
                 tgt._append_action_item(copy.deepcopy(child), header)
-        if new_act.else_actions:
+        if getattr(new_act, "has_else_branch", False) or new_act.else_actions:
             else_header = tgt._ensure_else_header(prev_if_item, create_if_missing=True)
             for child in new_act.else_actions:
                 tgt._append_action_item(copy.deepcopy(child), else_header)
@@ -9595,16 +9715,16 @@ class MacroDialog(QtWidgets.QDialog):
             tgt._apply_once_style(if_item, updated_if)
     def _add_else_branch(self, *, tree: ActionTreeWidget | None = None):
         tgt = tree or self.action_tree
-        if_item = self._selected_if_item(tgt)
+        if_item = self._selected_item(tgt)
         data = if_item.data(0, QtCore.Qt.ItemDataRole.UserRole) if if_item else None
         if not if_item or not isinstance(data, Action) or data.type != "if":
-            QtWidgets.QMessageBox.information(self, "선택 없음", "ELSE를 추가할 if를 선택하세요.")
+            QtWidgets.QMessageBox.information(self, "선택 없음", "IF NOT을 붙일 IF 줄을 직접 선택하세요.")
             return
         header = tgt._ensure_else_header(if_item, create_if_missing=True)
         if header:
+            data.has_else_branch = True
             tgt.expandItem(if_item)
             tgt.setCurrentItem(header)
-            tgt.renumber()
             tgt.renumber()
     def _delete_else_branch(self, *, tree: ActionTreeWidget | None = None):
         tgt = tree or self.action_tree
@@ -9654,6 +9774,7 @@ class MacroDialog(QtWidgets.QDialog):
             dlg = ActionEditDialog(
                 self,
                 action=temp_act,
+                parallel_allowed=False,
                 variable_provider=self._variable_provider,
                 add_variable=self._add_variable,
                 label_provider=self._available_labels,
@@ -9724,7 +9845,7 @@ class MacroDialog(QtWidgets.QDialog):
                     item.takeChild(0)
                 for child_act in new_act.actions or []:
                     self.action_tree._append_action_item(copy.deepcopy(child_act), item)
-                if new_act.else_actions:
+                if getattr(new_act, "has_else_branch", False) or new_act.else_actions:
                     else_header = self.action_tree._ensure_else_header(item, create_if_missing=True)
                     for child_act in new_act.else_actions:
                         self.action_tree._append_action_item(copy.deepcopy(child_act), else_header)
@@ -9743,6 +9864,7 @@ class MacroDialog(QtWidgets.QDialog):
         dlg = ActionEditDialog(
             self,
             action=act,
+            parallel_allowed=self.action_tree is not self.stop_action_tree and item.parent() is None,
             variable_provider=self._variable_provider,
             add_variable=self._add_variable,
             label_provider=self._available_labels,
@@ -9792,7 +9914,10 @@ class MacroDialog(QtWidgets.QDialog):
                     elif_header = self.action_tree._create_elif_header(item, econd, edesc)
                     for child in eacts:
                         self.action_tree._append_action_item(child, elif_header)
-                else_header = self.action_tree._ensure_else_header(item, create_if_missing=bool(new_act.else_actions))
+                else_header = self.action_tree._ensure_else_header(
+                    item,
+                    create_if_missing=bool(getattr(new_act, "has_else_branch", False) or new_act.else_actions),
+                )
                 if else_header:
                     for child in new_act.else_actions:
                         self.action_tree._append_action_item(child, else_header)
@@ -9814,7 +9939,9 @@ class MacroDialog(QtWidgets.QDialog):
         for item in items:
             data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
             if isinstance(data, Action):
-                copied.append(copy.deepcopy(data))
+                current_act = target_tree._action_from_item(item)
+                if current_act:
+                    copied.append(current_act)
                 continue
             if isinstance(data, dict) and data.get("marker") == "__elif__":
                 cond_src = data.get("condition")
@@ -9829,10 +9956,12 @@ class MacroDialog(QtWidgets.QDialog):
                     pass
                 branch_actions: list[Action] = []
                 else_actions: list[Action] = []
+                has_else_branch = False
                 for idx in range(item.childCount()):
                     child = item.child(idx)
                     marker = child.data(0, QtCore.Qt.ItemDataRole.UserRole)
                     if marker == "__else__":
+                        has_else_branch = True
                         for j in range(child.childCount()):
                             child_act = self.action_tree._action_from_item(child.child(j))
                             if child_act:
@@ -9847,6 +9976,7 @@ class MacroDialog(QtWidgets.QDialog):
                         condition=cond,
                         actions=branch_actions,
                         else_actions=else_actions,
+                        has_else_branch=has_else_branch,
                         name=item.text(2) or "",
                         description=desc_text,
                         enabled=enabled_flag,
@@ -9895,6 +10025,13 @@ class MacroDialog(QtWidgets.QDialog):
                 )
                 insert_row = (base_row + 1) if base_row >= 0 else None
                 expand_item = parent
+        try:
+            Action.validate_parallel_actions(
+                actions_to_paste, allow_parallel=parent is None and target_tree is not self.stop_action_tree,
+            )
+        except ValueError as exc:
+            QtWidgets.QMessageBox.information(self, "병렬 항목 위치", str(exc))
+            return
         for act in actions_to_paste:
             item = target_tree._append_action_item(act, parent, insert_row)
             new_items.append(item)
@@ -10006,6 +10143,8 @@ class MacroDialog(QtWidgets.QDialog):
         actions = self.action_tree.collect_actions()
         stop_enabled = self.stop_group.isChecked()
         stop_actions = self.stop_action_tree.collect_actions() if stop_enabled else []
+        Action.validate_parallel_actions(actions)
+        Action.validate_parallel_actions(stop_actions, allow_parallel=False)
         cycle_val = self.cycle_spin.value()
         cycle_count = cycle_val if cycle_val > 0 else None
         return Macro(
@@ -17143,10 +17282,9 @@ class MacroStatusPopup(QtWidgets.QDialog):
         self._app_closing = False
         self._app_closing_visible: bool | None = None
         self._restoring_state = False
+        self._compact_mode = True
         self.setWindowTitle("매크로 상태")
         self.setWindowFlag(QtCore.Qt.WindowType.Tool, True)
-        self.setMinimumSize(280, 146)
-        self.resize(320, 158)
         self.setStyleSheet(
             """
             MacroStatusPopup {
@@ -17157,13 +17295,13 @@ class MacroStatusPopup(QtWidgets.QDialog):
             }
             QCheckBox {
                 color: #565f6b;
-                font-size: 11px;
-                spacing: 6px;
+                font-size: 10px;
+                spacing: 4px;
             }
             QCheckBox::indicator {
-                width: 22px;
-                height: 12px;
-                border-radius: 6px;
+                width: 18px;
+                height: 10px;
+                border-radius: 5px;
                 background: #d8dde5;
             }
             QCheckBox::indicator:checked {
@@ -17173,21 +17311,11 @@ class MacroStatusPopup(QtWidgets.QDialog):
         )
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(8)
+        self._root_layout = layout
 
         self.status_bar = QtWidgets.QFrame()
-        self.status_bar.setFixedHeight(4)
         self.status_bar.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         layout.addWidget(self.status_bar)
-
-        top_row = QtWidgets.QHBoxLayout()
-        top_row.setContentsMargins(0, 4, 0, 0)
-        top_row.setSpacing(10)
-
-        title_col = QtWidgets.QVBoxLayout()
-        title_col.setContentsMargins(0, 0, 0, 0)
-        title_col.setSpacing(2)
 
         self.caption_label = QtWidgets.QLabel("MACRO STATUS")
         caption_font = self.caption_label.font()
@@ -17195,67 +17323,73 @@ class MacroStatusPopup(QtWidgets.QDialog):
         caption_font.setBold(True)
         self.caption_label.setFont(caption_font)
         self.caption_label.setStyleSheet("color: #8a94a3;")
-        title_col.addWidget(self.caption_label)
+        layout.addWidget(self.caption_label)
+
+        top_row = QtWidgets.QHBoxLayout()
+        self._top_row = top_row
+
+        self.mode_btn = QtWidgets.QToolButton()
+        self.mode_btn.setToolTip("컴팩트/자세히 전환")
+        self.mode_btn.clicked.connect(self._toggle_compact_mode)
+        top_row.addWidget(self.mode_btn)
 
         self.state_label = QtWidgets.QLabel("대기상태")
         font = self.state_label.font()
-        font.setPointSize(17)
         font.setBold(True)
         self.state_label.setFont(font)
-        title_col.addWidget(self.state_label)
-        top_row.addLayout(title_col, stretch=1)
-
-        self.badge_label = QtWidgets.QLabel("WAIT")
-        self.badge_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.badge_label.setMinimumWidth(58)
-        self.badge_label.setFixedHeight(26)
-        badge_font = self.badge_label.font()
-        badge_font.setPointSize(9)
-        badge_font.setBold(True)
-        self.badge_label.setFont(badge_font)
-        top_row.addWidget(self.badge_label)
+        top_row.addWidget(self.state_label, stretch=1)
         layout.addLayout(top_row)
 
         self.detail_label = QtWidgets.QLabel("실행중: 없음")
-        self.detail_label.setWordWrap(True)
         self.detail_label.setStyleSheet("color: #697386;")
         layout.addWidget(self.detail_label)
 
-        bottom_row = QtWidgets.QHBoxLayout()
-        bottom_row.setContentsMargins(0, 2, 0, 0)
-        bottom_row.addStretch()
-
-        self.always_on_top_check = QtWidgets.QCheckBox("항상 위")
-        self.always_on_top_check.toggled.connect(self._toggle_always_on_top)
-        bottom_row.addWidget(self.always_on_top_check)
-        layout.addLayout(bottom_row)
+        self.count_label = QtWidgets.QLabel("")
+        self.count_label.setStyleSheet("color: #8a94a3;")
+        layout.addWidget(self.count_label)
 
         self._restoring_state = True
         try:
             self._restore_state(state or {})
         finally:
             self._restoring_state = False
+        self._apply_popup_mode()
         self.update_state({})
 
-    def _toggle_always_on_top(self, checked: bool):
-        pos = self.pos()
-        self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, bool(checked))
-        self.show()
-        self.move(pos)
+    def _toggle_compact_mode(self):
+        self._compact_mode = not self._compact_mode
+        self._apply_popup_mode()
         self._save_state()
 
+    def _apply_popup_mode(self):
+        compact = bool(self._compact_mode)
+        self.caption_label.setVisible(not compact)
+        self.count_label.setVisible(not compact)
+        self.detail_label.setWordWrap(not compact)
+        self.status_bar.setFixedHeight(3 if compact else 4)
+        self._root_layout.setContentsMargins(8 if compact else 16, 7 if compact else 14, 8 if compact else 16, 7 if compact else 14)
+        self._root_layout.setSpacing(3 if compact else 8)
+        self._top_row.setContentsMargins(0, 0 if compact else 4, 0, 0)
+        self._top_row.setSpacing(4 if compact else 10)
+        self.mode_btn.setText("+" if compact else "-")
+        self.mode_btn.setFixedSize(18 if compact else 24, 18 if compact else 24)
+
+        state_font = self.state_label.font()
+        state_font.setPointSize(13 if compact else 17)
+        state_font.setBold(True)
+        self.state_label.setFont(state_font)
+
+        self.setFixedSize(124 if compact else 270, 68 if compact else 142)
+
     def _restore_state(self, state: dict):
-        always_on_top = bool(state.get("always_on_top", True))
-        self.always_on_top_check.blockSignals(True)
-        self.always_on_top_check.setChecked(always_on_top)
-        self.always_on_top_check.blockSignals(False)
-        self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, always_on_top)
+        self._compact_mode = bool(state.get("compact", True))
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, True)
         geo = state.get("geometry")
         if isinstance(geo, list) and len(geo) == 4:
             try:
                 rect = QtCore.QRect(*(int(v) for v in geo))
                 if self._is_reasonable_geometry(rect):
-                    self.setGeometry(rect)
+                    self.move(rect.topLeft())
             except Exception:
                 pass
 
@@ -17272,7 +17406,8 @@ class MacroStatusPopup(QtWidgets.QDialog):
         g = self.geometry()
         return {
             "visible": self.isVisible() if visible is None else bool(visible),
-            "always_on_top": self.always_on_top_check.isChecked(),
+            "always_on_top": True,
+            "compact": bool(self._compact_mode),
             "geometry": [g.x(), g.y(), g.width(), g.height()],
         }
 
@@ -17304,12 +17439,10 @@ class MacroStatusPopup(QtWidgets.QDialog):
         if not running or not active:
             label = "정지상태"
             color = "#e5484d"
-            badge = "STOP"
             detail = "프로그램 비활성"
         elif active_macro_count > 0:
             label = "동작중"
             color = "#1ea76b"
-            badge = "LIVE"
             if active_macro_names:
                 detail = f"실행중: {', '.join(active_macro_names)}"
             else:
@@ -17317,16 +17450,16 @@ class MacroStatusPopup(QtWidgets.QDialog):
         else:
             label = "대기상태"
             color = "#d99a00"
-            badge = "WAIT"
             detail = "실행중: 없음"
+
+        self.count_label.setText(f"활성 매크로 {active_macro_count}개 / 토글 {active_toggle_count}개")
+
+        if self._compact_mode and len(detail) > 30:
+            detail = detail[:29] + "..."
 
         self.status_bar.setStyleSheet(f"background: {color}; border-radius: 2px;")
         self.state_label.setText(label)
         self.state_label.setStyleSheet(f"color: {color};")
-        self.badge_label.setText(badge)
-        self.badge_label.setStyleSheet(
-            f"color: {color}; background: rgba(255, 255, 255, 0.92); border: 1px solid {color}; border-radius: 13px;"
-        )
         self.detail_label.setText(detail)
 
     def set_profile_text(self, text: str):

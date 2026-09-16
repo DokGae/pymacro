@@ -1605,6 +1605,8 @@ class Action:
     pixel_target: Optional[str] = None
     group_mode: Optional[GroupMode] = None
     group_repeat: Optional[int] = None
+    parallel_enabled: bool = False
+    parallel_interval_sec: float = 1.0
     hold_keep_on_pause: bool = False
     timer_index: Optional[int] = None
     timer_value: Optional[float] = None
@@ -1631,6 +1633,7 @@ class Action:
     process_cwd: Optional[str] = None
     key_delay_override_enabled: bool = False
     key_delay_override: Optional[KeyDelayConfig] = None
+    has_else_branch: bool = False
 
     @staticmethod
     def parse_sleep(raw: Any, *, default_unit: TimeUnit = "ms") -> tuple[int, Optional[tuple[int, int]]]:
@@ -1751,6 +1754,30 @@ class Action:
             return None
         return max(0.0, float(self.timer_value))
 
+    @staticmethod
+    def parse_parallel_interval(value: Any) -> float:
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("병렬 실행 주기는 0.01~86400초 사이의 숫자여야 합니다.") from None
+        if not math.isfinite(seconds) or not 0.01 <= seconds <= 86400:
+            raise ValueError("병렬 실행 주기는 0.01~86400초 사이의 숫자여야 합니다.")
+        return seconds
+
+    @staticmethod
+    def validate_parallel_actions(actions: List["Action"], *, allow_parallel: bool = True):
+        for action in actions:
+            if action.parallel_enabled:
+                if not allow_parallel or action.type not in ("group", "if"):
+                    raise ValueError(f"'{action.name or action.type}': 병렬 실행은 기본 액션 트리 최상위의 그룹·IF에만 설정할 수 있습니다.")
+                Action.parse_parallel_interval(action.parallel_interval_sec)
+                if action.once_per_macro or action.force_first_run:
+                    raise ValueError("병렬 항목에는 1회 실행·첫 입력 보장을 함께 설정할 수 없습니다.")
+            children = list(action.actions) + list(action.else_actions)
+            for _, branch, _ in _iter_elif_blocks(action.elif_blocks):
+                children.extend(branch)
+            Action.validate_parallel_actions(children, allow_parallel=False)
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "Action":
         typ = data.get("type", "press")
@@ -1758,6 +1785,7 @@ class Action:
         cond = Condition.from_dict(cond_data, resolver) if cond_data else None
         actions = [Action.from_dict(s, resolver) for s in data.get("actions", data.get("steps", []))]
         else_actions = [Action.from_dict(s, resolver) for s in data.get("else_actions", [])]
+        has_else_branch = bool(data.get("has_else_branch", bool(else_actions)))
         elif_blocks: List[tuple[Condition, List["Action"], str | None]] = []
         for blk in data.get("elif_blocks", []) or []:
             try:
@@ -1969,6 +1997,7 @@ class Action:
             elif_blocks=elif_blocks,
             actions=actions,
             else_actions=else_actions,
+            has_else_branch=has_else_branch,
             label=data.get("label"),
             goto_label=data.get("goto_label"),
             macro_target=data.get("macro_target", data.get("macro_name")),
@@ -1983,6 +2012,8 @@ class Action:
             pixel_region_raw=region_raw,
             pixel_target=data.get("pixel_target"),
             group_mode=data.get("group_mode"),
+            parallel_enabled=bool(data.get("parallel_enabled", False)),
+            parallel_interval_sec=cls.parse_parallel_interval(data.get("parallel_interval_sec", 1.0)),
             group_repeat=group_repeat,
             hold_keep_on_pause=bool(data.get("hold_keep_on_pause", False)),
             timer_index=timer_index,
@@ -2045,6 +2076,8 @@ class Action:
             "pixel_region_raw": self.pixel_region_raw,
             "pixel_target": self.pixel_target,
             "group_mode": self.group_mode,
+            "parallel_enabled": self.parallel_enabled,
+            "parallel_interval_sec": self.parallel_interval_sec,
             "group_repeat": self.group_repeat,
             "hold_keep_on_pause": getattr(self, "hold_keep_on_pause", False),
             "timer_index": self.timer_index,
@@ -2087,6 +2120,8 @@ class Action:
                 )
             if blocks:
                 payload["elif_blocks"] = blocks
+        if getattr(self, "has_else_branch", False):
+            payload["has_else_branch"] = True
         if self.else_actions:
             payload["else_actions"] = [a.to_dict() for a in self.else_actions]
         return payload
@@ -2365,6 +2400,8 @@ class Macro:
         else:
             actions = [Action.from_dict(a, resolver) for a in actions_data or []]
         stop_actions = [Action.from_dict(a, resolver) for a in stop_actions_data or []]
+        Action.validate_parallel_actions(actions)
+        Action.validate_parallel_actions(stop_actions, allow_parallel=False)
         cycle_count = None
         if cycle_count_raw not in (None, ""):
             try:
@@ -3109,8 +3146,13 @@ class MacroRunner:
         self.index = index
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._parallel_workers: List[MacroRunner] = []
+        self._parallel_lock = threading.RLock()
+        self._parallel_owner: Optional[MacroRunner] = None
+        self._parallel_entry: Optional[Action] = None
         self._cond_key_states: Dict[str, bool] = {}
         self._vars = copy.deepcopy(getattr(engine._profile, "variables", MacroVariables()))
+        self._vars_lock = threading.RLock()
         self._resolver = VariableResolver(self._vars)
         self._sent_stop_event = False
         self._seq_map: Dict[tuple[int, ...], int] = {}
@@ -3138,6 +3180,8 @@ class MacroRunner:
 
     def _has_force_first_action(self, actions: List[Action]) -> bool:
         for act in actions:
+            if act.parallel_enabled:
+                continue
             if getattr(act, "force_first_run", False):
                 return True
             children: List[Action] = []
@@ -3152,8 +3196,99 @@ class MacroRunner:
                 return True
         return False
 
+    def _start_parallel_workers(self, macro: Macro, index: Optional[int]) -> List["MacroRunner"]:
+        Action.validate_parallel_actions(macro.actions)
+        Action.validate_parallel_actions(macro.stop_actions, allow_parallel=False)
+        workers = []
+        for position, action in enumerate(macro.actions):
+            if not action.enabled or not action.parallel_enabled:
+                continue
+            worker = MacroRunner(macro, self.engine, index)
+            worker._parallel_owner = self
+            worker._parallel_entry = action
+            worker._vars = self._vars
+            worker._vars_lock = self._vars_lock
+            worker._resolver = VariableResolver(worker._vars)
+            worker._macro_call_stack = self._macro_call_stack
+            worker._current_cycle = 0
+            worker._thread = threading.Thread(
+                target=worker._run_parallel, args=(action, position),
+                name=f"Parallel-{index}-{position}", daemon=True,
+            )
+            with self._parallel_lock:
+                if self._stop_event.is_set():
+                    break
+                self._parallel_workers.append(worker)
+                workers.append(worker)
+                worker._thread.start()
+        return workers
+
+    def _parallel_snapshot(self) -> List["MacroRunner"]:
+        with self._parallel_lock:
+            return list(self._parallel_workers)
+
+    def _signal_parallel_stop(self):
+        for worker in self._parallel_snapshot():
+            worker._release_inputs_on_stop = self._release_inputs_on_stop
+            worker._stop_actions_run = self._stop_actions_run
+            worker._stop_event.set()
+            worker._signal_parallel_stop()
+
+    def _stop_parallel_workers(self, workers: Optional[List["MacroRunner"]] = None):
+        selected = self._parallel_snapshot() if workers is None else workers
+        for worker in selected:
+            worker._release_inputs_on_stop = self._release_inputs_on_stop
+            worker._stop_actions_run = self._stop_actions_run
+            worker._stop_event.set()
+            worker._signal_parallel_stop()
+        for worker in selected:
+            if worker._thread and worker._thread is not threading.current_thread():
+                worker._thread.join(timeout=1.0)
+            if not worker.is_alive():
+                worker._release_held_keys()
+                # Retain holds when suspended so the owner's snapshot stays complete.
+                if worker._release_inputs_on_stop:
+                    with self._parallel_lock:
+                        if worker in self._parallel_workers:
+                            self._parallel_workers.remove(worker)
+
+    def _run_parallel(self, action: Action, position: int):
+        interval = Action.parse_parallel_interval(action.parallel_interval_sec)
+        deadline = time.monotonic()
+        path = [self._macro_label(), f"병렬:{action.name or action.type}"]
+        try:
+            while not self._stop_event.is_set():
+                result = self._exec_action(action, {}, path, [position])
+                self._current_cycle += 1
+                if result.signal == "return":
+                    break
+                if result.signal == "goto":
+                    self.engine._emit_log(f"병렬 항목 밖으로 점프할 수 없습니다: {action.name or action.type}")
+                    break
+                # Fixed start cadence; skip missed deadlines, never overlap or catch up.
+                deadline += interval
+                now = time.monotonic()
+                if deadline <= now:
+                    deadline += (math.floor((now - deadline) / interval) + 1) * interval
+                if self._stop_event.wait(max(0.0, deadline - time.monotonic())):
+                    break
+        except Exception as exc:
+            self.engine._emit_log(f"병렬 실행 오류 ({action.name or action.type}): {exc}")
+            self._request_parallel_macro_stop()
+        finally:
+            self._stop_parallel_workers()
+            self._release_held_keys()
+
+    def _request_parallel_macro_stop(self):
+        owner = self
+        while owner._parallel_owner is not None:
+            owner = owner._parallel_owner
+        owner._terminal_status = "macro_stop"
+        owner._stop_event.set()
+        owner._signal_parallel_stop()
+
     def is_alive(self) -> bool:
-        return bool(self._thread and self._thread.is_alive())
+        return bool(self._thread and self._thread.is_alive()) or any(w.is_alive() for w in self._parallel_snapshot())
 
     class _Result:
         def __init__(self, signal: str = "none", goto_label: Optional[str] = None, condition_hit: bool = False, repeat: bool = False):
@@ -3308,6 +3443,7 @@ class MacroRunner:
             "cycle": getattr(self, "_current_cycle", 0),
             "detail": detail,
             "seq_chain": self._seq_chain(idx_path),
+            "parallel": self._parallel_owner is not None,
         }
         payload.update(extra)
         self.engine._emit_event(payload)
@@ -3327,6 +3463,8 @@ class MacroRunner:
     def _release_held_keys(self, *, force: bool = False):
         if not force and not getattr(self, "_release_inputs_on_stop", True):
             return
+        for worker in self._parallel_snapshot():
+            worker._release_held_keys(force=force)
         with self._held_lock:
             keys = list(self._held_keys)
             mouse_buttons = list(self._held_mouse)
@@ -3347,15 +3485,29 @@ class MacroRunner:
 
     def snapshot_held_inputs(self) -> tuple[Set[str], Set[str]]:
         with self._held_lock:
-            return set(self._held_keys), set(self._held_mouse)
+            keys, mouse = set(self._held_keys), set(self._held_mouse)
+        for worker in self._parallel_snapshot():
+            worker_keys, worker_mouse = worker.snapshot_held_inputs()
+            keys.update(worker_keys)
+            mouse.update(worker_mouse)
+        return keys, mouse
 
     def snapshot_held_inputs_with_policy(self) -> tuple[Dict[str, bool], Dict[str, bool]]:
         with self._held_lock:
-            return dict(self._held_key_policy), dict(self._held_mouse_policy)
+            keys, mouse = dict(self._held_key_policy), dict(self._held_mouse_policy)
+        for worker in self._parallel_snapshot():
+            worker_keys, worker_mouse = worker.snapshot_held_inputs_with_policy()
+            for key, keep in worker_keys.items():
+                keys[key] = keys.get(key, False) or keep
+            for button, keep in worker_mouse.items():
+                mouse[button] = mouse.get(button, False) or keep
+        return keys, mouse
 
     def start(self, *, start_cycle: int = 0, reset_all_timers: bool = True):
-        if self._thread and self._thread.is_alive():
+        if self.is_alive():
             return
+        Action.validate_parallel_actions(self._root_macro.actions)
+        Action.validate_parallel_actions(self._root_macro.stop_actions, allow_parallel=False)
         try:
             self._start_cycle = max(0, int(start_cycle))
         except Exception:
@@ -3401,12 +3553,13 @@ class MacroRunner:
         if self._terminal_status == "running":
             self._terminal_status = "stopped"
         self._stop_request_after_cycle = False
-        self._stop_event.set()
         self._release_inputs_on_stop = bool(release_inputs)
         if not run_stop_actions:
             self._stop_actions_run = True
-        else:
-            # on_stop 액션이 있으면 먼저 실행한다.
+        self._stop_event.set()
+        self._stop_parallel_workers()
+        if run_stop_actions and (not self._thread or not self._thread.is_alive()):
+            # A running owner executes stop actions after its main/parallel work unwinds.
             self._run_stop_actions()
         # 중단 요청이 들어오면 바로 입력을 풀어준다.
         if release_inputs:
@@ -3528,6 +3681,8 @@ class MacroRunner:
             if max_cycles == 0:
                 max_cycles = None
 
+            self._start_parallel_workers(self.macro, self.index)
+
             while not self._stop_event.is_set():
                 if max_cycles is not None and cycle >= max_cycles:
                     break
@@ -3543,6 +3698,7 @@ class MacroRunner:
                 if result.signal == "return":
                     break
                 self._stop_event.wait(self.engine.tick)
+            self._stop_parallel_workers()
             stopped = self._stop_event.is_set() or self._stop_request_after_cycle
             if stopped and not self._stop_actions_run:
                 self._run_stop_actions()
@@ -3558,6 +3714,7 @@ class MacroRunner:
                     self._terminal_status = "finished"
                 self._notify_macro_stop("finished")
         finally:
+            self._stop_parallel_workers()
             self._release_held_keys()
 
     def _label_index(self, actions: List[Action]) -> Dict[str, int]:
@@ -3582,6 +3739,9 @@ class MacroRunner:
         base_idx_path = list(idx_path or [])
         while idx < len(actions) and (self._running_stop_actions or not self._stop_event.is_set()):
             act = actions[idx]
+            if act.parallel_enabled and not self._running_stop_actions:
+                idx += 1
+                continue
             act_path = base_path + [self._action_label(act, idx)]
             act_idx_path = base_idx_path + [base_offset + idx]
             if not getattr(act, "enabled", True):
@@ -3596,6 +3756,11 @@ class MacroRunner:
                 self._stop_event.wait(self.engine.tick)
                 continue
             if res.signal == "goto":
+                if self._parallel_owner is not None and res.goto_label:
+                    local_labels = self._label_index(actions)
+                    if res.goto_label in local_labels:
+                        idx = local_labels[res.goto_label]
+                        continue
                 if root and res.goto_label and res.goto_label in labels:
                     idx = labels[res.goto_label]
                     continue
@@ -3670,6 +3835,13 @@ class MacroRunner:
         return True
 
     def _exec_action(self, action: Action, labels: Dict[str, int], path: List[str], idx_path: List[int]) -> "MacroRunner._Result":
+        # Variable read/modify/write must be atomic across main and parallel tasks.
+        if action.type == "set_var":
+            with self._vars_lock:
+                return self._exec_action_impl(action, labels, path, idx_path)
+        return self._exec_action_impl(action, labels, path, idx_path)
+
+    def _exec_action_impl(self, action: Action, labels: Dict[str, int], path: List[str], idx_path: List[int]) -> "MacroRunner._Result":
         def end_result(
             signal: str = "none",
             status: str = "ok",
@@ -3692,6 +3864,8 @@ class MacroRunner:
 
         if self._stop_event.is_set() and not self._running_stop_actions:
             return self._Result(signal="break")
+        if not action.enabled:
+            return end_result(status="disabled")
 
         # once_per_macro 액션은 첫 사이클 이후에는 바로 스킵 처리하고 로그를 남기지 않는다.
         if getattr(action, "once_per_macro", False) and getattr(self, "_current_cycle", 0) > 0:
@@ -4144,7 +4318,10 @@ class MacroRunner:
             self._current_cycle = 0
             self._macro_call_stack = prev_call_stack + (target_stack_key,)
 
+            nested_workers = []
             try:
+                if not self._running_stop_actions:
+                    nested_workers = self._start_parallel_workers(target_macro, target_idx)
                 nested_result = self._run_actions(
                     target_macro.actions,
                     nested_labels,
@@ -4153,6 +4330,16 @@ class MacroRunner:
                     idx_path=[],
                 )
             finally:
+                self._stop_parallel_workers(nested_workers)
+                if self._stop_event.is_set() and not self._stop_actions_run and not self._running_stop_actions:
+                    self._running_stop_actions = True
+                    try:
+                        self._run_stop_actions_for_frame(
+                            target_macro, target_idx, target_stack_key,
+                            call_stack=self._macro_call_stack,
+                        )
+                    finally:
+                        self._running_stop_actions = False
                 self._release_new_nested_holds(held_keys_before, held_mouse_before)
                 if getattr(self, "_macro_frame_stack", None):
                     if self._macro_frame_stack[-1][2] == target_stack_key:
@@ -4201,6 +4388,9 @@ class MacroRunner:
 
         if action.type == "macro_stop":
             # 현재 매크로를 즉시 중단한다.
+            if self._parallel_owner is not None:
+                self._request_parallel_macro_stop()
+                return end_result(signal="break", status="macro_stop")
             if len(getattr(self, "_macro_call_stack", ())) > 1:
                 if not self._running_stop_actions:
                     current_stack_key = self._macro_stack_key_for(self.macro, self.index)
@@ -4427,6 +4617,10 @@ class MacroRunner:
 
         if action.type == "group":
             mode = action.group_mode or "all"
+            if mode == "all" and self._parallel_owner is not None:
+                result = self._run_actions(action.actions, labels, path=path + ["group"], idx_path=idx_path)
+                self._emit_action_event("action_end", action, path, idx_path, status=result.signal, branch="group", condition_hit=result.condition_hit)
+                return result
             if mode == "while":
                 iteration = 0
                 while self._running_stop_actions or not self._stop_event.is_set():
