@@ -3830,7 +3830,7 @@ class _ImageCanvas(QtWidgets.QWidget):
         super().mouseReleaseEvent(event)
     def wheelEvent(self, event: QtGui.QWheelEvent):
         delta = event.angleDelta().y()
-        if delta == 0 or not (event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier):
+        if delta == 0:
             return super().wheelEvent(event)
         steps = 1 if delta > 0 else -1
         anchor = event.position().toPoint() if hasattr(event, "position") else event.pos()
@@ -5565,7 +5565,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         hk_stop = hk.get("stop") or "-"
         hk_cap = hk.get("capture") or "-"
         self.hud_label.setText(
-            f"이미지: 드래그 이동 | Ctrl+휠 또는 +/- 확대·축소 | 0 화면 맞춤 | 방향키 좌표 미세 이동 "
+            f"이미지: 드래그 이동 | 휠 또는 +/- 확대·축소 | 0 화면 맞춤 | 방향키 좌표 미세 이동 "
             f"| 복사: F1 좌표 | Ctrl+F1 범위 | F2 색상 | 이동: Ctrl+Enter 좌표 입력 "
             f"| 파일: Ctrl+←/→ 이전·다음 이미지 | F5 새로고침 | Delete 삭제 | Esc 닫기 "
             f"| 트리: 더블클릭 열기·접기 | 드래그 이동 | Ctrl+드래그 복사 "
@@ -6344,7 +6344,7 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
     def _format_value(self, act: Action) -> str:
         suffix_bits = []
         if getattr(act, "parallel_enabled", False):
-            suffix_bits.append(f"병렬 · {act.parallel_interval_sec:g}초마다")
+            suffix_bits.append("병렬 · 기본 속도" if act.parallel_interval_sec == 0 else f"병렬 · {act.parallel_interval_sec:g}초마다")
         if getattr(act, "once_per_macro", False):
             suffix_bits.append("1회")
         if getattr(act, "force_first_run", False):
@@ -6477,14 +6477,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
     def _format_desc(self, act: Action) -> str:
         return getattr(act, "description", "") or ""
     def _apply_once_style(self, item: QtWidgets.QTreeWidgetItem, act: Action):
-        """병렬은 주황색, 1회 실행/첫 입력 보장은 파란색으로 구분한다."""
+        """1회 실행/첫 입력 보장 액션을 파란색으로 구분한다."""
         default_brush = QtGui.QBrush(self.palette().color(QtGui.QPalette.ColorRole.Text))
         once_brush = QtGui.QBrush(QtGui.QColor("#1f6feb"))
         has_flag = getattr(act, "once_per_macro", False) or getattr(act, "force_first_run", False)
         brush = once_brush if has_flag else default_brush
-        if getattr(act, "parallel_enabled", False):
-            dark = self.palette().color(QtGui.QPalette.ColorRole.Base).lightness() < 128
-            brush = QtGui.QBrush(QtGui.QColor("#f2a65a" if dark else "#c56a16"))
         for col in range(item.columnCount()):
             item.setForeground(col, brush)
     def _append_action_item(self, act: Action, parent_item=None, insert_row: int | None = None):
@@ -6797,6 +6794,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             if target_for_insert is None and indicator != QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport:
                 indicator = QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport
             parent, insert_row = compute_parent_and_row(indicator, target_for_insert, allowed_child)
+            if parent is None and getattr(self, "parallel_roots", False) and any(not getattr(it.data(0, QtCore.Qt.ItemDataRole.UserRole), "parallel_enabled", False) for it in selected):
+                QtWidgets.QToolTip.showText(self.mapToGlobal(event.position().toPoint()), "최상위에는 병렬 작업만 배치할 수 있습니다. 하위 액션은 병렬 그룹·IF 안에 넣으세요.", self)
+                event.ignore()
+                self._clear_drop_feedback()
+                return
             if parent is not None and any(getattr(it.data(0, QtCore.Qt.ItemDataRole.UserRole), "parallel_enabled", False) for it in selected):
                 QtWidgets.QToolTip.showText(event.globalPosition().toPoint() if hasattr(event, "globalPosition") else self.mapToGlobal(event.position().toPoint()), "병렬 항목은 트리 최상위에 배치하세요.", self)
                 event.ignore()
@@ -6830,6 +6832,11 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
                 self._clear_drop_feedback()
                 return
             parent, insert_row = compute_parent_and_row(indicator, target_for_insert, allowed_child)
+            if parent is None and getattr(self, "parallel_roots", False) and any(not getattr(it.data(0, QtCore.Qt.ItemDataRole.UserRole), "parallel_enabled", False) for it in items):
+                QtWidgets.QToolTip.showText(self.mapToGlobal(event.position().toPoint()), "최상위에는 병렬 작업만 배치할 수 있습니다. 하위 액션은 병렬 그룹·IF 안에 넣으세요.", self)
+                event.ignore()
+                self._clear_drop_feedback()
+                return
             if parent is not None and any(getattr(it.data(0, QtCore.Qt.ItemDataRole.UserRole), "parallel_enabled", False) for it in items):
                 QtWidgets.QToolTip.showText(self.mapToGlobal(event.position().toPoint()), "병렬 항목은 트리 최상위에 배치하세요.", self)
                 event.ignore()
@@ -7042,6 +7049,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         action: Action | None = None,
         *,
         parallel_allowed: bool = True,
+        parallel_required: bool = False,
         variable_provider=None,
         add_variable=None,
         label_provider=None,
@@ -7061,7 +7069,8 @@ class ActionEditDialog(QtWidgets.QDialog):
     ):
         super().__init__(parent)
         self._parallel_allowed = parallel_allowed
-        self.setWindowTitle("액션 설정")
+        self._parallel_required = parallel_required
+        self.setWindowTitle("병렬 작업 설정" if parallel_required else "액션 설정")
         self.setModal(False)
         self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
         self.setWindowFlags(
@@ -7363,12 +7372,13 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.parallel_check = QtWidgets.QCheckBox("병렬 실행")
         self.parallel_check.setToolTip("그룹 내부 액션은 순서대로, IF 조건은 매 주기 새로 검사합니다. 메인 액션과 별도로 실행됩니다.")
         self.parallel_interval_spin = QtWidgets.QDoubleSpinBox()
-        self.parallel_interval_spin.setRange(0.01, 86400)
+        self.parallel_interval_spin.setRange(0, 86400)
         self.parallel_interval_spin.setDecimals(2)
         self.parallel_interval_spin.setSingleStep(0.1)
         self.parallel_interval_spin.setValue(1.0)
         self.parallel_interval_spin.setSuffix(" 초마다")
-        self.parallel_interval_spin.setToolTip("실행 시작 간격입니다. 이전 실행이 끝나지 않으면 해당 회차는 건너뜁니다.")
+        self.parallel_interval_spin.setSpecialValueText("0초 · 기본 속도")
+        self.parallel_interval_spin.setToolTip("0초는 일반 액션 트리와 같은 기본 반복 간격으로 검사합니다. 양수는 실행 시작 간격이며, 이전 실행이 끝나지 않으면 해당 회차는 건너뜁니다.")
         self.parallel_hint = QtWidgets.QLabel()
         self.parallel_hint.setWordWrap(True)
         self.group_mode_combo = QtWidgets.QComboBox()
@@ -7524,6 +7534,12 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.sound_file_clear_btn.clicked.connect(self.sound_file_edit.clear)
         self._toggle_override_enabled()
         self._sync_var_action_fields()
+        if self._parallel_required:
+            for index in range(self.type_combo.count() - 1, -1, -1):
+                if self.type_combo.itemData(index) not in ("group", "if"):
+                    self.type_combo.removeItem(index)
+            action = copy.deepcopy(action) if action else Action(type="group", group_mode="all")
+            action.parallel_enabled = True
         if action:
             self._load(action)
         else:
@@ -7869,13 +7885,13 @@ class ActionEditDialog(QtWidgets.QDialog):
         typ = self._current_type()
         show_parallel = typ in ("group", "if")
         parallel = show_parallel and self.parallel_check.isChecked()
-        self._set_field_visible(self.parallel_check, show_parallel)
-        self.parallel_check.setEnabled(self._parallel_allowed or parallel)
+        self._set_field_visible(self.parallel_check, show_parallel and not self._parallel_required)
+        self.parallel_check.setEnabled(not self._parallel_required and (self._parallel_allowed or parallel))
         self._set_field_visible(self.parallel_interval_spin, show_parallel)
         self.parallel_interval_spin.setEnabled(parallel and self._parallel_allowed)
         self._set_field_visible(self.parallel_hint, show_parallel)
         if not self._parallel_allowed:
-            hint = "병렬 실행은 기본 액션 트리 최상위의 그룹·IF에서 설정할 수 있습니다."
+            hint = "독립적인 병렬 작업은 ‘병렬 작업’ 탭 최상위에 추가하세요. 이 안의 하위 액션은 순서대로 실행됩니다."
         elif parallel and typ == "group" and self.group_mode_combo.currentData() == "while":
             hint = "무한 반복 그룹은 break로 끝나야 다음 주기가 실행됩니다. 주기마다 한 번 실행하려면 그룹 모드를 ‘모두 실행’으로 선택하세요."
         else:
@@ -8827,25 +8843,31 @@ class MacroDialog(QtWidgets.QDialog):
         self.interaction_btn = QtWidgets.QPushButton("상호작용 설정...")
         self.interaction_summary = QtWidgets.QLabel("")
         self.interaction_summary.setStyleSheet("color: #555;")
-        scope_row = QtWidgets.QHBoxLayout()
-        scope_row.addWidget(self.scope_btn)
-        scope_row.addWidget(self.scope_summary, stretch=1)
-        scope_row.addStretch()
-        inter_row = QtWidgets.QHBoxLayout()
-        inter_row.addWidget(self.interaction_btn)
-        inter_row.addWidget(self.interaction_summary, stretch=1)
-        inter_row.addStretch()
+        self.cycle_spin.setMaximumWidth(150)
+        run_options = QtWidgets.QHBoxLayout()
+        run_options.addWidget(self.enabled_check)
+        run_options.addSpacing(20)
+        run_options.addWidget(QtWidgets.QLabel("사이클 횟수 (0=무한)"))
+        run_options.addWidget(self.cycle_spin)
+        run_options.addSpacing(20)
+        run_options.addWidget(self.suppress_checkbox)
+        run_options.addStretch()
+        scope_options = QtWidgets.QHBoxLayout()
+        scope_options.addWidget(self.scope_btn)
+        scope_options.addWidget(self.scope_summary, stretch=1)
+        scope_options.addSpacing(16)
+        scope_options.addWidget(self.interaction_btn)
+        scope_options.addWidget(self.interaction_summary, stretch=1)
+        for summary in (self.scope_summary, self.interaction_summary):
+            summary.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+            summary.setMinimumWidth(80)
         form.addRow("이름(선택)", self.name_edit)
         form.addRow("설명(선택)", self.desc_edit)
         form.addRow("트리거 입력/모드", trigger_input_row)
         form.addRow("조합 구성", trigger_builder_row)
         form.addRow("트리거 목록", trigger_table_box)
-        form.addRow(self.enabled_check)
-        form.addRow("사이클 횟수(0=무한)", self.cycle_spin)
-        form.addRow(self.suppress_checkbox)
-        form.addRow(scope_row)
-        # 상호작용 라벨을 생략해 공간을 확보하고 바로 버튼/요약을 배치
-        form.addRow(inter_row)
+        form.addRow(run_options)
+        form.addRow(scope_options)
         layout.addLayout(form)
         for chk in (
             self.trigger_mod_ctrl,
@@ -8865,13 +8887,56 @@ class MacroDialog(QtWidgets.QDialog):
         self.trigger_down_btn.clicked.connect(lambda: self._move_trigger_row(1))
         self._sync_builder_from_trigger_text()
         self._sync_trigger_hold_visibility()
-        self.action_tree = ActionTreeWidget()
-        layout.addWidget(self.action_tree)
+        self.main_action_tree = ActionTreeWidget()
+        self.parallel_action_tree = ActionTreeWidget()
+        self.parallel_action_tree.parallel_roots = True
+        self.action_tree = self.main_action_tree
+        self.action_tabs = QtWidgets.QTabWidget()
+        self.main_action_page = QtWidgets.QWidget()
+        main_actions_layout = QtWidgets.QVBoxLayout(self.main_action_page)
+        main_actions_layout.setContentsMargins(8, 8, 8, 8)
+        main_hint = QtWidgets.QLabel("위에서 아래로 순서대로 실행합니다. 별도로 반복할 작업은 ‘병렬로 이동’을 사용하세요.")
+        main_hint.setWordWrap(True)
+        main_actions_layout.addWidget(main_hint)
+        main_actions_layout.addWidget(self.main_action_tree)
+        self.parallel_action_page = QtWidgets.QWidget()
+        parallel_layout = QtWidgets.QVBoxLayout(self.parallel_action_page)
+        parallel_layout.setContentsMargins(8, 8, 8, 8)
+        self.parallel_summary = QtWidgets.QLabel()
+        self.parallel_summary.setWordWrap(True)
+        parallel_layout.addWidget(self.parallel_summary)
+        parallel_hint = QtWidgets.QLabel("각 최상위 그룹·IF가 독립적으로 반복됩니다. 그룹 안의 액션은 순서대로 실행하며, 매크로 중지 시 함께 멈춥니다.")
+        parallel_hint.setWordWrap(True)
+        parallel_layout.addWidget(parallel_hint)
+        parallel_controls = QtWidgets.QHBoxLayout()
+        self.parallel_group_btn = QtWidgets.QPushButton("+ 병렬 그룹")
+        self.parallel_if_btn = QtWidgets.QPushButton("+ 병렬 IF")
+        parallel_controls.addWidget(self.parallel_group_btn)
+        parallel_controls.addWidget(self.parallel_if_btn)
+        parallel_controls.addStretch()
+        self.parallel_interval_label = QtWidgets.QLabel("선택 작업 주기")
+        self.parallel_quick_interval = QtWidgets.QDoubleSpinBox()
+        self.parallel_quick_interval.setRange(0, 86400)
+        self.parallel_quick_interval.setDecimals(2)
+        self.parallel_quick_interval.setSingleStep(0.1)
+        self.parallel_quick_interval.setValue(1.0)
+        self.parallel_quick_interval.setSuffix(" 초마다")
+        self.parallel_quick_interval.setSpecialValueText("0초 · 기본 속도")
+        self.parallel_quick_interval.setToolTip("0초는 일반 액션 트리와 같은 기본 반복 간격으로 검사합니다. 하위 액션을 선택해도 그 작업의 주기를 변경합니다.")
+        parallel_controls.addWidget(self.parallel_interval_label)
+        parallel_controls.addWidget(self.parallel_quick_interval)
+        parallel_layout.addLayout(parallel_controls)
+        parallel_layout.addWidget(self.parallel_action_tree)
+        self.action_tabs.addTab(self.main_action_page, "일반 액션")
+        self.action_tabs.addTab(self.parallel_action_page, "병렬 작업 (0)")
+        layout.addWidget(self.action_tabs, stretch=1)
         move_row = QtWidgets.QHBoxLayout()
         self.move_up_btn = QtWidgets.QPushButton("위로")
         self.move_down_btn = QtWidgets.QPushButton("아래로")
         move_row.addWidget(self.move_up_btn)
         move_row.addWidget(self.move_down_btn)
+        self.transfer_action_btn = QtWidgets.QPushButton("병렬로 이동 →")
+        move_row.addWidget(self.transfer_action_btn)
         move_row.addStretch()
         layout.addLayout(move_row)
         btns = QtWidgets.QHBoxLayout()
@@ -8962,11 +9027,22 @@ class MacroDialog(QtWidgets.QDialog):
         self.copy_btn.clicked.connect(self._copy_action)
         self.paste_btn.clicked.connect(self._paste_action)
         self.del_btn.clicked.connect(self._delete_action)
-        self.expand_all_btn.clicked.connect(self.action_tree.expandAll)
-        self.collapse_all_btn.clicked.connect(self.action_tree.collapse_all)
+        self.expand_all_btn.clicked.connect(lambda: self.action_tree.expandAll())
+        self.collapse_all_btn.clicked.connect(lambda: self.action_tree.collapse_all())
         self.move_up_btn.clicked.connect(lambda: self._move_selected(-1, self.move_up_btn))
         self.move_down_btn.clicked.connect(lambda: self._move_selected(1, self.move_down_btn))
-        self.action_tree.itemDoubleClicked.connect(lambda *_: self._edit_action())
+        self.main_action_tree.itemDoubleClicked.connect(lambda *_: self._with_action_tree(self.main_action_tree, self._edit_action))
+        self.parallel_action_tree.itemDoubleClicked.connect(lambda *_: self._with_action_tree(self.parallel_action_tree, self._edit_action))
+        self.action_tabs.currentChanged.connect(self._action_tab_changed)
+        self.transfer_action_btn.clicked.connect(self._transfer_selected_actions)
+        self.parallel_group_btn.clicked.connect(lambda: self._add_action(parallel_type="group"))
+        self.parallel_if_btn.clicked.connect(lambda: self._add_action(parallel_type="if"))
+        self.parallel_quick_interval.valueChanged.connect(self._change_parallel_interval)
+        for tree in (self.main_action_tree, self.parallel_action_tree):
+            tree.itemSelectionChanged.connect(self._refresh_action_workspace)
+            tree.itemChanged.connect(lambda *_: self._schedule_workspace_refresh())
+            tree.model().rowsInserted.connect(lambda *_: self._schedule_workspace_refresh())
+            tree.model().rowsRemoved.connect(lambda *_: self._schedule_workspace_refresh())
         self.stop_group.toggled.connect(self._set_stop_group_enabled)
         self.stop_collapse_btn.toggled.connect(self._update_stop_collapsed)
         self.stop_tree_collapse_btn.clicked.connect(self.stop_action_tree.collapse_all)
@@ -9003,6 +9079,120 @@ class MacroDialog(QtWidgets.QDialog):
             self._set_scope_label()
             self.trigger_hold_spin.setValue(0.0)
             self._sync_trigger_hold_visibility()
+        self._action_tab_changed(self.action_tabs.currentIndex())
+
+    def _action_tab_changed(self, index: int):
+        self.action_tree = self.parallel_action_tree if index == 1 else self.main_action_tree
+        self._refresh_action_workspace()
+
+    def _schedule_workspace_refresh(self):
+        if getattr(self, "_workspace_refresh_pending", False):
+            return
+        self._workspace_refresh_pending = True
+        QtCore.QTimer.singleShot(0, self._refresh_action_workspace)
+
+    def _selected_parallel_root(self):
+        selected = self.parallel_action_tree.selectedItems()
+        roots = []
+        for item in selected:
+            while item.parent() is not None:
+                item = item.parent()
+            if item not in roots:
+                roots.append(item)
+        return roots[0] if len(roots) == 1 else None
+
+    def _refresh_action_workspace(self):
+        self._workspace_refresh_pending = False
+        parallel = self.action_tabs.currentIndex() == 1
+        tree = self.parallel_action_tree if parallel else self.main_action_tree
+        total = self.parallel_action_tree.topLevelItemCount()
+        enabled = sum(self.parallel_action_tree.topLevelItem(i).checkState(5) == QtCore.Qt.CheckState.Checked for i in range(total))
+        self.action_tabs.setTabText(1, f"병렬 작업 ({total})")
+        self.parallel_summary.setText(f"병렬 작업 {total}개 · 활성 {enabled}개" if total else "아직 병렬 작업이 없습니다. ‘+ 병렬 그룹’ 또는 ‘+ 병렬 IF’로 시작하세요.")
+        root = self._selected_parallel_root()
+        data = root.data(0, QtCore.Qt.ItemDataRole.UserRole) if root is not None else None
+        self.parallel_quick_interval.setEnabled(isinstance(data, Action))
+        task_name = data.name or "선택 작업" if isinstance(data, Action) else ""
+        self.parallel_interval_label.setText(f"{_elide_middle(task_name, 24)} 주기" if task_name else "작업을 하나 선택하세요")
+        self.parallel_interval_label.setToolTip(task_name)
+        blocker = QtCore.QSignalBlocker(self.parallel_quick_interval)
+        self.parallel_quick_interval.setValue(data.parallel_interval_sec if isinstance(data, Action) else 1.0)
+        del blocker
+        self.transfer_action_btn.setText("← 일반으로 이동" if parallel else "병렬로 이동 →")
+        selected = tree._top_level_selected(tree.selectedItems())
+        self.transfer_action_btn.setEnabled(bool(selected) and all(item.parent() is None for item in selected))
+        self.transfer_action_btn.setToolTip("최상위 항목을 이동합니다. 키·대기 등 일반 액션을 선택하면 순서를 유지한 병렬 그룹으로 묶습니다.")
+        self.add_btn.setText("병렬 작업 추가" if parallel else "액션 추가")
+        self.keyboard_record_btn.setVisible(not parallel)
+        self.mouse_record_btn.setVisible(not parallel)
+
+    def _change_parallel_interval(self, value: float):
+        item = self._selected_parallel_root()
+        data = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item is not None else None
+        if not isinstance(data, Action):
+            return
+        data.parallel_interval_sec = value
+        item.setText(3, self.parallel_action_tree._format_value(data))
+
+    def _reconcile_parallel_items(self):
+        moved = []
+        for index in range(self.main_action_tree.topLevelItemCount() - 1, -1, -1):
+            item = self.main_action_tree.topLevelItem(index)
+            data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if isinstance(data, Action) and data.parallel_enabled:
+                moved.insert(0, self.main_action_tree.takeTopLevelItem(index))
+        for item in moved:
+            self.parallel_action_tree.addTopLevelItem(item)
+        if moved:
+            self.main_action_tree.renumber()
+            self.parallel_action_tree.renumber()
+            self.action_tabs.setCurrentIndex(1)
+            self.parallel_action_tree.setCurrentItem(moved[-1])
+        self._refresh_action_workspace()
+
+    def _transfer_selected_actions(self):
+        parallel = self.action_tabs.currentIndex() == 1
+        source = self.parallel_action_tree if parallel else self.main_action_tree
+        target = self.main_action_tree if parallel else self.parallel_action_tree
+        items = source._top_level_selected(source.selectedItems())
+        if not items or any(item.parent() is not None for item in items):
+            return
+        items.sort(key=source.indexOfTopLevelItem)
+        actions = [source._action_from_item(item) for item in items]
+        if parallel:
+            for action in actions:
+                action.parallel_enabled = False
+        else:
+            actions = self._as_parallel_tasks(actions)
+        for item in reversed(items):
+            source.takeTopLevelItem(source.indexOfTopLevelItem(item))
+        target.clearSelection()
+        for action in actions:
+            item = target._append_action_item(action)
+            item.setSelected(True)
+            target.expandItem(item)
+        source.renumber()
+        target.renumber()
+        self.action_tabs.setCurrentIndex(0 if parallel else 1)
+        self._refresh_action_workspace()
+
+    def _parallel_task_name(self, prefix: str) -> str:
+        names = {self.parallel_action_tree.topLevelItem(i).text(2) for i in range(self.parallel_action_tree.topLevelItemCount())}
+        number = 1
+        while f"{prefix} {number}" in names:
+            number += 1
+        return f"{prefix} {number}"
+
+    def _as_parallel_tasks(self, actions: list[Action]) -> list[Action]:
+        if any(action.type not in ("group", "if") for action in actions):
+            for action in actions:
+                action.parallel_enabled = False
+            actions = [Action(type="group", name=self._parallel_task_name("병렬 그룹"), group_mode="all", actions=actions)]
+        for action in actions:
+            action.parallel_enabled = True
+            action.once_per_macro = False
+            action.force_first_run = False
+        return actions
     def _populate_trigger_menu(self):
         menu = self.trigger_menu
         menu.clear()
@@ -9289,6 +9479,7 @@ class MacroDialog(QtWidgets.QDialog):
         return f"특정 앱: {', '.join(labels)}"
     def _set_scope_label(self):
         self.scope_summary.setText(self._scope_summary_text())
+        self.scope_summary.setToolTip(self.scope_summary.text())
     def _open_scope_dialog(self):
         dlg = AppScopeDialog(
             self,
@@ -9331,7 +9522,11 @@ class MacroDialog(QtWidgets.QDialog):
                     _, branch, _, _ = _split_elif_block(blk)
                     walk(branch or [])
         target_tree = tree or self.action_tree
-        walk(target_tree.collect_actions() if target_tree else [])
+        if target_tree is self.parallel_action_tree:
+            root = self._selected_parallel_root()
+            walk([target_tree._action_from_item(root)] if root is not None else [])
+        else:
+            walk(target_tree.collect_actions() if target_tree else [])
         uniq: list[str] = []
         for name in labels:
             if name and name not in uniq:
@@ -9340,12 +9535,11 @@ class MacroDialog(QtWidgets.QDialog):
     def _with_action_tree(self, tree: ActionTreeWidget | None, fn):
         if not tree:
             return
-        prev = self.action_tree
         try:
             self.action_tree = tree
             fn()
         finally:
-            self.action_tree = prev
+            self.action_tree = self.parallel_action_tree if self.action_tabs.currentIndex() == 1 else self.main_action_tree
     def _set_stop_group_enabled(self, enabled: bool):
         widgets = [
             self.stop_action_tree,
@@ -9386,6 +9580,7 @@ class MacroDialog(QtWidgets.QDialog):
         if self._interaction_block:
             parts.append(f"차단: {_short(self._interaction_block, default='없음')}")
         self.interaction_summary.setText(" | ".join(parts))
+        self.interaction_summary.setToolTip(self.interaction_summary.text())
     def _open_interaction_dialog(self):
         dlg = InteractionDialog(
             mode=self._interaction_mode,
@@ -9483,14 +9678,21 @@ class MacroDialog(QtWidgets.QDialog):
                     "일부 이벤트 제외",
                     f"미지원 마우스 이벤트 {skipped}개는 제외하고 그룹에 추가했습니다.",
                 )
-    def _add_action(self, *, as_child: bool = False, tree: ActionTreeWidget | None = None, branch: str | None = None):
+    def _add_action(self, *, as_child: bool = False, tree: ActionTreeWidget | None = None, branch: str | None = None, parallel_type: str | None = None):
         target_tree = tree or self.action_tree
         selected = self._selected_item(target_tree)
+        parallel_root = target_tree is self.parallel_action_tree and not as_child and not branch
+        if target_tree is self.parallel_action_tree and as_child and selected is None:
+            QtWidgets.QMessageBox.information(self, "작업 선택", "하위 액션을 추가할 병렬 그룹 또는 IF를 선택하세요.")
+            return
         parallel_allowed = (target_tree is not self.stop_action_tree and not as_child and not branch
                             and (selected is None or selected.parent() is None))
+        initial_action = Action(type=parallel_type or "group", name=self._parallel_task_name("병렬 IF" if parallel_type == "if" else "병렬 그룹"), group_mode="all", parallel_enabled=True) if parallel_root else None
         dlg = ActionEditDialog(
             self,
-            parallel_allowed=parallel_allowed,
+            action=initial_action,
+            parallel_allowed=parallel_allowed or parallel_root,
+            parallel_required=parallel_root,
             variable_provider=self._variable_provider,
             add_variable=self._add_variable,
             label_provider=lambda: self._available_labels(target_tree),
@@ -9515,6 +9717,9 @@ class MacroDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.warning(self, "입력 오류", str(exc))
                 return
             target = self._selected_item(target_tree)
+            if parallel_root:
+                while target is not None and target.parent() is not None:
+                    target = target.parent()
             if getattr(act, "_as_elif", False):
                 if self._insert_elif_from_action(act, target, tree=target_tree):
                     return
@@ -9558,6 +9763,7 @@ class MacroDialog(QtWidgets.QDialog):
             if new_item:
                 target_tree.setCurrentItem(new_item)
             target_tree.renumber()
+            self._reconcile_parallel_items()
     def _find_elif_target(self, reference: QtWidgets.QTreeWidgetItem | None, *, tree: ActionTreeWidget | None = None) -> QtWidgets.QTreeWidgetItem | None:
         tgt = tree or self.action_tree
         if reference and tgt:
@@ -9865,6 +10071,7 @@ class MacroDialog(QtWidgets.QDialog):
             self,
             action=act,
             parallel_allowed=self.action_tree is not self.stop_action_tree and item.parent() is None,
+            parallel_required=self.action_tree is self.parallel_action_tree and item.parent() is None,
             variable_provider=self._variable_provider,
             add_variable=self._add_variable,
             label_provider=self._available_labels,
@@ -9927,6 +10134,7 @@ class MacroDialog(QtWidgets.QDialog):
             # 편집 전 펼침 상태만 복원하고 추가 확장은 하지 않는다.
             self.action_tree._restore_expanded(expanded_before)
             self.action_tree.renumber()
+            self._reconcile_parallel_items()
     def _copy_action(self, tree: ActionTreeWidget | None = None):
         target_tree = tree or self.action_tree
         if not target_tree:
@@ -10025,6 +10233,8 @@ class MacroDialog(QtWidgets.QDialog):
                 )
                 insert_row = (base_row + 1) if base_row >= 0 else None
                 expand_item = parent
+        if target_tree is self.parallel_action_tree and parent is None:
+            actions_to_paste = self._as_parallel_tasks(actions_to_paste)
         try:
             Action.validate_parallel_actions(
                 actions_to_paste, allow_parallel=parent is None and target_tree is not self.stop_action_tree,
@@ -10049,6 +10259,7 @@ class MacroDialog(QtWidgets.QDialog):
                 item.setSelected(True)
             target_tree.setCurrentItem(new_items[0])
         target_tree.renumber()
+        self._reconcile_parallel_items()
     def _delete_action(self):
         selected = self.action_tree._top_level_selected(self.action_tree.selectedItems())
         if not selected:
@@ -10100,7 +10311,8 @@ class MacroDialog(QtWidgets.QDialog):
                 if target:
                     self._app_targets.append(copy.deepcopy(target))
         self._set_scope_label()
-        self.action_tree.load_actions(copy.deepcopy(macro.actions))
+        self.main_action_tree.load_actions(copy.deepcopy([action for action in macro.actions if not action.parallel_enabled]))
+        self.parallel_action_tree.load_actions(copy.deepcopy([action for action in macro.actions if action.parallel_enabled]))
         stop_actions = copy.deepcopy(getattr(macro, "stop_actions", []) or [])
         self.stop_action_tree.load_actions(stop_actions)
         self.stop_group.setChecked(bool(stop_actions))
@@ -10140,7 +10352,7 @@ class MacroDialog(QtWidgets.QDialog):
         app_targets: list[AppTarget] = []
         if scope == "app":
             app_targets = [copy.deepcopy(t) for t in self._collect_app_targets()]
-        actions = self.action_tree.collect_actions()
+        actions = self.main_action_tree.collect_actions() + self.parallel_action_tree.collect_actions()
         stop_enabled = self.stop_group.isChecked()
         stop_actions = self.stop_action_tree.collect_actions() if stop_enabled else []
         Action.validate_parallel_actions(actions)

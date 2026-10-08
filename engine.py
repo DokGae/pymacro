@@ -1759,9 +1759,9 @@ class Action:
         try:
             seconds = float(value)
         except (TypeError, ValueError):
-            raise ValueError("병렬 실행 주기는 0.01~86400초 사이의 숫자여야 합니다.") from None
-        if not math.isfinite(seconds) or not 0.01 <= seconds <= 86400:
-            raise ValueError("병렬 실행 주기는 0.01~86400초 사이의 숫자여야 합니다.")
+            raise ValueError("병렬 실행 주기는 0~86400초 사이의 숫자여야 합니다. 0초는 기본 속도입니다.") from None
+        if not math.isfinite(seconds) or not 0 <= seconds <= 86400:
+            raise ValueError("병렬 실행 주기는 0~86400초 사이의 숫자여야 합니다. 0초는 기본 속도입니다.")
         return seconds
 
     @staticmethod
@@ -3265,6 +3265,11 @@ class MacroRunner:
                 if result.signal == "goto":
                     self.engine._emit_log(f"병렬 항목 밖으로 점프할 수 없습니다: {action.name or action.type}")
                     break
+                if interval == 0:
+                    # Match the normal macro cycle: finish work, then wait one engine tick.
+                    if self._stop_event.wait(self.engine.tick):
+                        break
+                    continue
                 # Fixed start cadence; skip missed deadlines, never overlap or catch up.
                 deadline += interval
                 now = time.monotonic()

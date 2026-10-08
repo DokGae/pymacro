@@ -76,9 +76,32 @@ class ParallelTests(unittest.TestCase):
         self.assertTrue(loaded.parallel_enabled)
         self.assertEqual(loaded.parallel_interval_sec, 0.25)
         self.assertFalse(Action.from_dict({"type": "group"}).parallel_enabled)
-        for value in (0, -1, float("nan"), float("inf"), "oops"):
+        self.assertEqual(Action.from_dict(background([], interval=0).to_dict()).parallel_interval_sec, 0)
+        for value in (-1, float("nan"), float("inf"), "oops"):
             with self.assertRaises(ValueError):
                 Action.parse_parallel_interval(value)
+
+    def test_zero_interval_uses_engine_tick_and_stops(self):
+        class RecordingStopEvent(threading.Event):
+            def __init__(self):
+                super().__init__()
+                self.waits = []
+
+            def wait(self, timeout=None):
+                self.waits.append(timeout)
+                if len(self.waits) == 3:
+                    self.set()
+                return self.is_set()
+
+        action = background([Action(type="noop", name="zero_poll")], interval=0)
+        self.engine.tick = 0.037
+        runner = MacroRunner(Macro(trigger_key="f10", actions=[action]), self.engine)
+        runner._stop_event = RecordingStopEvent()
+        runner._current_cycle = 0
+        runner._run_parallel(action, 0)
+        self.assertEqual(runner._stop_event.waits, [self.engine.tick] * 3)
+        self.assertEqual(len(self.starts("zero_poll")), 3)
+        self.assertFalse(any("오류" in message for message in self.engine.logs))
 
     def test_invalid_positions_and_flags(self):
         for actions in ([Action(type="group", actions=[background([])])],
