@@ -42,8 +42,9 @@ from lib.pixel import (
 )
 from lib.processes import get_foreground_process, terminate_processes
 from lib.windows import focus_window, target_client_region
+from external_state import state_hub, DEFAULT_PORT, external_result, external_conditions_ready
 
-ConditionType = Literal["key", "pixel", "all", "any", "var", "timer", "schedule"]
+ConditionType = Literal["key", "pixel", "all", "any", "var", "timer", "schedule", "external"]
 KeyMode = Literal["press", "down", "up", "hold", "released"]
 ActionType = Literal[
     "press",
@@ -1312,6 +1313,12 @@ class Condition:
     schedule_mode: ScheduleMode = "daily"
     schedule_value_raw: Optional[str] = None
     schedule_operator: str = "eq"
+    external_host: str = '127.0.0.1'
+    external_port: int = DEFAULT_PORT
+    external_source: str = 'leesangjin-monitor'
+    external_key: str = ''
+    external_operator: str = 'true'
+    external_value: str = ''
 
     @classmethod
     def _parse_region(cls, raw: Any, resolver: Optional[VariableResolver]) -> tuple[Region, Optional[str]]:
@@ -1477,6 +1484,12 @@ class Condition:
             enabled_val = bool(enabled_raw) if enabled_raw is not None else True
         cond = cls(
             type=ctype,
+            external_host=str(data.get('external_host', '127.0.0.1')),
+            external_port=int(data.get('external_port', DEFAULT_PORT)),
+            external_source=str(data.get('external_source', 'leesangjin-monitor')),
+            external_key=str(data.get('external_key', '')),
+            external_operator=str(data.get('external_operator', 'true')),
+            external_value=str(data.get('external_value', '')),
             name=data.get("name"),
             key=data.get("key"),
             key_mode=key_mode,
@@ -1536,6 +1549,10 @@ class Condition:
         }
         if self.type in ("all", "any"):
             payload["conditions"] = [c.to_dict() for c in self.conditions]
+        if self.type == 'external':
+            payload.update(external_host=self.external_host, external_port=self.external_port,
+                           external_source=self.external_source, external_key=self.external_key,
+                           external_operator=self.external_operator, external_value=self.external_value)
         if self.on_true:
             payload["on_true"] = [c.to_dict() for c in self.on_true]
         if self.on_false:
@@ -4566,6 +4583,9 @@ class MacroRunner:
             path_key = tuple(idx_path)
             confirm_fails = max(1, getattr(action, "confirm_fails", 1))
             pixel_cache: Dict[Tuple[int, int, int, int], Any] = {}
+            if not external_conditions_ready(cond, pixel_cache):
+                self._if_false_streaks[path_key] = 0
+                return end_result(status='external_unavailable')
             cond_true = self.engine._evaluate_condition(
                 cond,
                 key_states=self._cond_key_states,
@@ -4588,6 +4608,9 @@ class MacroRunner:
                 if getattr(elif_cond, "enabled", True) is False:
                     elif_offset += len(elif_actions or [])
                     continue
+                if not external_conditions_ready(elif_cond, pixel_cache):
+                    self._if_false_streaks[path_key] = 0
+                    return end_result(status='external_unavailable')
                 if self.engine._evaluate_condition(
                     elif_cond,
                     key_states=self._cond_key_states,
@@ -4802,6 +4825,7 @@ class MacroEngine:
         self._backend = None
         self._active_backend_mode: Optional[str] = None
         self._backend_status: Optional[Dict[str, Any]] = None
+        state_hub.connect_profile(self._profile)
 
     # ------------------------------------------------------------------ 상호작용 규칙
     def _resume_cycle_for_runner(self, runner: MacroRunner) -> int:
@@ -5129,6 +5153,7 @@ class MacroEngine:
         return max(0.0, offset + (time.monotonic() - start))
 
     def update_profile(self, profile: MacroProfile):
+        state_hub.connect_profile(profile)
         app_ctx = self._get_app_context(force=True)
         with self._lock:
             self._profile = copy.deepcopy(profile)
@@ -6598,6 +6623,12 @@ class MacroEngine:
         with self._cond_lock:
             self._cond_key_states.clear()
 
+    def _external_result(self, cond, cache=None):
+        return external_result(cond, cache)
+
+    def _external_conditions_ready(self, cond, cache=None):
+        return external_conditions_ready(cond, cache)
+
     def _evaluate_condition(
         self,
         cond: Condition,
@@ -6615,6 +6646,9 @@ class MacroEngine:
 
         if getattr(cond, "enabled", True) is False:
             return False
+
+        if pixel_cache is None: pixel_cache = {}
+        if not self._external_conditions_ready(cond, pixel_cache): return False
 
         if cond.type == "key":
             if not cond.key:
@@ -6637,6 +6671,9 @@ class MacroEngine:
             else:
                 base_result = pressed
             detail["key"] = {"key": cond.key, "mode": mode, "pressed": pressed, "prev": prev}
+        elif cond.type == 'external':
+            base_result, external_detail = self._external_result(cond, pixel_cache)
+            detail['external'] = external_detail
         elif cond.type == "pixel":
             region = cond.region
             color = cond.color
@@ -6856,6 +6893,7 @@ class MacroEngine:
         resolver: Optional[VariableResolver] = None,
         vars_ctx: Optional[MacroVariables] = None,
         path: Optional[List[str]] = None,
+        _external_cache: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """
         조건 트리를 주기적으로 평가할 때 사용할 수 있는 디버그용 함수.
@@ -6881,6 +6919,8 @@ class MacroEngine:
         current_path = list(path or [])
         cond_enabled = getattr(cond, "enabled", True)
         detail: Dict[str, Any] = {"enabled": cond_enabled}
+        external_cache = _external_cache if _external_cache is not None else {}
+        external_ready = not cond_enabled or self._external_conditions_ready(cond, external_cache)
         children: List[Dict[str, Any]] = []
         true_branch: List[Dict[str, Any]] = []
         false_branch: List[Dict[str, Any]] = []
@@ -6937,6 +6977,10 @@ class MacroEngine:
                 else:
                     base_result = pressed
                 detail["key"] = {"key": cond.key, "mode": mode, "pressed": pressed, "prev": prev}
+            elif cond.type == 'external':
+                base_result, external_detail = self._external_result(cond, external_cache)
+                detail['external'] = external_detail
+                if external_detail.get('unavailable'):base_result = None
             elif cond.type == "pixel":
                 region = cond.region
                 color = cond.color
@@ -6990,6 +7034,7 @@ class MacroEngine:
                         resolver=resolver,
                         vars_ctx=vars_state,
                         path=current_path + [f"{'and' if cond.type == 'all' else 'or'}[{idx}]"],
+                        _external_cache=external_cache,
                     )
                     children.append(child_res)
                     if getattr(child, "enabled", True):
@@ -7073,6 +7118,10 @@ class MacroEngine:
             detail["error"] = str(exc)
             base_result = False
 
+        if not external_ready:
+            base_result = None
+            detail['unavailable'] = True
+            detail['excluded_reason'] = 'external_unavailable'
         final_result: bool | None = base_result
         if base_result is True and cond.on_true:
             active_true: List[Dict[str, Any]] = []
@@ -7083,6 +7132,7 @@ class MacroEngine:
                     resolver=resolver,
                     vars_ctx=vars_state,
                     path=current_path + [f"on_true[{idx}]"],
+                    _external_cache=external_cache,
                 )
                 true_branch.append(child_res)
                 if getattr(child, "enabled", True):
@@ -7099,6 +7149,7 @@ class MacroEngine:
                     resolver=resolver,
                     vars_ctx=vars_state,
                     path=current_path + [f"on_false[{idx}]"],
+                    _external_cache=external_cache,
                 )
                 false_branch.append(child_res)
                 if getattr(child, "enabled", True):

@@ -16,6 +16,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
+from external_state import state_hub, DEFAULT_PORT, parse_value
 import numpy as np
 from PIL import Image
 from capture import (
@@ -1778,6 +1779,7 @@ def _condition_type_label(typ: str) -> str:
         "var": "변수",
         "timer": "타이머",
         "schedule": "시간/날짜",
+        "external": "외부 프로그램 상태",
     }.get(typ, typ)
 def _group_child_count(cond: Condition) -> int:
     if not isinstance(cond, Condition):
@@ -1838,6 +1840,10 @@ def _condition_brief(cond: Condition) -> str:
     if getattr(cond, "on_false", []):
         suffix_parts.append(f"거짓 {len(cond.on_false)}")
     suffix = f" | {' / '.join(suffix_parts)}" if suffix_parts else ""
+    if cond.type == 'external':
+        op = {'true':'켜짐', 'false':'꺼짐', 'eq':'==', 'ne':'!=', 'gt':'>', 'ge':'>=', 'lt':'<', 'le':'<='}.get(cond.external_operator, cond.external_operator)
+        value = '' if cond.external_operator in ('true','false') else ' ' + cond.external_value
+        return f'{cond.external_source}: {cond.external_key} {op}{value} (TCP {cond.external_port}){suffix}'
     if cond.type == "key":
         mode = cond.key_mode or "hold"
         return f"키/마우스 {cond.key} ({mode}){suffix}"
@@ -1960,6 +1966,25 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.type_combo.addItem("변수 조건", "var")
         self.type_combo.addItem("타이머", "timer")
         self.type_combo.addItem("시간/날짜", "schedule")
+        self.type_combo.addItem('외부 프로그램 상태 (TCP)', 'external')
+        self.external_source = QtWidgets.QComboBox(); self.external_source.setEditable(True)
+        self.external_source.addItem('leesangjin-monitor')
+        self.external_source.setToolTip('상대 프로그램이 전송하는 고정 프로그램 ID입니다. 프로세스 ID와 다릅니다.')
+        self.external_port = QtWidgets.QSpinBox(); self.external_port.setRange(1,65535); self.external_port.setValue(DEFAULT_PORT)
+        self.external_key = QtWidgets.QComboBox(); self.external_key.setEditable(True)
+        self.external_key.setEditText('내효과.123')
+        self.external_key.setToolTip('내용 이름을 직접 입력하거나 수신한 항목 목록에서 선택하세요. 예: 내효과.123 / 대상효과.123')
+        self.external_op = QtWidgets.QComboBox()
+        for label, op in [('켜짐 (참)','true'),('꺼짐 (거짓)','false'),('같음 (==)','eq'),('다름 (!=)','ne'),('초과 (>)','gt'),('이상 (>=)','ge'),('미만 (<)','lt'),('이하 (<=)','le')]:
+            self.external_op.addItem(label,op)
+        self.external_value = QtWidgets.QLineEdit(); self.external_value.setPlaceholderText('숫자 또는 문자열 · 예: 10 / 작업완료')
+        self.external_status = QtWidgets.QLabel('연결 대기 중'); self.external_status.setWordWrap(True)
+        self.external_status.setStyleSheet('color: #c62828; font-weight: bold;')
+        self.external_item_status = QtWidgets.QLabel(); self.external_item_status.setWordWrap(True)
+        self.external_hint = QtWidgets.QLabel('상대 프로그램이 TCP 소켓 상태 통신(external-state-v1)을 지원해야 합니다.\n같은 PC의 127.0.0.1로 자동 접속·재접속합니다. 연결 끊김이나 감지 대기 중에는 이 IF의 참/거짓 분기를 모두 건너뜁니다.')
+        self.external_hint.setWordWrap(True)
+        self._external_items_key = None
+        self.external_op.currentIndexChanged.connect(lambda *_: self._sync_external_value())
         self.name_edit = QtWidgets.QLineEdit()
         self.key_edit = QtWidgets.QLineEdit()
         self.key_edit.setPlaceholderText("예: a, ctrl, mouse1")
@@ -2067,6 +2092,14 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.group_hint = QtWidgets.QLabel("하위 조건은 트리에서 추가/삭제하세요.")
         self.group_hint.setStyleSheet("color: gray;")
         self.form.addRow("조건 타입", self.type_combo)
+        self.form.addRow('외부 프로그램 ID',self.external_source)
+        self.form.addRow('TCP 포트 (같은 PC)',self.external_port)
+        self.form.addRow('내용 이름',self.external_key)
+        self.form.addRow('내용 판정',self.external_op)
+        self.form.addRow('내용 비교값',self.external_value)
+        self.form.addRow('통신 상태',self.external_status)
+        self.form.addRow('항목 상태',self.external_item_status)
+        self.form.addRow('',self.external_hint)
         self.form.addRow("이름(선택)", self.name_edit)
         self.form.addRow("키/마우스", self.key_edit)
         self.form.addRow("키 모드", self.key_mode_combo)
@@ -2133,8 +2166,46 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             self.key_mode_combo.setCurrentIndex(max(0, self.key_mode_combo.findData("hold")))
             self._sync_schedule_hint()
             self._sync_type_visibility()
+        self.external_timer = QtCore.QTimer(self)
+        self.external_timer.timeout.connect(self._refresh_external_state); self.external_timer.start(500)
     def _current_type(self) -> str:
         return self.type_combo.currentData()
+    def _sync_external_value(self):
+        visible = self._current_type() == 'external' and self.external_op.currentData() not in ('true','false')
+        self.external_value.setVisible(visible)
+        label=self.form.labelForField(self.external_value)
+        if label is not None: label.setVisible(visible)
+
+    def _refresh_external_state(self):
+        if self._current_type() != 'external' or not self.isVisible(): return
+        source=self.external_source.currentText().strip(); key=self.external_key.currentText().strip()
+        try:client=state_hub.client('127.0.0.1',self.external_port.value())
+        except ValueError as exc:
+            self.external_status.setText(f'연결 실패 · {exc}')
+            self.external_status.setStyleSheet('color: #c62828; font-weight: bold;')
+            self.external_item_status.setText('현재 값 확인 불가');return
+        data,status=client.snapshot(source)
+        connected=data is not None
+        self.external_status.setText('연결된 상태 · 상태 수신 중' if connected else f'연결 실패 / 대기 중 · {status}')
+        self.external_status.setStyleSheet('color: #22863a; font-weight: bold;' if connected else 'color: #c62828; font-weight: bold;')
+        self.external_item_status.setText('현재 값 확인 불가')
+        if data is not None:
+            items=dict(data.get('items',{}))
+            for name in data['values']:items.setdefault(name,name)
+            signature=(source,self.external_port.value(),tuple(sorted(items.items())))
+            if signature != self._external_items_key:
+                cursor=self.external_key.lineEdit().cursorPosition()
+                self.external_key.blockSignals(True);self.external_key.clear()
+                for name,description in sorted(items.items()):
+                    self.external_key.addItem(name)
+                    self.external_key.setItemData(self.external_key.count()-1,description,QtCore.Qt.ItemDataRole.ToolTipRole)
+                self.external_key.setEditText(key);self.external_key.lineEdit().setCursorPosition(cursor)
+                self.external_key.blockSignals(False);self._external_items_key=signature
+            available,value,status=client.lookup(source,key)
+            if available:
+                shown='참' if value is True else '거짓' if value is False else str(value)
+                status=f'{key} = {shown}'
+            self.external_item_status.setText(status)
     def _refresh_var_name_combo(self, preserve: str | None = None):
         names: list[str] = []
         if callable(self._variable_provider):
@@ -2245,9 +2316,19 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self._sync_var_condition_fields()
         _toggle((self.timer_slot_combo, self.timer_value_wrap, self.timer_op_combo), visible=is_timer, enabled=is_timer)
         _toggle((self.schedule_mode_combo, self.schedule_value_edit, self.schedule_op_combo, self.schedule_hint_label), visible=is_schedule, enabled=is_schedule)
+        is_external=typ=='external'
+        _toggle((self.external_source,self.external_port,self.external_key,self.external_op,self.external_value,
+                 self.external_status,self.external_item_status,self.external_hint),visible=is_external,enabled=is_external)
+        self._sync_external_value()
         self.group_hint.setVisible(is_group)
     def _load(self, cond: Condition):
         self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(cond.type)))
+        if cond.type == 'external':
+            self.external_source.setEditText(cond.external_source)
+            self.external_port.setValue(cond.external_port)
+            self.external_key.setEditText(cond.external_key)
+            self.external_op.setCurrentIndex(max(0,self.external_op.findData(cond.external_operator)))
+            self.external_value.setText(cond.external_value)
         if cond.type == "key":
             self.key_edit.setText(cond.key or "")
             idx = self.key_mode_combo.findData(cond.key_mode or "hold")
@@ -2309,6 +2390,19 @@ class ConditionNodeDialog(QtWidgets.QDialog):
     def get_condition(self) -> Condition:
         typ = self._current_type()
         name = self.name_edit.text().strip() or None
+        if typ == 'external':
+            source=self.external_source.currentText().strip();key=self.external_key.currentText().strip()
+            if not source or len(source)>200:raise ValueError('외부 프로그램 ID를 1~200자로 입력하세요.')
+            if not key or len(key)>300:raise ValueError('내용 이름을 1~300자로 입력하세요.')
+            op=self.external_op.currentData();value=self.external_value.text().strip()
+            if op not in ('true','false'):
+                if not value:raise ValueError('내용 비교값을 입력하세요.')
+                expected=parse_value(value)
+                if op in ('gt','ge','lt','le') and type(expected) not in (int,float):
+                    raise ValueError('크기 비교에는 숫자를 입력하세요.')
+            return Condition(type='external',name=name,external_source=source,
+                             external_port=self.external_port.value(),external_key=key,
+                             external_operator=op,external_value=value)
         if typ == "key":
             raw_keys = self.key_edit.text().strip()
             keys = [k.strip() for k in raw_keys.replace(",", " ").split() if k.strip()]
@@ -12158,6 +12252,9 @@ class DebuggerDialog(QtWidgets.QDialog):
         fail_path = self._find_first_failure_path(tree, [])
         fail_text = " > ".join(fail_path) if fail_path else "-"
         self._update_condition_status(tree.get("result"), fail_text=fail_text, label=label)
+        if (tree.get('detail') or {}).get('unavailable'):
+            self.condition_state_label.setText(f'{label}: 판단 대기')
+            self.condition_state_label.setStyleSheet('color: darkorange; font-weight: bold;')
         if self._selection_highlight:
             self._apply_selection_overlay()
     def _set_condition_pending(self, label: str | None = None):
@@ -12482,7 +12579,7 @@ class DebuggerDialog(QtWidgets.QDialog):
         elif result_state is False:
             result_text = "거짓"
         else:
-            result_text = "결과 제외"
+            result_text = "판단 대기" if (node.get('detail') or {}).get('unavailable') else "결과 제외"
         if base_state is not None and result_state is not None and base_state != result_state:
             result_text += f" / base={'참' if base_state else '거짓'}"
         color_chip_html = ""
@@ -12539,6 +12636,9 @@ class DebuggerDialog(QtWidgets.QDialog):
         if tooltip_parts:
             item.setToolTip(2, "\n".join(tooltip_parts))
         self._apply_condition_color(item, node.get("detail") or {}, result_state)
+        if cond_type == 'external' and not is_disabled:
+            connected=(node.get('detail') or {}).get('external',{}).get('connected',False)
+            item.setForeground(2,QtGui.QBrush(QtGui.QColor('#22863a' if connected else '#c62828')))
         item.setData(0, QtCore.Qt.ItemDataRole.UserRole, node)
         if is_disabled:
             for col in range(item.columnCount()):
@@ -12620,6 +12720,16 @@ class DebuggerDialog(QtWidgets.QDialog):
                 return f"{var_info.get('name', '')} 홀수 (실제={var_info.get('actual')})"
             op_txt = "!=" if op == "ne" else "=="
             return f"{var_info.get('name', '')} {op_txt} {var_info.get('expected', '')} (실제={var_info.get('actual')})"
+        if cond_type == 'external':
+            info=detail.get('external') or {}
+            connection='연결된 상태 · 상태 수신 중' if info.get('connected') else f"연결 실패 / 대기 중 · {info.get('connection_status',info.get('status',''))}"
+            if info.get('unavailable'):
+                value=f"항목 대기: {info.get('status','')}"
+            else:
+                actual=info.get('actual')
+                shown='참' if actual is True else '거짓' if actual is False else str(actual)
+                value=f"현재 값={shown}"
+            return f"{connection} · {info.get('source','')}:{info.get('port',getattr(cond,'external_port',''))} · {info.get('key','')} · {value}"
         if cond_type == "timer":
             t = detail.get("timer") or {}
             op_txt = t.get("operator") or "ge"
@@ -12637,7 +12747,9 @@ class DebuggerDialog(QtWidgets.QDialog):
             return f"{mode} {op_txt} {expected} (현재={actual})"
         if cond_type in ("all", "any"):
             grp = detail.get("group") or {}
-            return f"{grp.get('mode', cond_type)} 활성 {grp.get('count', 0)}/{grp.get('total', 0)}"
+            text=f"{grp.get('mode', cond_type)} 활성 {grp.get('count', 0)}/{grp.get('total', 0)}"
+            if detail.get('unavailable'):text+=' · 외부 항목 판단 대기 (하위 조건별 상태 확인)'
+            return text
         if detail.get("key"):
             key_info = detail.get("key")
             return f"{key_info.get('key')} ({key_info.get('mode')}) pressed={key_info.get('pressed')} prev={key_info.get('prev')}"
@@ -21416,6 +21528,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._fail_capture_hotkey_prev = False
         self.screenshot_manager.shutdown()
         self.engine.stop()
+        state_hub.close()
         return super().closeEvent(event)
 def _current_screenshot_state(self) -> dict:
     return {
