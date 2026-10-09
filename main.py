@@ -54,7 +54,7 @@ from lib.interception import Interception, KeyFilter, KeyState, MapVk, MouseFilt
 from lib.keyboard import get_keystate
 from lib.processes import get_foreground_process, list_processes
 from lib.pixel import RGB, Region, PixelPattern, PixelPatternPoint, capture_region
-from lib.windows import list_windows
+from lib.windows import list_windows, window_target, window_under_cursor
 PATTERN_DIR = Path(__file__).parent / "pattern"
 PATTERN_FILE = PATTERN_DIR / "patterns.json"
 def _load_shared_patterns() -> dict[str, PixelPattern]:
@@ -1846,6 +1846,8 @@ def _condition_brief(cond: Condition) -> str:
         min_cnt = max(1, int(getattr(cond, "pixel_min_count", 1) or 1))
         exists = getattr(cond, "pixel_exists", True)
         state = f">={min_cnt}픽셀 있을 때 참" if exists else "일치 픽셀이 없을 때 참"
+        if cond.window_target:
+            suffix = f" | 창: {cond.window_target.get('process_name', '')}" + suffix
         if getattr(cond, "pixel_pattern", None):
             pat = getattr(cond, "pixel_pattern", "")
             return f"픽셀패턴 {pat} @ {region} tol={cond.tolerance} ({state}일 때 참){suffix}"
@@ -1972,6 +1974,10 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.key_group_mode_combo.addItem("모두 만족 (AND)", "all")
         self.key_group_mode_combo.addItem("하나라도 (OR)", "any")
         self.key_group_mode_combo.setToolTip("쉼표로 여러 키를 입력하면 이 모드로 묶어서 추가합니다.")
+        self._capture_target = None
+        self.capture_target_btn = QtWidgets.QPushButton("전체 화면")
+        self.capture_target_btn.setToolTip("창 스샷에서 F1 또는 범위를 선택하면 대상 창이 자동으로 연결됩니다. 클릭하면 대상을 변경합니다.")
+        self.capture_target_btn.clicked.connect(self._choose_capture_target)
         self.region_edit = QtWidgets.QLineEdit("0,0,1,1")
         self.region_offset_edit = QtWidgets.QLineEdit("")
         self.region_edit.setPlaceholderText("기본 영역: x,y(,w,h) 또는 /변수")
@@ -2065,6 +2071,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.form.addRow("키/마우스", self.key_edit)
         self.form.addRow("키 모드", self.key_mode_combo)
         self.form.addRow("여러 키 묶기", self.key_group_mode_combo)
+        self.form.addRow("인식 대상", self.capture_target_btn)
         self.form.addRow("Region x,y,w,h", self.region_edit)
         self.form.addRow("+dx,dy,dw,dh (선택)", self.region_offset_edit)
         color_row = QtWidgets.QHBoxLayout()
@@ -2202,6 +2209,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         _toggle((self.key_edit, self.key_mode_combo, self.key_group_mode_combo), visible=is_key, enabled=is_key)
         _toggle(
             (
+                self.capture_target_btn,
                 self.region_edit,
                 self.region_offset_edit,
                 self.color_edit,
@@ -2246,6 +2254,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             if idx >= 0:
                 self.key_mode_combo.setCurrentIndex(idx)
         elif cond.type == "pixel":
+            self.set_capture_target(cond.window_target)
             raw_region = cond.region_raw or ",".join(str(v) for v in cond.region or [])
             base_txt, offset_txt = _split_region_offset(raw_region) if raw_region else ("", "")
             self.region_edit.setText(base_txt)
@@ -2333,6 +2342,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             return Condition(
                 type="pixel",
                 name=name,
+                window_target=copy.deepcopy(self._capture_target),
                 region=region,
                 region_raw=region_text,
                 color=color,
@@ -2383,6 +2393,23 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             )
         group = Condition(type=typ, name=name, conditions=copy.deepcopy(self._child_conditions))
         return group
+    def set_capture_target(self, target):
+        self._capture_target = copy.deepcopy(target) if target else None
+        label = "전체 화면" if not target else f"창 내부 · {target.get('process_name', '')} / {target.get('title', '')}"
+        self.capture_target_btn.setText(label)
+
+    def _choose_capture_target(self):
+        menu = QtWidgets.QMenu(self)
+        screen = menu.addAction("전체 화면")
+        window = menu.addAction("특정 창 선택...")
+        action = menu.exec(QtGui.QCursor.pos())
+        if action == screen:
+            self.set_capture_target(None)
+        elif action == window:
+            dlg = WindowPickerDialog(self)
+            if _run_dialog_non_modal(dlg):
+                self.set_capture_target(window_target(dlg.selected_window() or {}))
+
     def _toggle_pixel_test(self):
         try:
             region = _parse_region(_compose_region_raw(self.region_edit.text(), self.region_offset_edit.text()), resolver=self._resolver)
@@ -2405,6 +2432,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             "tolerance": tolerance,
             "expect_exists": expect_exists,
             "min_count": 1 if use_pattern else max(1, int(self.pixel_min_spin.value())),
+            "window_target": copy.deepcopy(self._capture_target),
             "label": self.name_edit.text().strip() or "조건 테스트",
         }
         self._open_debugger_fn(config)
@@ -4051,6 +4079,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         self._current_folder = self._validate_dir(Path(state.get("last_dir", self._root_dir)))
         self._image_files: list[Path] = []
         self._current_index = -1
+        self._capture_metadata = {}
         self._last_sample = None
         self._focused_on_viewer = True
         self._status_prefix = ""
@@ -4753,6 +4782,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         for p in file_paths:
             try:
                 p.unlink()
+                p.with_suffix(p.suffix + ".json").unlink(missing_ok=True)
                 removed += 1
                 self._remove_favorite_paths([p])
             except Exception as exc:
@@ -5169,6 +5199,15 @@ class ImageViewerDialog(QtWidgets.QDialog):
         idx = max(0, min(len(self._image_files) - 1, idx))
         self._current_index = idx
         path = self._image_files[idx]
+        self._capture_metadata = {}
+        try:
+            metadata = json.loads(path.with_suffix(path.suffix + ".json").read_text(encoding="utf-8"))
+            if isinstance(metadata, dict):
+                self._capture_metadata = metadata
+        except (OSError, ValueError):
+            pass
+        target = self._capture_metadata.get("window_target")
+        self.setWindowTitle("이미지 뷰어/피커" + (f" · 창 내부: {target.get('process_name', '')}" if target else " · 전체 화면"))
         if update_tree:
             self._select_tree_path(path)
         ok = self.canvas.set_image(path)
@@ -5308,6 +5347,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             self.status_label.setText("좌표를 가져오려면 이미지 위에 마우스를 올리세요.")
             return
         x, y = self._last_sample["pos"]
+        x, y = self._recognition_position(x, y)
         txt = f"{x},{y},1,1"
         QtGui.QGuiApplication.clipboard().setText(txt)
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"좌표 복사: {txt}", self, QtCore.QRect(), 2000)
@@ -5316,7 +5356,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         try:
             dbg = getattr(self._condition_window, "debugger", None) if self._condition_window else None
             if dbg and dbg.isVisible():
-                dbg._set_test_inputs({"region_raw": txt})
+                dbg._set_test_inputs(self._picker_test_config(txt))
         except Exception:
             pass
         self._fill_condition_dialog_region(txt)
@@ -5363,6 +5403,13 @@ class ImageViewerDialog(QtWidgets.QDialog):
         QtGui.QCursor.setPos(self.canvas.mapToGlobal(widget_pos))
         self.canvas.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
         self.status_label.setText(f"좌표로 이동: {x},{y}")
+    def _recognition_position(self, x, y):
+        origin = self._capture_metadata.get("screen_origin", [0, 0])
+        return (x + int(origin[0]), y + int(origin[1])) if not self._capture_metadata.get("window_target") else (x, y)
+
+    def _picker_test_config(self, txt):
+        return {"region_raw": txt, "window_target": copy.deepcopy(self._capture_metadata.get("window_target"))}
+
     def _fill_condition_dialog_region(self, region_text: str):
         """현재 열려 있는 조건 편집/노드 창의 region 필드를 채운다."""
         try:
@@ -5371,6 +5418,11 @@ class ImageViewerDialog(QtWidgets.QDialog):
                     continue
                 if hasattr(w, "region_edit"):
                     try:
+                        target = self._capture_metadata.get("window_target")
+                        if target and not callable(getattr(w, "set_capture_target", None)):
+                            continue
+                        if callable(getattr(w, "set_capture_target", None)):
+                            w.set_capture_target(target)
                         w.region_edit.setText(region_text)
                         if hasattr(w, "region_offset_edit"):
                             w.region_offset_edit.setText("")
@@ -5386,6 +5438,8 @@ class ImageViewerDialog(QtWidgets.QDialog):
                     continue
                 if hasattr(w, "color_edit"):
                     try:
+                        if callable(getattr(w, "set_capture_target", None)):
+                            w.set_capture_target(self._capture_metadata.get("window_target"))
                         w.color_edit.setText(color_text)
                     except Exception:
                         pass
@@ -5425,6 +5479,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         except Exception:
             self.status_label.setText("범위 가져오기 오류.")
             return
+        x, y = self._recognition_position(x, y)
         txt = f"{x},{y},{w},{h}"
         QtGui.QGuiApplication.clipboard().setText(txt)
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"범위 복사: {txt}", self, QtCore.QRect(), 2000)
@@ -5432,7 +5487,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         try:
             dbg = getattr(self._condition_window, "debugger", None) if self._condition_window else None
             if dbg and dbg.isVisible():
-                dbg._set_test_inputs({"region_raw": txt})
+                dbg._set_test_inputs(self._picker_test_config(txt))
         except Exception:
             pass
         self._fill_condition_dialog_region(txt)
@@ -5447,7 +5502,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         try:
             dbg = getattr(self._condition_window, "debugger", None) if self._condition_window else None
             if dbg and dbg.isVisible():
-                dbg._set_test_inputs({"color_raw": hex_text})
+                dbg._set_test_inputs({"color_raw": hex_text, "window_target": copy.deepcopy(self._capture_metadata.get("window_target"))})
         except Exception:
             pass
         self._fill_condition_dialog_color(hex_text)
@@ -5504,6 +5559,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
         for p in files:
             try:
                 p.unlink()
+                p.with_suffix(p.suffix + ".json").unlink(missing_ok=True)
                 removed += 1
                 removed_paths.append(p)
             except Exception:
@@ -5542,6 +5598,7 @@ class ImageViewerDialog(QtWidgets.QDialog):
             return
         try:
             target.unlink()
+            target.with_suffix(target.suffix + ".json").unlink(missing_ok=True)
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "삭제 실패", str(exc))
             return
@@ -6939,6 +6996,10 @@ class WindowPickerDialog(QtWidgets.QDialog):
         self.resize(780, 430)
         self._windows: list[dict] = []
         self._selected: dict | None = None
+        self._mouse_was_down = False
+        self._click_timer = QtCore.QTimer(self)
+        self._click_timer.setInterval(30)
+        self._click_timer.timeout.connect(self._poll_window_click)
 
         layout = QtWidgets.QVBoxLayout(self)
         top_row = QtWidgets.QHBoxLayout()
@@ -6948,6 +7009,10 @@ class WindowPickerDialog(QtWidgets.QDialog):
         top_row.addWidget(self.search_edit, stretch=1)
         top_row.addWidget(self.refresh_btn)
         layout.addLayout(top_row)
+
+        hint = QtWidgets.QLabel("원하는 프로그램 창을 직접 클릭하면 바로 선택됩니다. 목록에서도 선택할 수 있습니다.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         self.table = QtWidgets.QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["제목", "프로세스", "클래스", "PID"])
@@ -6979,6 +7044,29 @@ class WindowPickerDialog(QtWidgets.QDialog):
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         self._refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._mouse_was_down = bool(get_keystate("mouse1", async_=True))
+        self._click_timer.start()
+
+    def hideEvent(self, event):
+        self._click_timer.stop()
+        super().hideEvent(event)
+
+    def _poll_window_click(self):
+        if not self.isVisible():
+            return
+        pressed = bool(get_keystate("mouse1", async_=True))
+        clicked = pressed and not self._mouse_was_down
+        self._mouse_was_down = pressed
+        if not clicked:
+            return
+        info = window_under_cursor()
+        if info:
+            self._selected = info
+            self._click_timer.stop()
+            super().accept()
 
     def _refresh(self):
         try:
@@ -10405,6 +10493,16 @@ class ScreenshotDialog(QtWidgets.QDialog):
         }
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
+        self.target_btn = QtWidgets.QPushButton()
+        self.target_btn.clicked.connect(self._choose_target)
+        form.addRow("캡처 대상", self.target_btn)
+        self._update_target_label()
+        hint = QtWidgets.QLabel("대상 창을 한 번 선택한 뒤 기존 스샷 단축키를 쓰세요.\n뷰어에서 F1·F2·범위 선택 시 대상 창도 자동 적용됩니다.\n창은 화면에 보여야 합니다. 가려진 부분은 덮인 화면이 찍힙니다.")
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        self.once_btn = QtWidgets.QPushButton("한 장 찍기")
+        self.once_btn.clicked.connect(self._capture_once)
+        form.addRow(self.once_btn)
         self.interval_spin = QtWidgets.QDoubleSpinBox()
         self.interval_spin.setRange(MIN_INTERVAL_SECONDS, 60.0)
         self.interval_spin.setDecimals(6)
@@ -10473,6 +10571,35 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self.hotkey_checkbox.toggled.connect(self._apply_only)
         self._toggle_format_fields(self.format_combo.currentText())
         self._sync_preset_from_manager(force=True)
+    def _update_target_label(self):
+        target = self.manager.window_target
+        self.target_btn.setText("전체 화면" if not target else f"{target.get('process_name', '')} / {target.get('title', '')}")
+
+    def _choose_target(self):
+        menu = QtWidgets.QMenu(self)
+        screen = menu.addAction("전체 화면")
+        window = menu.addAction("특정 창 선택...")
+        action = menu.exec(QtGui.QCursor.pos())
+        if action == screen:
+            self.manager.window_target = None
+        elif action == window:
+            dlg = WindowPickerDialog(self)
+            if not _run_dialog_non_modal(dlg):
+                return
+            self.manager.window_target = window_target(dlg.selected_window() or {})
+        else:
+            return
+        self._update_target_label()
+        self._apply_only()
+
+    def _capture_once(self):
+        self._apply_only()
+        try:
+            path = self.manager.capture_once()
+            self.status_label.setText(f"저장 완료: {path.name}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "캡처 불가", str(exc))
+
     def _name_sort_key(self, name: str):
         def _bucket(ch: str) -> int:
             if ch.isascii() and ch.isalpha():
@@ -10552,7 +10679,7 @@ class ScreenshotDialog(QtWidgets.QDialog):
         self.manager.stop()
         self._update_status()
     def _update_status(self):
-        self.status_label.setText(self._status_text())
+        self.status_label.setText(self.manager.last_error or self._status_text())
     def _toggle_format_fields(self, fmt: str):
         is_jpeg = fmt.lower() == "jpeg"
         self.jpeg_quality_spin.setEnabled(is_jpeg)
@@ -10618,6 +10745,7 @@ class ScreenshotDialog(QtWidgets.QDialog):
         return super().closeEvent(event)
     def _collect_state(self) -> dict:
         return {
+            "window_target": self.manager.window_target,
             "interval": self.manager.interval,
             "format": self.manager.image_format,
             "jpeg_quality": self.manager.jpeg_quality,
@@ -10833,12 +10961,15 @@ class DebuggerDialog(QtWidgets.QDialog):
         compare_row.addStretch()
         cond_layout.addLayout(compare_row)
         self.condition_tree = QtWidgets.QTreeWidget()
-        self.condition_tree.setHeaderLabels(["노드", "결과", "세부"])
+        self.condition_tree.setHeaderLabels(["노드", "결과", "세부", "인식 대상"])
         self.condition_tree.setRootIsDecorated(True)
         self.condition_tree.setIndentation(18)
         self.condition_tree.setColumnWidth(0, 260)
         self.condition_tree.setColumnWidth(1, 100)
-        self.condition_tree.header().setStretchLastSection(True)
+        self.condition_tree.header().setStretchLastSection(False)
+        self.condition_tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.condition_tree.header().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        self.condition_tree.setColumnWidth(3, 190)
         self.condition_tree.itemSelectionChanged.connect(self._on_condition_selection_changed)
         cond_layout.addWidget(self.condition_tree, 1)
         layout.addWidget(self._make_section("조건 디버그", cond_group, "section_condition", default_open=True))
@@ -11895,6 +12026,8 @@ class DebuggerDialog(QtWidgets.QDialog):
     def _set_test_inputs(self, config: dict):
         if not isinstance(config, dict):
             return
+        if "window_target" in config:
+            self._test_window_target = copy.deepcopy(config.get("window_target"))
         if config.get("region_raw"):
             self.region_input.setText(str(config.get("region_raw")))
         elif config.get("region"):
@@ -12381,7 +12514,18 @@ class DebuggerDialog(QtWidgets.QDialog):
                 if sample_hex:
                     tooltip_parts.append(f"샘플: {sample_hex}")
         detail_text = self._format_condition_detail(cond_type, node.get("detail") or {}, cond)
-        item = QtWidgets.QTreeWidgetItem([label, result_text, detail_text])
+        target_text = ""
+        target_tooltip = ""
+        if cond_type == "pixel":
+            pixel_detail = (node.get("detail") or {}).get("pixel") or {}
+            target = getattr(cond, "window_target", None) or pixel_detail.get("window_target")
+            if target:
+                target_text = f"창 내부 · {target.get('process_name', '')}"
+                target_tooltip = "\n".join(str(target.get(key) or "") for key in ("process_name", "title", "process_path"))
+            else:
+                target_text = "전체 화면"
+        item = QtWidgets.QTreeWidgetItem([label, result_text, detail_text, target_text])
+        item.setToolTip(3, target_tooltip or target_text)
         if tgt_hex:
             try:
                 color_str = tgt_hex if tgt_hex.startswith("#") else f"#{tgt_hex}"
@@ -12451,6 +12595,8 @@ class DebuggerDialog(QtWidgets.QDialog):
             return f"오류: {detail.get('error')}"
         if cond_type == "pixel":
             pix = detail.get("pixel") or {}
+            if pix.get("unavailable"):
+                return f"검사 불가: {pix.get('error', '')}"
             region = pix.get("region")
             color = pix.get("color")
             region_txt = ",".join(str(v) for v in region) if region else "-"
@@ -12519,6 +12665,7 @@ class DebuggerDialog(QtWidgets.QDialog):
     def _current_test_config(self) -> dict:
         expect_exists = bool(self.expect_combo.currentData()) if self.expect_combo.currentIndex() >= 0 else True
         return {
+            "window_target": copy.deepcopy(getattr(self, "_test_window_target", None)),
             "region_raw": self.region_input.text().strip(),
             "color_raw": self.color_input.text().strip(),
             "tolerance": int(self.tol_spin.value()),
@@ -17786,6 +17933,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         hotkey_start = _sanitize_screenshot_hotkey(screenshot_state.get("hotkey_start"), allow_reserved=False)
         hotkey_stop = _sanitize_screenshot_hotkey(screenshot_state.get("hotkey_stop"), allow_reserved=False)
         hotkey_capture = _sanitize_screenshot_hotkey(screenshot_state.get("hotkey_capture"))
+        self.screenshot_manager.window_target = screenshot_state.get("window_target")
         self.screenshot_manager.configure_hotkeys(
             hotkey_start,
             hotkey_stop,
@@ -20475,6 +20623,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                 source=cfg.get("source"),
                 label=cfg.get("label"),
                 pattern=cfg.get("pattern"),
+                window_target=cfg.get("window_target"),
             )
         except Exception as exc:
             self._append_log(f"픽셀 테스트 오류: {exc}")
@@ -20518,6 +20667,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             "source": source,
             "label": label,
             "on_stop": on_stop,
+            "window_target": copy.deepcopy(config.get("window_target")),
         }
         if persist:
             self._update_pixel_profile(
@@ -20552,6 +20702,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             source=source,
             label=label,
             pattern=pattern_name,
+            window_target=config.get("window_target"),
         )
         self._open_debugger()
     def _start_condition_pixel_test(self, config: dict, on_stop=None):
@@ -21268,6 +21419,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         return super().closeEvent(event)
 def _current_screenshot_state(self) -> dict:
     return {
+        "window_target": self.screenshot_manager.window_target,
         "interval": self.screenshot_manager.interval,
         "format": self.screenshot_manager.image_format,
         "jpeg_quality": self.screenshot_manager.jpeg_quality,

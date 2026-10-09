@@ -12,6 +12,25 @@ from typing import Callable, Optional
 import mss
 import mss.tools
 from PIL import Image
+from lib.windows import target_client_region
+
+try:
+    import winsound
+except ImportError:  # pragma: no cover - Windows-only audio
+    winsound = None
+
+
+def _play_shutter():
+    """Play without delaying capture or failing when audio is unavailable."""
+    if winsound is None:
+        return
+    try:
+        winsound.PlaySound(
+            str(Path(__file__).parent / "assets" / "shutter.wav"),
+            winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+        )
+    except Exception:
+        pass
 
 try:
     # lib.keyboard는 Interception 기반 키 조회를 제공한다.
@@ -77,13 +96,15 @@ class ScreenCaptureManager:
         self._capture_stop = threading.Event()
         self._writer_stop = threading.Event()
         self._hotkey_stop = threading.Event()
-        self._queue: queue.Queue[tuple[int, str, bytes, tuple[int, int]]] = queue.Queue(maxsize=self.max_queue_size)
+        self._queue: queue.Queue[tuple[int, str, bytes, tuple[int, int], dict]] = queue.Queue(maxsize=self.max_queue_size)
         self._capture_thread: Optional[threading.Thread] = None
         self._writer_thread: Optional[threading.Thread] = None
         self._hotkey_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._filename_lock = threading.Lock()
         self._next_file_number: Optional[int] = None
+        self.window_target: Optional[dict] = None
+        self.last_error: Optional[str] = None
         self._seq = 0
         self._capture_listeners: list[Callable[[Path], None]] = []
 
@@ -114,7 +135,6 @@ class ScreenCaptureManager:
         _ensure_dir(self.output_dir)
         next_at = time.perf_counter()
         with mss.mss() as sct:
-            monitor = sct.monitors[0]  # 모든 모니터 영역
             while not self._capture_stop.is_set():
                 now = time.perf_counter()
                 if now < next_at:
@@ -124,17 +144,23 @@ class ScreenCaptureManager:
 
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 self._seq += 1
-                shot = sct.grab(monitor)
+                try:
+                    shot, metadata = self._grab_frame(sct)
+                except Exception as exc:
+                    self.last_error = str(exc)
+                    self._capture_stop.wait(max(self.interval, 0.1))
+                    continue
                 # shot.rgb와 shot.size를 버퍼에 넣고, 파일 쓰기는 별도 스레드에서 처리
-                self._enqueue_frame((self._seq, timestamp, shot.rgb, shot.size))
+                self._enqueue_frame((self._seq, timestamp, shot.rgb, shot.size, metadata))
 
                 next_at += self.interval
 
     def _writer_loop(self):
         _ensure_dir(self.output_dir)
+        first_frame = True
         while not (self._writer_stop.is_set() and self._queue.empty()):
             try:
-                seq, ts, rgb, size = self._queue.get(timeout=0.05)
+                seq, ts, rgb, size, metadata = self._queue.get(timeout=0.05)
             except queue.Empty:
                 continue
 
@@ -153,7 +179,12 @@ class ScreenCaptureManager:
                     subsampling=1,
                 )
 
-    def _enqueue_frame(self, frame: tuple[int, str, bytes, tuple[int, int]]):
+            self._write_metadata(output_path, metadata)
+            if first_frame:
+                _play_shutter()
+                first_frame = False
+
+    def _enqueue_frame(self, frame: tuple[int, str, bytes, tuple[int, int], dict]):
         try:
             self._queue.put_nowait(frame)
         except queue.Full:
@@ -340,15 +371,35 @@ class ScreenCaptureManager:
                 meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
                 pass
+        _play_shutter()
         self._notify_single_capture(output_path)
         return output_path
+
+    def _grab_frame(self, sct):
+        target = dict(self.window_target) if self.window_target else None
+        if target:
+            x, y, w, h = target_client_region(target)
+            bounds = {"left": x, "top": y, "width": w, "height": h}
+            target["client_size"] = [w, h]
+            metadata = {"window_target": target}
+        else:
+            bounds = sct.monitors[0]
+            metadata = {"screen_origin": [bounds["left"], bounds["top"]]}
+        shot = sct.grab(bounds)
+        self.last_error = None
+        return shot, metadata
+
+    @staticmethod
+    def _write_metadata(path, metadata):
+        path.with_suffix(path.suffix + ".json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     def capture_once(self) -> Path | None:
         _ensure_dir(self.output_dir)
         with mss.mss() as sct:
-            monitor = sct.monitors[0]
             self._seq += 1
-            shot = sct.grab(monitor)
+            shot, metadata = self._grab_frame(sct)
             ext = "png" if self.image_format == "png" else "jpg"
             output_path = self._next_numbered_output_path(ext)
             if self.image_format == "png":
@@ -362,6 +413,8 @@ class ScreenCaptureManager:
                     optimize=True,
                     subsampling=1,
                 )
+        self._write_metadata(output_path, metadata)
+        _play_shutter()
         self._notify_single_capture(output_path)
         return output_path
 

@@ -41,7 +41,7 @@ from lib.pixel import (
     find_pattern_in_region,
 )
 from lib.processes import get_foreground_process, terminate_processes
-from lib.windows import focus_window
+from lib.windows import focus_window, target_client_region
 
 ConditionType = Literal["key", "pixel", "all", "any", "var", "timer", "schedule"]
 KeyMode = Literal["press", "down", "up", "hold", "released"]
@@ -1296,6 +1296,7 @@ class Condition:
     region_raw: Optional[str] = None
     color: Optional[RGB] = None
     color_raw: Optional[str] = None
+    window_target: Optional[dict] = None
     pixel_pattern: Optional[str] = None  # 이름 기반으로 패턴 참조
     tolerance: int = 0
     pixel_min_count: int = 1
@@ -1487,6 +1488,7 @@ class Condition:
             region_raw=region_raw,
             color=color,
             color_raw=color_raw,
+            window_target=dict(data["window_target"]) if isinstance(data.get("window_target"), dict) else None,
             pixel_pattern=str(pattern_name).strip() if pattern_name else None,
             tolerance=int(data.get("tolerance", 0) or 0),
             pixel_min_count=pixel_min_count,
@@ -1517,6 +1519,7 @@ class Condition:
             "var_operator": self.var_operator,
             "region": self.region_raw if self.region_raw is not None else (list(self.region) if self.region else None),
             "color": self.color_raw if self.color_raw is not None else (list(self.color) if self.color else None),
+            "window_target": self.window_target,
             "pixel_pattern": self.pixel_pattern,
             "tolerance": self.tolerance,
             "pixel_min_count": self.pixel_min_count,
@@ -5194,6 +5197,7 @@ class MacroEngine:
         source: Optional[str] = None,
         label: Optional[str] = None,
         pattern: Optional[str] = None,
+        window_target: Optional[dict] = None,
     ):
         self._run_pixel_test(
             region=region,
@@ -5204,6 +5208,7 @@ class MacroEngine:
             source=source,
             label=label,
             pattern=pattern,
+            window_target=window_target,
         )
 
     def activate(self):
@@ -6665,6 +6670,7 @@ class MacroEngine:
                 min_count=min_count,
                 pixel_cache=pixel_cache,
                 pattern=pattern_obj,
+                window_target=cond.window_target,
             )
             base_result = bool(check.get("result"))
             detail["pixel"] = {
@@ -6675,6 +6681,9 @@ class MacroEngine:
                 "expect_exists": expect_exists,
                 "min_count": min_count,
                 "match_count": check.get("match_count"),
+                "error": check.get("error"),
+                "unavailable": check.get("unavailable", False),
+                "window_target": cond.window_target,
                 "found": check.get("found"),
                 "coord": check.get("coord"),
                 "sample_coord": check.get("sample_coord"),
@@ -6953,7 +6962,7 @@ class MacroEngine:
                 color_tuple: Optional[RGB] = tuple(int(c) for c in color) if color is not None else None
                 expect_exists = getattr(cond, "pixel_exists", True)
                 check = self._pixel_check(
-                    region_tuple, color_tuple, cond.tolerance, expect_exists=expect_exists, include_image=True, pattern=pattern_obj
+                    region_tuple, color_tuple, cond.tolerance, expect_exists=expect_exists, include_image=True, pattern=pattern_obj, window_target=cond.window_target
                 )
                 base_result = bool(check.get("result"))
                 detail["pixel"] = {
@@ -6962,6 +6971,9 @@ class MacroEngine:
                     "pattern": pattern_name,
                     "tolerance": cond.tolerance,
                     "expect_exists": expect_exists,
+                    "error": check.get("error"),
+                    "unavailable": check.get("unavailable", False),
+                    "window_target": cond.window_target,
                     "found": check.get("found"),
                     "coord": check.get("coord"),
                     "sample_coord": check.get("sample_coord"),
@@ -7127,9 +7139,16 @@ class MacroEngine:
         include_image: bool = False,
         pixel_cache: Optional[Dict[Tuple[int, int, int, int], Any]] = None,
         pattern: Optional[PixelPattern] = None,
+        window_target: Optional[dict] = None,
     ) -> Dict[str, Any]:
+        capture_bounds = region
+        if window_target and self._debug_image_override is None:
+            try:
+                capture_bounds = target_client_region(window_target, region)
+            except Exception as exc:
+                return {"result": False, "found": False, "error": str(exc), "unavailable": True}
         x, y, w, h = region
-        cache_key = (x, y, w, h)
+        cache_key = capture_bounds
         arr: Optional[np.ndarray] = self._extract_debug_region(region)
 
         if arr is None:
@@ -7137,12 +7156,14 @@ class MacroEngine:
                 if pixel_cache is not None and cache_key in pixel_cache:
                     arr = pixel_cache[cache_key]
                 else:
-                    arr = capture_region_np(region)
+                    arr = capture_region_np(capture_bounds)
                     if pixel_cache is not None:
                         pixel_cache[cache_key] = arr
-            except Exception:
+            except Exception as exc:
                 # 폴백: 기존 PIL 경로 유지
-                img = capture_region(region).convert("RGB")
+                if window_target:
+                    return {"result": False, "found": False, "error": str(exc), "unavailable": True}
+                img = capture_region(capture_bounds).convert("RGB")
                 arr = np.asarray(img, dtype=np.uint8)
                 if pixel_cache is not None:
                     pixel_cache[cache_key] = arr
@@ -7252,6 +7273,7 @@ class MacroEngine:
         min_count: Optional[int] = None,
         source: Optional[str] = None,
         label: Optional[str] = None,
+        window_target: Optional[dict] = None,
     ):
         region_val: Region = tuple(int(v) for v in (region or self._pixel_test_region))
         pattern_name = pattern if pattern is not None else self._pixel_test_pattern
@@ -7273,9 +7295,12 @@ class MacroEngine:
                 expect_exists=expect,
                 min_count=min_cnt_val,
                 pattern=pat_obj,
+                window_target=window_target,
             )
             payload = {
                 "type": "pixel_test",
+                "error": check.get("error"),
+                "unavailable": check.get("unavailable", False),
                 "found": check.get("found"),
                 "result": check.get("result"),
                 "coord": check.get("coord"),
@@ -7294,6 +7319,7 @@ class MacroEngine:
             }
             self._emit_event(payload)
             self._emit_log(
+                f"픽셀 테스트 검사 불가: {check['error']}" if check.get("unavailable") else
                 f"픽셀 테스트[{payload['source']}]: {'찾음' if check.get('found') else '없음'} ({check.get('coord')})"
             )
         except Exception as exc:

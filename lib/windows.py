@@ -179,6 +179,86 @@ def find_window(spec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def window_target(info: Dict[str, Any]) -> Dict[str, Any]:
+    """Persistent selector; HWND/PID are deliberately not persisted."""
+    return {key: info.get(key, "") for key in ("process_name", "process_path", "class_name", "title")}
+
+
+def window_under_cursor() -> Optional[Dict[str, Any]]:
+    """Return the top-level window under the pointer, excluding this app."""
+    if not user32:
+        return None
+    point = wintypes.POINT()
+    get_cursor = user32.GetCursorPos
+    get_cursor.argtypes = [ctypes.POINTER(wintypes.POINT)]
+    from_point = user32.WindowFromPoint
+    from_point.argtypes = [wintypes.POINT]
+    from_point.restype = wintypes.HWND
+    ancestor = user32.GetAncestor
+    ancestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    ancestor.restype = wintypes.HWND
+    if not get_cursor(ctypes.byref(point)):
+        return None
+    hwnd = from_point(point)
+    hwnd = ancestor(hwnd, 2) if hwnd else None  # GA_ROOT
+    if not hwnd:
+        return None
+    proc = _process_for_window(hwnd)
+    title = _window_text(hwnd).strip()
+    if proc.get("pid") == os.getpid() or not title or not proc.get("name"):
+        return None
+    return {
+        "hwnd": int(hwnd), "title": title, "class_name": _class_name(hwnd),
+        "process_name": proc.get("name", ""), "process_path": proc.get("path", ""),
+        "pid": int(proc.get("pid", 0)),
+    }
+
+
+def target_client_region(target: Dict[str, Any], region=None):
+    """Resolve a unique window and translate client pixels to desktop pixels."""
+    if not user32:
+        raise RuntimeError("특정 창 캡처는 Windows에서만 사용할 수 있습니다.")
+    if not target.get("process_name") and not target.get("process_path"):
+        raise RuntimeError("대상 프로그램을 다시 선택하세요.")
+    matches = []
+    for info in list_windows():
+        if not _process_matches(info["process_name"], str(target.get("process_name") or "")):
+            continue
+        wanted_path = target.get("process_path")
+        if wanted_path and os.path.normcase(info["process_path"]) != os.path.normcase(wanted_path):
+            continue
+        if target.get("class_name") and info["class_name"] != target["class_name"]:
+            continue
+        matches.append(info)
+    if len(matches) > 1:
+        matches = [info for info in matches if info["title"] == target.get("title")]
+    if len(matches) != 1:
+        raise RuntimeError("대상 창을 찾을 수 없습니다." if not matches else "대상 창이 여러 개입니다. 창을 다시 선택하세요.")
+    hwnd = matches[0]["hwnd"]
+    if IsIconic(hwnd):
+        raise RuntimeError("대상 창이 최소화되어 있습니다.")
+    rect, origin = wintypes.RECT(), wintypes.POINT(0, 0)
+    get_rect = user32.GetClientRect
+    get_rect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    to_screen = user32.ClientToScreen
+    to_screen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+    if not get_rect(hwnd, ctypes.byref(rect)) or not to_screen(hwnd, ctypes.byref(origin)):
+        raise RuntimeError("대상 창의 위치를 가져올 수 없습니다.")
+    width, height = rect.right, rect.bottom
+    expected_size = target.get("client_size")
+    if expected_size and list(expected_size) != [width, height]:
+        raise RuntimeError("대상 창 크기가 바뀌었습니다. 스크린샷을 다시 찍어 영역을 지정하세요.")
+    x, y, w, h = region if region is not None else (0, 0, width, height)
+    if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > width or y + h > height:
+        raise RuntimeError("인식 영역이 대상 창 내부를 벗어납니다.")
+    left, top = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+    right = left + user32.GetSystemMetrics(78)
+    bottom = top + user32.GetSystemMetrics(79)
+    if origin.x + x < left or origin.y + y < top or origin.x + x + w > right or origin.y + y + h > bottom:
+        raise RuntimeError("대상 영역이 화면 밖에 있습니다. 창을 화면 안으로 이동하세요.")
+    return (origin.x + x, origin.y + y, w, h)
+
+
 def focus_window(spec: Dict[str, Any], *, restore: bool = True, wait_ms: int = 150) -> tuple[bool, Optional[Dict[str, Any]], str | None]:
     if not user32:
         return False, None, "unsupported_platform"
