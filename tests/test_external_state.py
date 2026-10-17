@@ -48,6 +48,31 @@ class ExternalStateTests(unittest.TestCase):
             self.assertFalse(dialog.external_source.isVisible())
         finally:dialog.reject()
 
+    def test_fractional_remaining_comparison_and_dialog_roundtrip(self):
+        cond=Condition(type='external',external_port=55555,external_source='other-program',
+                       external_key='남은시간',external_operator='le',external_value='1.5')
+        dialog=ConditionNodeDialog(cond=cond)
+        try:
+            restored=dialog.get_condition()
+            self.assertEqual(restored.external_value,'1.5')
+            self.assertEqual(Condition.from_dict(restored.to_dict()).external_value,'1.5')
+        finally:dialog.reject()
+        self.assertEqual(parse_value('0.1'),0.1)
+        client=StateClient(port=55555);hub=StateHub()
+        with patch.object(hub,'client',return_value=client):
+            for sequence,actual in enumerate((1.6,1.5,1.4,0.1,0),1):
+                data=message({'남은시간':actual});data['sequence']=sequence
+                data=validate_message(data)
+                with client._lock:
+                    client._data=data;client._received_at=time.monotonic()
+                for op,expected in (('le',actual<=1.5),('lt',actual<1.5),
+                                    ('eq',actual==1.5),('ge',actual>=1.5),('gt',actual>1.5)):
+                    cond.external_operator=op
+                    result,detail=hub.evaluate(cond)
+                    self.assertEqual(result,expected,(actual,op))
+                    self.assertEqual(detail['actual'],actual)
+        hub.close();client.close()
+
     def test_comparison_missing_source_and_false_defaults(self):
         client=StateClient(port=55555)
         data=message({'작업단계':'완료','체력':50,'내효과.123':True},false_prefixes=['내효과.'],unavailable_prefixes=['대상효과.'])

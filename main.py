@@ -6,10 +6,12 @@ import io
 import itertools
 import math
 import json
+import os
 import shutil
 import queue
 import re
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -1977,7 +1979,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.external_op = QtWidgets.QComboBox()
         for label, op in [('켜짐 (참)','true'),('꺼짐 (거짓)','false'),('같음 (==)','eq'),('다름 (!=)','ne'),('초과 (>)','gt'),('이상 (>=)','ge'),('미만 (<)','lt'),('이하 (<=)','le')]:
             self.external_op.addItem(label,op)
-        self.external_value = QtWidgets.QLineEdit(); self.external_value.setPlaceholderText('숫자 또는 문자열 · 예: 10 / 작업완료')
+        self.external_value = QtWidgets.QLineEdit(); self.external_value.setPlaceholderText('숫자(소수 가능) 또는 문자열 · 예: 1.5 / 작업완료')
         self.external_status = QtWidgets.QLabel('연결 대기 중'); self.external_status.setWordWrap(True)
         self.external_status.setStyleSheet('color: #c62828; font-weight: bold;')
         self.external_item_status = QtWidgets.QLabel(); self.external_item_status.setWordWrap(True)
@@ -18957,6 +18959,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.log_view)
         self.log_view.setVisible(self._log_enabled)
         group.setVisible(self._log_enabled)
+        for message, rich in self.__dict__.pop("_pending_logs", []):
+            self._append_log(message, rich=rich)
         return group
     def _connect_signals(self):
         self.active_toggle_btn.clicked.connect(self._toggle_engine_active)
@@ -19370,12 +19374,24 @@ class MacroWindow(QtWidgets.QMainWindow):
                 self._append_log(f"상태 파일 로드 오류: {exc}")
         return {}
     def _write_state(self, state: dict):
+        temp_path = None
         try:
-            if not self._state_path.parent.exists():
-                self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            self._state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            payload = json.dumps(state, ensure_ascii=False, indent=2)
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self._state_path.parent,
+                prefix=self._state_path.name + ".", suffix=".tmp", delete=False,
+            ) as handle:
+                temp_path = Path(handle.name)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temp_path.replace(self._state_path)
         except Exception as exc:
             self._append_log(f"상태 파일 저장 오류: {exc}")
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
     def _update_state(self, key: str, value):
         state = dict(self._state) if isinstance(self._state, dict) else {}
         state[key] = value
@@ -20132,6 +20148,26 @@ class MacroWindow(QtWidgets.QMainWindow):
             runtime_profile = copy.deepcopy(self.profile)
             runtime_profile.macros = [copy.deepcopy(m) for m in macros]
         self.engine.update_profile(runtime_profile)
+    def _run_macro_dialog(self, dlg: MacroDialog) -> int:
+        state = self._state.get("macro_editor", {}) if isinstance(self._state, dict) else {}
+        if isinstance(state, dict):
+            size = state.get("size")
+            if (
+                isinstance(size, list)
+                and len(size) == 2
+                and all(isinstance(value, int) and value > 0 for value in size)
+            ):
+                dlg.resize(*size)
+            if state.get("maximized"):
+                dlg.setWindowState(dlg.windowState() | QtCore.Qt.WindowState.WindowMaximized)
+        try:
+            return _run_dialog_non_modal(dlg)
+        finally:
+            size = dlg.normalGeometry().size() if dlg.isMaximized() else dlg.size()
+            self._update_state("macro_editor", {
+                "size": [size.width(), size.height()],
+                "maximized": dlg.isMaximized(),
+            })
     def _add_macro(self):
         resolver = None
         try:
@@ -20155,7 +20191,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             macro_list_provider=lambda: self._macro_picker_items(),
             app_scope_presets_provider=lambda: self._app_scope_picker_items(),
         )
-        if _run_dialog_non_modal(dlg):
+        if self._run_macro_dialog(dlg):
             try:
                 macro = dlg.get_macro()
             except ValueError as exc:
@@ -20193,7 +20229,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             macro_list_provider=lambda m=macro: self._macro_picker_items(exclude=m),
             app_scope_presets_provider=lambda m=macro: self._app_scope_picker_items(exclude=m),
         )
-        if _run_dialog_non_modal(dlg):
+        if self._run_macro_dialog(dlg):
             try:
                 new_macro = dlg.get_macro()
             except ValueError as exc:
@@ -21338,6 +21374,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         if hasattr(self, "log_view") and self.log_view:
             self.log_view.clear()
     def _append_log(self, message: str, *, rich: bool = False):
+        if getattr(self, "log_view", None) is None:
+            self.__dict__.setdefault("_pending_logs", []).append((message, rich))
+            return
         if not getattr(self, "_log_enabled", True):
             return
         ts = _format_dt()
