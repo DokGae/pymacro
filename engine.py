@@ -1,5 +1,6 @@
 from __future__ import annotations
 from lib.pattern_packs import PackReference, resolve_pattern
+from lib.shared_settings import expand_condition, SharedSettingError, has_shared
 
 
 import copy
@@ -215,10 +216,37 @@ def _default_value_var_slots() -> Dict[str, str]:
 
 
 def _merge_default_value_var_slots(values: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    merged = dict(values or {})
-    for name, default_value in _default_value_var_slots().items():
-        merged.setdefault(name, default_value)
-    return merged
+    return dict(values or {})
+
+
+def _remove_legacy_default_slots(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Migrate the old automatically seeded slots without removing used values."""
+    values = (data.get('variables') or {}).get('var') or {}
+    defaults = set(_default_value_var_slots())
+    if not defaults.issubset(values):
+        return data
+    descriptions = (data.get('variable_descriptions') or {}).get('var') or {}
+    removable = {name for name in defaults if str(values[name]).strip() == '0'
+                 and str(descriptions.get(name, '')).strip() in ('', '0')}
+    def scan(value):
+        if isinstance(value, str):
+            removable.discard(value.strip())
+            for match in VariableResolver._pattern.finditer(value):
+                removable.discard(match.group('name') or match.group('name2') or match.group('name3'))
+        elif isinstance(value, dict):
+            for child in value.values():
+                scan(child)
+        elif isinstance(value, list):
+            for child in value:
+                scan(child)
+    scan(data)
+    if not removable:
+        return data
+    result = copy.deepcopy(data)
+    for name in removable:
+        result['variables']['var'].pop(name, None)
+        (result.get('variable_descriptions') or {}).get('var', {}).pop(name, None)
+    return result
 
 
 def _parse_var_numeric_value(raw: Any, *, label: str = "변수 값") -> float:
@@ -1241,6 +1269,7 @@ def _parse_mouse_pos(raw: Any, resolver: Optional[VariableResolver]) -> tuple[Op
 @dataclass
 class Condition:
     type: ConditionType
+    shared_ref: Optional[str] = None
     enabled: bool = True
     name: Optional[str] = None
     key: Optional[str] = None
@@ -1447,6 +1476,7 @@ class Condition:
             external_operator=str(data.get('external_operator', 'true')),
             external_value=str(data.get('external_value', '')),
             name=data.get("name"),
+            shared_ref=data.get("shared_ref"),
             key=data.get("key"),
             key_mode=key_mode,
             var_name=var_name,
@@ -1479,6 +1509,7 @@ class Condition:
 
     def to_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
+            "shared_ref": self.shared_ref,
             "type": self.type,
             "name": self.name,
             "key": self.key,
@@ -2570,6 +2601,7 @@ class Macro:
 
 @dataclass
 class MacroProfile:
+    shared_settings: Dict[str, Any] = field(default_factory=dict)
     macros: List[Macro] = field(default_factory=list)
     pixel_region: Region = (0, 0, 100, 100)
     pixel_region_raw: Optional[str] = None
@@ -2640,6 +2672,7 @@ class MacroProfile:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MacroProfile":
+        data = _remove_legacy_default_slots(data)
         variables = MacroVariables.from_dict(data.get("variables", {}) or {})
         variable_descriptions = MacroVariables.from_dict(data.get("variable_descriptions", {}) or {})
         resolver = VariableResolver(variables)
@@ -2723,6 +2756,7 @@ class MacroProfile:
             transform_meta = None
         return cls(
             macros=[Macro.from_dict(m, resolver) for m in data.get("macros", [])],
+            shared_settings=copy.deepcopy(data.get("shared_settings") or {}),
             pixel_region=region,  # type: ignore[arg-type]
             pixel_region_raw=region_raw if isinstance(region_raw, str) else None,
             pixel_color=color,  # type: ignore[arg-type]
@@ -2757,6 +2791,7 @@ class MacroProfile:
             base_scale = DEFAULT_BASE_SCALE
         data: Dict[str, Any] = {
             "macros": [m.to_dict() for m in self.macros],
+            "shared_settings": copy.deepcopy(self.shared_settings),
             "pixel_region": self.pixel_region_raw if self.pixel_region_raw is not None else list(self.pixel_region),
             "pixel_color": self.pixel_color_raw if self.pixel_color_raw is not None else list(self.pixel_color),
             "pixel_tolerance": self.pixel_tolerance,
@@ -6586,6 +6621,10 @@ class MacroEngine:
         vars_ctx: Optional[MacroVariables] = None,
         pixel_cache: Optional[Dict[Tuple[int, int, int, int], Any]] = None,
     ) -> bool:
+        if cond is not None:
+            entries = getattr(getattr(self, "_profile", None), "shared_settings", {})
+            if has_shared(cond):
+                cond = Condition.from_dict(expand_condition(cond.to_dict(), entries), resolver)
         base_result: bool
         detail: Dict[str, Any] = {}
         vars_state = vars_ctx if vars_ctx is not None else getattr(self, "_vars", None)
@@ -6859,6 +6898,17 @@ class MacroEngine:
                 "on_true": [],
                 "on_false": [],
             }
+
+        try:
+            entries = getattr(getattr(self, "_profile", None), "shared_settings", {})
+            if has_shared(cond):
+                cond = Condition.from_dict(expand_condition(cond.to_dict(), entries), resolver)
+        except SharedSettingError as exc:
+            return {"cond": cond.to_dict(), "type": cond.type, "name": cond.name,
+                    "path": path or [], "path_text": " > ".join(path or []),
+                    "result": None, "base_result": None,
+                    "detail": {"error": str(exc), "unavailable": True},
+                    "children": [], "on_true": [], "on_false": []}
 
         key_states = key_states if key_states is not None else {}
         vars_state = vars_ctx if vars_ctx is not None else getattr(self, "_vars", None)

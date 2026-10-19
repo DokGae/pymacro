@@ -194,6 +194,9 @@ class PackManager(QtWidgets.QDialog):
         self.refresh()
 
     def eventFilter(self, obj, event):
+        controller = getattr(self.owner, '_shared_controller', None)
+        if controller is not None and controller.pick is not None:
+            return False
         if not self.isVisible():
             return False
         if event.type() not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.ShortcutOverride):

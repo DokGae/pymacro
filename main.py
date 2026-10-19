@@ -54,6 +54,8 @@ from engine import (
 )
 from lib.pattern_packs import load_packs, pack_choices, pattern_label, PackReference, PREFIX as PACK_PREFIX
 from pack_manager import open_pack_manager
+from shared_ui import attach_workspace, attach_condition, attach_value_fields, attach_condition_tree, navigate_usage, prepare_usage_action, prepare_usage_condition
+from lib.shared_settings import materialize_macros, expand_condition, import_settings, import_values
 from lib import keyboard as kbutil
 from lib.interception import Interception, KeyFilter, KeyState, MapVk, MouseFilter, MouseState, map_virtual_key
 from lib.keyboard import get_keystate
@@ -1745,6 +1747,16 @@ def _condition_hex_color(cond: Condition) -> str | None:
 def _condition_brief(cond: Condition) -> str:
     if not isinstance(cond, Condition):
         return "(조건 없음)"
+    if cond.shared_ref:
+        label = cond.name or "공용 조건"
+        app = QtWidgets.QApplication.instance()
+        if app:
+            for window in app.topLevelWidgets():
+                controller = getattr(window, '_shared_controller', None)
+                if controller and cond.shared_ref in controller.entries:
+                    label = controller.entries[cond.shared_ref]['name']
+                    break
+        return f"🔗 {label}" + ((" — 있으면" if cond.pixel_exists else " — 없으면") if cond.type == "pixel" else "")
     suffix_parts = []
     if getattr(cond, "on_true", []):
         suffix_parts.append(f"참 {len(cond.on_true)}")
@@ -2102,6 +2114,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             self._sync_type_visibility()
         self.external_timer = QtCore.QTimer(self)
         self.external_timer.timeout.connect(self._refresh_external_state); self.external_timer.start(500)
+        attach_condition(self, cond)
     def _current_type(self) -> str:
         return self.type_combo.currentData()
     def _sync_external_value(self):
@@ -2322,6 +2335,12 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self._sync_schedule_hint()
         self._sync_type_visibility()
     def get_condition(self) -> Condition:
+        binding = getattr(self, '_shared_binding', None)
+        if binding is not None and not getattr(self, '_editing_shared_definition', False):
+            return binding.result()
+        return self._get_direct_condition()
+
+    def _get_direct_condition(self) -> Condition:
         typ = self._current_type()
         name = self.name_edit.text().strip() or None
         if typ == 'external':
@@ -2712,6 +2731,7 @@ class ConditionDialog(QtWidgets.QDialog):
         else:
             self.root_condition = Condition(type="any", conditions=[])
             self._refresh_condition_tree()
+        attach_condition_tree(self)
     def _pattern_names(self) -> list[str]:
         if callable(self._pattern_provider):
             try:
@@ -2748,7 +2768,7 @@ class ConditionDialog(QtWidgets.QDialog):
             parent_item.addChild(item)
         else:
             self.condition_tree.addTopLevelItem(item)
-        if cond.type in ("all", "any"):
+        if cond.type in ("all", "any") and not cond.shared_ref:
             for child in cond.conditions:
                 self._append_condition_item(child, item)
         if cond.on_true:
@@ -7176,6 +7196,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         macro_list_provider=None,
     ):
         super().__init__(parent)
+        QtCore.QTimer.singleShot(0, lambda: attach_value_fields(self))
         self._parallel_allowed = parallel_allowed
         self._parallel_required = parallel_required
         self.setWindowTitle("병렬 작업 설정" if parallel_required else "액션 설정")
@@ -8176,6 +8197,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             open_pattern_manager=self._open_pattern_manager if hasattr(self, "_open_pattern_manager") else None,
             trigger_keys_provider=self._trigger_keys_provider,
         )
+        prepare_usage_condition(self, dlg)
         if not _run_dialog_non_modal(dlg):
             return
         try:
@@ -10106,6 +10128,7 @@ class MacroDialog(QtWidgets.QDialog):
                 trigger_keys_provider=self._current_trigger_keys,
                 macro_list_provider=self._macro_list_provider,
             )
+            prepare_usage_action(self, dlg)
             if _run_dialog_non_modal(dlg):
                 try:
                     new_act = dlg.get_action()
@@ -10197,6 +10220,7 @@ class MacroDialog(QtWidgets.QDialog):
             trigger_keys_provider=self._current_trigger_keys,
             macro_list_provider=self._macro_list_provider,
         )
+        prepare_usage_action(self, dlg)
         if _run_dialog_non_modal(dlg):
             try:
                 new_act = dlg.get_action()
@@ -17237,6 +17261,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.resize(1100, 820)
         self.setMinimumWidth(780)
         self._build_ui()
+        attach_workspace(self)
         self._build_menu()
         self._refresh_profile_header()
         self._refresh_profile_lists()
@@ -17253,6 +17278,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._connect_signals()
         self._log_admin_status()
         self.engine.update_profile(self.profile)
+        if hasattr(self, '_shared_controller'):
+            self._shared_controller.mark_applied()
         self._refresh_pixel_defaults(self.profile)
         try:
             backend_state = self.engine.keyboard_status(refresh=True)
@@ -17355,7 +17382,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         pack_action = QtGui.QAction("픽셀 팩 관리", self)
         pack_action.triggered.connect(lambda: open_pack_manager(self))
         feature_menu.addAction(pack_action)
-        variable_manager_action = QtGui.QAction("전역 변수 관리...", self)
+        variable_manager_action = QtGui.QAction("공용 설정...", self)
         variable_manager_action.triggered.connect(self._open_variable_manager_dialog)
         feature_menu.addAction(variable_manager_action)
         preset_transfer_action = QtGui.QAction("프리셋 옮기기...", self)
@@ -17590,28 +17617,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._pixel_test_dialog.raise_()
         self._pixel_test_dialog.activateWindow()
     def _open_variable_manager_dialog(self):
-        dlg = self._variable_manager_dialog
-        if dlg is not None:
-            try:
-                dlg.show()
-                dlg.raise_()
-                dlg.activateWindow()
-                return
-            except RuntimeError:
-                self._variable_manager_dialog = None
-        dlg = VariableManagerDialog(
-            self,
-            items=copy.deepcopy(self._variable_items),
-            usage_lookup=self._find_variable_usages,
-            name_sort_key=self._name_sort_key,
-        )
-        dlg.finished.connect(
-            lambda result, dialog=dlg: self._finish_variable_manager_dialog(dialog, result)
-        )
-        self._variable_manager_dialog = dlg
-        dlg.show()
-        dlg.raise_()
-        dlg.activateWindow()
+        self._shared_controller.show()
+        self._shared_controller.scope.setCurrentIndex(1)
+
     def _finish_variable_manager_dialog(self, dialog: VariableManagerDialog, result: int):
         try:
             if result == int(QtWidgets.QDialog.DialogCode.Accepted):
@@ -18059,7 +18067,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.paste_macro_btn = QtWidgets.QPushButton("붙여넣기")
         self.clone_macro_btn = QtWidgets.QPushButton("복제")
         self.del_macro_btn = QtWidgets.QPushButton("삭제")
-        self.variable_manager_btn = QtWidgets.QPushButton("전역 변수 관리...")
+        self.variable_manager_btn = QtWidgets.QPushButton("공용 설정...")
         btn_row.addWidget(self.add_macro_btn)
         btn_row.addWidget(self.edit_macro_btn)
         btn_row.addWidget(self.copy_macro_btn)
@@ -18520,6 +18528,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         base_scale = self._current_base_scale()
         return MacroProfile(
             macros=macros,
+            shared_settings=copy.deepcopy(self.profile.shared_settings),
             pixel_region=pixel_region,
             pixel_region_raw=region_raw,
             pixel_color=pixel_color,
@@ -19326,7 +19335,9 @@ class MacroWindow(QtWidgets.QMainWindow):
             runtime_profile = copy.deepcopy(self.profile)
             runtime_profile.macros = [copy.deepcopy(m) for m in macros]
         self.engine.update_profile(runtime_profile)
-    def _run_macro_dialog(self, dlg: MacroDialog) -> int:
+        if hasattr(self, '_shared_controller'):
+            self._shared_controller.mark_applied()
+    def _run_macro_dialog(self, dlg: MacroDialog, *, row: int = -1) -> int:
         state = self._state.get("macro_editor", {}) if isinstance(self._state, dict) else {}
         if isinstance(state, dict):
             size = state.get("size")
@@ -19338,9 +19349,13 @@ class MacroWindow(QtWidgets.QMainWindow):
                 dlg.resize(*size)
             if state.get("maximized"):
                 dlg.setWindowState(dlg.windowState() | QtCore.Qt.WindowState.WindowMaximized)
+        self._shared_controller.macro_editor = dlg
+        self._shared_controller.macro_editor_row = row
         try:
             return _run_dialog_non_modal(dlg)
         finally:
+            self._shared_controller.macro_editor = None
+            QtCore.QTimer.singleShot(0, lambda: self._shared_controller.refresh(True))
             size = dlg.normalGeometry().size() if dlg.isMaximized() else dlg.size()
             self._update_state("macro_editor", {
                 "size": [size.width(), size.height()],
@@ -19378,7 +19393,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             self._append_macro_row(macro)
             self._renumber_macro_rows()
             self._sync_runtime_profile_from_macro_table()
-    def _edit_macro(self):
+    def _edit_macro(self, *, usage_path=None):
         row = self._get_selected_row()
         if row < 0:
             QtWidgets.QMessageBox.information(self, "선택 없음", "편집할 매크로를 선택하세요.")
@@ -19407,7 +19422,9 @@ class MacroWindow(QtWidgets.QMainWindow):
             macro_list_provider=lambda m=macro: self._macro_picker_items(exclude=m),
             app_scope_presets_provider=lambda m=macro: self._app_scope_picker_items(exclude=m),
         )
-        if self._run_macro_dialog(dlg):
+        if usage_path is not None:
+            QtCore.QTimer.singleShot(0, lambda: navigate_usage(dlg, usage_path, macro.to_dict()))
+        if self._run_macro_dialog(dlg, row=row):
             try:
                 new_macro = dlg.get_macro()
             except ValueError as exc:
@@ -19452,6 +19469,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "대상 없음", "복사할 매크로를 찾지 못했습니다.")
             return
         MacroWindow._macro_clipboard = copied
+        MacroWindow._shared_clipboard = copy.deepcopy(self.profile.shared_settings)
+        MacroWindow._variables_clipboard = copy.deepcopy(self._variable_items)
     def _paste_macro(self):
         clipboard = getattr(MacroWindow, "_macro_clipboard", None)
         if not clipboard:
@@ -19463,8 +19482,22 @@ class MacroWindow(QtWidgets.QMainWindow):
             return
         insert_row = (rows[-1] + 1) if rows else self.macro_table.rowCount()
         pasted_rows: list[int] = []
-        for macro in clipboard:
-            cloned = copy.deepcopy(macro)
+        imported_entries = copy.deepcopy(self.profile.shared_settings)
+        imported_values = copy.deepcopy(self._variable_items)
+        source_entries = copy.deepcopy(getattr(MacroWindow, '_shared_clipboard', {}))
+        source_macros = [macro.to_dict() for macro in clipboard]
+        try:
+            import_values(source_macros, source_entries, getattr(MacroWindow, '_variables_clipboard', {}), imported_values)
+            imported = import_settings(source_macros, source_entries, imported_entries)
+            imported_resolver = VariableResolver(MacroVariables(**{kind: {item['name']: item['value'] for item in items} for kind, items in imported_values.items()}))
+            imported_macros = [Macro.from_dict(data, imported_resolver) for data in imported]
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "붙여넣기 실패", str(exc))
+            return
+        self.profile.shared_settings = imported_entries
+        self._variable_items = imported_values
+        self._refresh_variable_completers()
+        for cloned in imported_macros:
             self.macro_table.insertRow(insert_row)
             self._set_macro_row(insert_row, cloned)
             pasted_rows.append(insert_row)
@@ -19496,6 +19529,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.profile = profile
         runtime_profile = MacroProfile.from_dict(profile.to_dict())
         self.engine.update_profile(runtime_profile)
+        if hasattr(self, '_shared_controller'):
+            self._shared_controller.mark_applied()
         self._refresh_pixel_defaults(self.profile)
         try:
             backend_state = self.engine.keyboard_status(refresh=True)
@@ -19524,6 +19559,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         )
         self._refresh_pixel_defaults(self.profile)
         self.engine.update_profile(self.profile)
+        if hasattr(self, '_shared_controller'):
+            self._shared_controller.mark_applied()
         try:
             backend_state = self.engine.keyboard_status(refresh=True)
         except Exception:
@@ -19558,6 +19595,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         )
         self._refresh_pixel_defaults(self.profile)
         self.engine.update_profile(self.profile)
+        if hasattr(self, '_shared_controller'):
+            self._shared_controller.mark_applied()
         try:
             backend_state = self.engine.keyboard_status(refresh=True)
         except Exception:
@@ -19609,6 +19648,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.profile = profile
         runtime_profile = MacroProfile.from_dict(profile.to_dict())
         self.engine.update_profile(runtime_profile)
+        if hasattr(self, '_shared_controller'):
+            self._shared_controller.mark_applied()
         self._refresh_pixel_defaults(self.profile)
         try:
             backend_state = self.engine.keyboard_status(refresh=True)
@@ -20095,6 +20136,7 @@ class MacroWindow(QtWidgets.QMainWindow):
                         self.engine.clear_debug_image_override()
                     except Exception:
                         pass
+                cond_obj = Condition.from_dict(expand_condition(cond_obj.to_dict(), self.profile.shared_settings), resolver)
                 result = self.engine.debug_condition_tree(
                     cond_obj,
                     key_states=self._condition_debug_key_states,
