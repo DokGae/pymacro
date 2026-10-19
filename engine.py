@@ -1,4 +1,6 @@
 from __future__ import annotations
+from lib.pattern_packs import PackReference, resolve_pattern
+
 
 import copy
 import ctypes
@@ -150,8 +152,6 @@ _TIME_UNIT_ALIASES: dict[str, TimeUnit] = {
     "시": "hour",
 }
 
-PATTERN_DIR = Path(__file__).parent / "pattern"
-PATTERN_FILE = PATTERN_DIR / "patterns.json"
 
 
 def _normalize_time_unit(raw: Any, *, default: TimeUnit = "sec") -> TimeUnit:
@@ -982,50 +982,6 @@ def _normalize_macro_mode(mode_raw: Any, *, default: str = "hold") -> str:
         return "hold"
     fallback = str(default or "hold").strip().lower()
     return fallback if fallback in ("hold", "toggle", "once") else "hold"
-
-
-def _load_shared_patterns() -> Dict[str, PixelPattern]:
-    """pattern 폴더의 각 패턴 파일(*.json)을 개별로 읽어 공용 패턴을 만든다."""
-    result: Dict[str, PixelPattern] = {}
-    try:
-        if not PATTERN_DIR.exists():
-            return {}
-        for path in PATTERN_DIR.glob("*.json"):
-            if path.name == "patterns.json":
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if not isinstance(data, dict):
-                continue
-            merged = dict(data)
-            merged.setdefault("name", merged.get("name") or path.stem)
-            pat = PixelPattern.from_dict(merged)
-            pat.tolerance = 0
-            for pt in pat.points:
-                pt.tolerance = None
-            result[pat.name] = pat
-        # 레거시 patterns.json 병합(존재하면 이름이 겹치지 않을 때만)
-        if PATTERN_FILE.exists():
-            try:
-                legacy = json.loads(PATTERN_FILE.read_text(encoding="utf-8"))
-                if isinstance(legacy, dict):
-                    for name, item in legacy.items():
-                        if name in result or not isinstance(item, dict):
-                            continue
-                        merged = dict(item)
-                        merged.setdefault("name", name)
-                        pat = PixelPattern.from_dict(merged)
-                        pat.tolerance = 0
-                        for pt in pat.points:
-                            pt.tolerance = None
-                        result[pat.name] = pat
-            except Exception:
-                pass
-    except Exception:
-        return result
-    return result
 
 
 def _normalize_trigger_part(key: str) -> str:
@@ -4804,12 +4760,7 @@ class MacroEngine:
         self._pixel_test_expect_exists: bool = True
         self._pixel_test_min_count: int = 1
         self._pixel_test_pattern: Optional[str] = None
-        base_patterns = _load_shared_patterns()
-        profile_patterns = getattr(self._profile, "pixel_patterns", {}) or {}
-        for name, pat in profile_patterns.items():
-            if name not in base_patterns:
-                base_patterns[name] = copy.deepcopy(pat)
-        self._pixel_patterns: Dict[str, PixelPattern] = base_patterns
+        self._pixel_patterns: Dict[str, PixelPattern] = {}
         self._debug_image_override: Optional[np.ndarray] = None
         self._debug_image_label: Optional[str] = None
         self._keyboard_device_id: Optional[int] = self._profile.keyboard_device_id
@@ -5174,12 +5125,7 @@ class MacroEngine:
         self._apply_mouse_device(mouse_device_id, mouse_hardware_id, log=False)
         self._select_backend(self._input_mode, allow_fallback=True, log=True)
         self._refresh_swallow(app_ctx)
-        patterns = _load_shared_patterns()
-        profile_patterns = getattr(self._profile, "pixel_patterns", {}) or {}
-        for name, pat in profile_patterns.items():
-            if name not in patterns:
-                patterns[name] = copy.deepcopy(pat)
-        self._pixel_patterns = patterns
+        self._pixel_patterns = {}
         # 픽셀 테스트 설정도 프로필에서 동기화
         try:
             expect_exists = True
@@ -6692,7 +6638,7 @@ class MacroEngine:
                 else:
                     color = cond.color
             pattern_name = getattr(cond, "pixel_pattern", None)
-            pattern_obj = self._pixel_patterns.get(pattern_name) if pattern_name else None
+            pattern_obj = resolve_pattern(self._pixel_patterns, pattern_name)
             if region is None or (color is None and pattern_obj is None):
                 return False
             region_tuple: Region = tuple(int(v) for v in region)
@@ -6999,7 +6945,7 @@ class MacroEngine:
                     else:
                         color = cond.color
                 pattern_name = getattr(cond, "pixel_pattern", None)
-                pattern_obj = self._pixel_patterns.get(pattern_name) if pattern_name else None
+                pattern_obj = resolve_pattern(self._pixel_patterns, pattern_name)
                 if region is None or (color is None and pattern_obj is None):
                     raise ValueError("영역/색상을 확인하세요.")
                 region_tuple: Region = tuple(int(v) for v in region)
@@ -7192,6 +7138,24 @@ class MacroEngine:
         pattern: Optional[PixelPattern] = None,
         window_target: Optional[dict] = None,
     ) -> Dict[str, Any]:
+        if isinstance(pattern, PackReference):
+            try:
+                patterns = pattern.patterns()
+                shared_cache = pixel_cache if pixel_cache is not None else {}
+                last = None
+                for member in patterns:
+                    last = self._pixel_check(
+                        region, None, tolerance, expect_exists=True, min_count=1,
+                        include_image=include_image, pixel_cache=shared_cache,
+                        pattern=member, window_target=window_target,
+                    )
+                    if last.get("error") or last.get("unavailable"):
+                        return dict(last, result=False)
+                    if last.get("found"):
+                        return dict(last, result=bool(expect_exists), matched_item=member.name)
+                return dict(last, result=not expect_exists, found=False)
+            except Exception as exc:
+                return {"result": False, "found": False, "error": str(exc), "unavailable": True}
         capture_bounds = region
         if window_target and self._debug_image_override is None:
             try:
@@ -7328,7 +7292,7 @@ class MacroEngine:
     ):
         region_val: Region = tuple(int(v) for v in (region or self._pixel_test_region))
         pattern_name = pattern if pattern is not None else self._pixel_test_pattern
-        pat_obj = self._pixel_patterns.get(pattern_name) if pattern_name else None
+        pat_obj = resolve_pattern(self._pixel_patterns, pattern_name)
         color_val: Optional[RGB] = None
         if color is not None:
             color_val = tuple(int(c) for c in color)  # type: ignore[assignment]

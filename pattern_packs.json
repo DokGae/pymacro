@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "packs": {
+    "91f88d6caf0343e1ace143dc1cac194e": {
+      "name": "쿨숫자",
+      "items": {
+        "799b67f0ce084d7aa17ee416457c9e44": {
+          "name": "3",
+          "points": [
+            {
+              "dx": 1432,
+              "dy": 717,
+              "color": [
+                48,
+                19,
+                2
+              ]
+            },
+            {
+              "dx": 1426,
+              "dy": 723,
+              "color": [
+                95,
+                32,
+                6
+              ]
+            },
+            {
+              "dx": 1422,
+              "dy": 715,
+              "color": [
+                102,
+                102,
+                99
+              ]
+            }
+          ],
+          "source": "9498be2e03a90e87b02d611bcc1b9d1be8e4cac7259e732adc7c2291653f02ad",
+          "thumbnail": "iVBORw0KGgoAAAANSUhEUgAAAAsAAAAJCAIAAABrBkF6AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA8UlEQVQYlQXB/0rCUBgG4Pf7zraa5hAK+kkiUl1A0A0F3me3UPRnSKBgTWRO19zOOd/b88h8/orlG3arpra2pUTrevSewdBHeCeK4w/ObqEOAsDajn2gkT1BB2+miB7jCRhFaAAB0JHqBJ40gWI4wfodlD7SB42GYDGnPM2mdyeFUtzzY4bBCF1db4/exxBAMFBXm2oTutNgivUH2g32VZGDxOxh6iS5HiBJ6CNKiO4PAeUCF/e7xrLUfX8trqINU5eIGGGEElpuD6jLy3HOaApUCZZ1nKVIAQW1mL6IZt1f+1t156KOAHkzcp8NJikc9R8mfpJcVmxehAAAAABJRU5ErkJggg=="
+        },
+        "0cf2a5f219f245c1b0e97b93ba4b4330": {
+          "name": "4",
+          "points": []
+        },
+        "4f6b138801d04ba397aef40580e71991": {
+          "name": "5",
+          "points": []
+        },
+        "809e9d258522414382a9c2ca729c0367": {
+          "name": "6",
+          "points": []
+        },
+        "f074cbf3f3c14bdcb0786d76742c1901": {
+          "name": "7",
+          "points": []
+        },
+        "44c4b223d9924a20ba4ad186b3c7ed48": {
+          "name": "8",
+          "points": []
+        },
+        "8dd49eac778b414396f3ea3816bef1e0": {
+          "name": "9",
+          "points": []
+        },
+        "bda3c7b4437644f3a0920e261e61ee05": {
+          "name": "10",
+          "points": []
+        },
+        "825d82097fc04d96aecfbf33138d18c1": {
+          "name": "11",
+          "points": []
+        },
+        "7f0de9b51b024d52b165ea580fe356a9": {
+          "name": "12",
+          "points": []
+        },
+        "59c11e189df24c578571de1b5ab4a59f": {
+          "name": "13",
+          "points": []
+        },
+        "43a9a8024626408db855a3a45fe77dfb": {
+          "name": "14",
+          "points": []
+        }
+      }
+    }
+  }
+}
