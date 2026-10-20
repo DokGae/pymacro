@@ -1457,6 +1457,8 @@ def navigate_usage(editor, path, macro):
         editor.action_tabs.setCurrentIndex(1)
     elif tree is editor.main_action_tree:
         editor.action_tabs.setCurrentIndex(0)
+    elif tree is editor.stop_action_tree:
+        editor.action_tabs.setCurrentWidget(editor.stop_group)
     parent = item.parent()
     while parent is not None:
         tree.expandItem(parent)

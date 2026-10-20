@@ -18,6 +18,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
+from action_workspace import ActionWorkspaceMixin, build_tree_panel, install_editor_history
 from external_state import state_hub, DEFAULT_PORT, parse_value
 import numpy as np
 from PIL import Image
@@ -5861,7 +5862,7 @@ class _VariableHeader(QtWidgets.QHeaderView):
             painter.setPen(pen)
             painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
             painter.restore()
-class ActionTreeWidget(QtWidgets.QTreeWidget):
+class _ActionTreeWidget(QtWidgets.QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setHeaderLabels(["순번", "타입", "이름", "값", "설명", "활성"])
@@ -7027,6 +7028,10 @@ class ActionTreeWidget(QtWidgets.QTreeWidget):
             return None
         data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         return data if isinstance(data, Action) else None
+
+
+class ActionTreeWidget(ActionWorkspaceMixin, _ActionTreeWidget):
+    pass
 
 
 class WindowPickerDialog(QtWidgets.QDialog):
@@ -8888,7 +8893,14 @@ class MacroDialog(QtWidgets.QDialog):
         self._stop_others_on_trigger = False
         self._suspend_others_while_running = False
         layout = QtWidgets.QVBoxLayout(self)
-        form = QtWidgets.QFormLayout()
+        self.settings_page = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(self.settings_page)
+        form.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        form.setContentsMargins(16, 16, 16, 16)
+        self.trigger_page = QtWidgets.QWidget()
+        trigger_page_layout = QtWidgets.QVBoxLayout(self.trigger_page)
+        trigger_page_layout.setContentsMargins(12, 12, 12, 12)
+        trigger_form = QtWidgets.QFormLayout()
         self.name_edit = QtWidgets.QLineEdit()
         self.trigger_edit = MacroKeyLineEdit()
         self.trigger_edit.setPlaceholderText("예: w 또는 mouse4 (조합은 아래 체크박스로 설정 후 추가)")
@@ -8979,8 +8991,6 @@ class MacroDialog(QtWidgets.QDialog):
         run_options.addSpacing(20)
         run_options.addWidget(QtWidgets.QLabel("사이클 횟수 (0=무한)"))
         run_options.addWidget(self.cycle_spin)
-        run_options.addSpacing(20)
-        run_options.addWidget(self.suppress_checkbox)
         run_options.addStretch()
         scope_options = QtWidgets.QHBoxLayout()
         scope_options.addWidget(self.scope_btn)
@@ -8993,12 +9003,14 @@ class MacroDialog(QtWidgets.QDialog):
             summary.setMinimumWidth(80)
         form.addRow("이름(선택)", self.name_edit)
         form.addRow("설명(선택)", self.desc_edit)
-        form.addRow("트리거 입력/모드", trigger_input_row)
-        form.addRow("조합 구성", trigger_builder_row)
-        form.addRow("트리거 목록", trigger_table_box)
+        trigger_form.addRow("트리거 입력/모드", trigger_input_row)
+        trigger_form.addRow("조합 구성", trigger_builder_row)
+        trigger_form.addRow("입력 전달", self.suppress_checkbox)
+        trigger_page_layout.addLayout(trigger_form)
+        trigger_page_layout.addWidget(QtWidgets.QLabel("트리거 목록 · 선택한 키의 모드와 홀드 시간을 수정한 뒤 ‘선택 저장’을 누르세요."))
+        trigger_page_layout.addWidget(trigger_table_box, stretch=1)
         form.addRow(run_options)
         form.addRow(scope_options)
-        layout.addLayout(form)
         for chk in (
             self.trigger_mod_ctrl,
             self.trigger_mod_shift,
@@ -9028,7 +9040,7 @@ class MacroDialog(QtWidgets.QDialog):
         main_hint = QtWidgets.QLabel("위에서 아래로 순서대로 실행합니다. 별도로 반복할 작업은 ‘병렬로 이동’을 사용하세요.")
         main_hint.setWordWrap(True)
         main_actions_layout.addWidget(main_hint)
-        main_actions_layout.addWidget(self.main_action_tree)
+        main_actions_layout.addWidget(build_tree_panel(self.main_action_tree))
         self.parallel_action_page = QtWidgets.QWidget()
         parallel_layout = QtWidgets.QVBoxLayout(self.parallel_action_page)
         parallel_layout.setContentsMargins(8, 8, 8, 8)
@@ -9056,10 +9068,13 @@ class MacroDialog(QtWidgets.QDialog):
         parallel_controls.addWidget(self.parallel_interval_label)
         parallel_controls.addWidget(self.parallel_quick_interval)
         parallel_layout.addLayout(parallel_controls)
-        parallel_layout.addWidget(self.parallel_action_tree)
+        parallel_layout.addWidget(build_tree_panel(self.parallel_action_tree))
         self.action_tabs.addTab(self.main_action_page, "일반 액션")
         self.action_tabs.addTab(self.parallel_action_page, "병렬 작업 (0)")
         layout.addWidget(self.action_tabs, stretch=1)
+        self.action_controls = QtWidgets.QWidget()
+        action_controls_layout = QtWidgets.QVBoxLayout(self.action_controls)
+        action_controls_layout.setContentsMargins(0, 0, 0, 0)
         move_row = QtWidgets.QHBoxLayout()
         self.move_up_btn = QtWidgets.QPushButton("위로")
         self.move_down_btn = QtWidgets.QPushButton("아래로")
@@ -9068,7 +9083,7 @@ class MacroDialog(QtWidgets.QDialog):
         self.transfer_action_btn = QtWidgets.QPushButton("병렬로 이동 →")
         move_row.addWidget(self.transfer_action_btn)
         move_row.addStretch()
-        layout.addLayout(move_row)
+        action_controls_layout.addLayout(move_row)
         btns = QtWidgets.QHBoxLayout()
         self.add_btn = QtWidgets.QPushButton("액션 추가")
         self.add_child_btn = QtWidgets.QPushButton("하위 액션 추가")
@@ -9090,12 +9105,14 @@ class MacroDialog(QtWidgets.QDialog):
         btns.addWidget(self.copy_btn)
         btns.addWidget(self.paste_btn)
         btns.addWidget(self.del_btn)
-        btns.addWidget(self.expand_all_btn)
-        btns.addWidget(self.collapse_all_btn)
+        # Expand/collapse now live in each action-list toolbar.
+        self.expand_all_btn.hide()
+        self.collapse_all_btn.hide()
         btns.addStretch()
-        layout.addLayout(btns)
+        action_controls_layout.addLayout(btns)
+        layout.addWidget(self.action_controls)
         # 중단 시 실행 액션 편집 영역
-        self.stop_group = QtWidgets.QGroupBox("중단 시 실행 (토글/홀드 해제 시 1회)")
+        self.stop_group = QtWidgets.QGroupBox("중단 시 실행 사용 (토글/홀드 해제 시 1회)")
         self.stop_group.setCheckable(True)
         self.stop_group.setChecked(False)
         stop_layout = QtWidgets.QVBoxLayout(self.stop_group)
@@ -9109,13 +9126,12 @@ class MacroDialog(QtWidgets.QDialog):
         self.stop_collapse_btn.setText("접기")
         self.stop_collapse_btn.setCheckable(True)
         self.stop_collapse_btn.setChecked(True)
-        header_row.addWidget(self.stop_collapse_btn)
+        self.stop_collapse_btn.hide()
         stop_layout.addLayout(header_row)
         self.stop_content = QtWidgets.QWidget()
         stop_content_layout = QtWidgets.QVBoxLayout(self.stop_content)
         self.stop_action_tree = ActionTreeWidget()
-        self.stop_action_tree.setFixedHeight(180)
-        stop_content_layout.addWidget(self.stop_action_tree)
+        stop_content_layout.addWidget(build_tree_panel(self.stop_action_tree), stretch=1)
         stop_btns = QtWidgets.QHBoxLayout()
         self.stop_add_btn = QtWidgets.QPushButton("추가")
         self.stop_add_child_btn = QtWidgets.QPushButton("자식")
@@ -9135,8 +9151,10 @@ class MacroDialog(QtWidgets.QDialog):
         stop_btns.addWidget(self.stop_tree_collapse_btn)
         stop_btns.addStretch()
         stop_content_layout.addLayout(stop_btns)
-        stop_layout.addWidget(self.stop_content)
-        layout.addWidget(self.stop_group)
+        stop_layout.addWidget(self.stop_content, stretch=1)
+        self.action_tabs.addTab(self.stop_group, "중단 시 실행")
+        self.action_tabs.addTab(self.trigger_page, "트리거")
+        self.action_tabs.addTab(self.settings_page, "기본·실행 설정")
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.ok_btn = QtWidgets.QPushButton("확인")
@@ -9163,6 +9181,7 @@ class MacroDialog(QtWidgets.QDialog):
         self.move_down_btn.clicked.connect(lambda: self._move_selected(1, self.move_down_btn))
         self.main_action_tree.itemDoubleClicked.connect(lambda *_: self._with_action_tree(self.main_action_tree, self._edit_action))
         self.parallel_action_tree.itemDoubleClicked.connect(lambda *_: self._with_action_tree(self.parallel_action_tree, self._edit_action))
+        self.stop_action_tree.itemDoubleClicked.connect(lambda *_: self._with_action_tree(self.stop_action_tree, self._edit_action))
         self.action_tabs.currentChanged.connect(self._action_tab_changed)
         self.transfer_action_btn.clicked.connect(self._transfer_selected_actions)
         self.parallel_group_btn.clicked.connect(lambda: self._add_action(parallel_type="group"))
@@ -9210,9 +9229,11 @@ class MacroDialog(QtWidgets.QDialog):
             self.trigger_hold_spin.setValue(0.0)
             self._sync_trigger_hold_visibility()
         self._action_tab_changed(self.action_tabs.currentIndex())
+        install_editor_history(self)
 
     def _action_tab_changed(self, index: int):
-        self.action_tree = self.parallel_action_tree if index == 1 else self.main_action_tree
+        self.action_tree = self.parallel_action_tree if index == 1 else self.stop_action_tree if index == 2 else self.main_action_tree
+        self.action_controls.setVisible(index in (0, 1))
         self._refresh_action_workspace()
 
     def _schedule_workspace_refresh(self):
@@ -9307,7 +9328,7 @@ class MacroDialog(QtWidgets.QDialog):
         self._refresh_action_workspace()
 
     def _parallel_task_name(self, prefix: str) -> str:
-        names = {self.parallel_action_tree.topLevelItem(i).text(2) for i in range(self.parallel_action_tree.topLevelItemCount())}
+        names = {self.parallel_action_tree.original_name(self.parallel_action_tree.topLevelItem(i)) for i in range(self.parallel_action_tree.topLevelItemCount())}
         number = 1
         while f"{prefix} {number}" in names:
             number += 1
@@ -9442,19 +9463,13 @@ class MacroDialog(QtWidgets.QDialog):
         table = getattr(self, "trigger_table", None)
         if not table:
             return
-        header = table.horizontalHeader()
-        header_h = header.height() if header else 0
-        frame_h = table.frameWidth() * 2
-        rows = table.rowCount()
-        body_h = sum(table.rowHeight(r) for r in range(rows)) if rows > 0 else 0
-        if body_h <= 0:
-            row_h = table.verticalHeader().defaultSectionSize() if table.verticalHeader() else 24
-            body_h = row_h * rows
-        # keep height tight: only as tall as the rows we have (no phantom empty rows)
-        height = int(header_h + body_h + frame_h)
-        min_height = max(1, height if rows > 0 else header_h + frame_h)
-        table.setMinimumHeight(min_height)
-        table.setMaximumHeight(min_height)
+        table.setMinimumHeight(120)
+        table.setMaximumHeight(16777215)
+        table.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        if hasattr(self, "action_tabs"):
+            index = self.action_tabs.indexOf(self.trigger_page)
+            if index >= 0:
+                self.action_tabs.setTabText(index, f"트리거 ({table.rowCount()})")
     def _set_trigger_row(self, row: int, *, key: str, mode: str, hold: float | None):
         if row < 0:
             return
@@ -9669,7 +9684,8 @@ class MacroDialog(QtWidgets.QDialog):
             self.action_tree = tree
             fn()
         finally:
-            self.action_tree = self.parallel_action_tree if self.action_tabs.currentIndex() == 1 else self.main_action_tree
+            index = self.action_tabs.currentIndex()
+            self.action_tree = self.parallel_action_tree if index == 1 else self.stop_action_tree if index == 2 else self.main_action_tree
     def _set_stop_group_enabled(self, enabled: bool):
         widgets = [
             self.stop_action_tree,
@@ -9689,6 +9705,10 @@ class MacroDialog(QtWidgets.QDialog):
                 w.setEnabled(enabled)
         self._update_stop_collapsed()
     def _update_stop_collapsed(self):
+        if self.action_tabs.indexOf(self.stop_group) >= 0:
+            self.stop_content.setVisible(True)
+            self.stop_collapse_btn.hide()
+            return
         collapsed = self.stop_collapse_btn.isChecked() if self.stop_collapse_btn else False
         if self.stop_content:
             self.stop_content.setVisible(not collapsed)
@@ -10098,7 +10118,7 @@ class MacroDialog(QtWidgets.QDialog):
                         else_actions.append(self.action_tree._action_from_item(child.child(j)))
             temp_act = Action(
                 type="elif",
-                name=item.text(2) or None,
+                name=self.action_tree.original_name(item) or None,
                 description=item.text(4) or "",
                 enabled=enabled_flag,
                 condition=cond,
@@ -10317,7 +10337,7 @@ class MacroDialog(QtWidgets.QDialog):
                         actions=branch_actions,
                         else_actions=else_actions,
                         has_else_branch=has_else_branch,
-                        name=item.text(2) or "",
+                        name=target_tree.original_name(item) or "",
                         description=desc_text,
                         enabled=enabled_flag,
                     )
@@ -10389,7 +10409,7 @@ class MacroDialog(QtWidgets.QDialog):
             target_tree.clearSelection()
             for item in new_items:
                 item.setSelected(True)
-            target_tree.setCurrentItem(new_items[0])
+            target_tree.setCurrentItem(new_items[0], 0, QtCore.QItemSelectionModel.SelectionFlag.NoUpdate)
         target_tree.renumber()
         self._reconcile_parallel_items()
     def _delete_action(self):
