@@ -35,6 +35,22 @@ class Aion2Tests(unittest.TestCase):
             self.assertFalse(detail['unavailable'])
             self.assertIn('미채용',detail['status'])
 
+    def test_all_jobs_shock_release_numeric_cooldown_without_slot_requirement(self):
+        skills=[row for row in ALL_SKILLS if '충격 해제' in row[1]]
+        self.assertEqual(len(skills),9)
+        client=Mock()
+        for code,label,suffix in skills:
+            cond=Condition(type='aion2',aion2_kind='cooldown',aion2_skill=code,aion2_cooldown_operator='cooling')
+            client.lookup.return_value=(True,11,'연결됨')
+            self.assertTrue(evaluate_aion2(client,cond)[0],label)
+            self.assertEqual(client.lookup.call_args.args[1],'내.스킬쿨.'+suffix)
+            cond.aion2_cooldown_operator='ready'
+            self.assertFalse(evaluate_aion2(client,cond)[0])
+            client.lookup.return_value=(True,0,'연결됨')
+            self.assertTrue(evaluate_aion2(client,cond)[0])
+            client.lookup.return_value=(False,None,'미수신')
+            self.assertFalse(evaluate_aion2(client,cond)[0])
+
     def test_unequipped_skill_runs_false_branch_and_continues(self):
         cond=Condition(type='aion2',aion2_kind='cooldown',aion2_skill=17300000)
         actions=[Action(type='if',condition=cond,actions=[Action(type='press',key='x')],

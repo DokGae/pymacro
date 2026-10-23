@@ -143,6 +143,7 @@ for i in range(1, 25):
     _named_vk[f"f{i}"] = Vk(111 + i)  # Vk.F1 == 112
 for i in range(10):
     _named_vk[f'numpad{i}'] = Vk(96 + i)
+    _named_vk[f'num{i}'] = Vk(96 + i)
 _named_vk.update(numadd=Vk.Add, numsubtract=Vk.Subtract, nummultiply=Vk.Multiply,
                  numdivide=Vk.Divide, numdecimal=Vk.Decimal)
 # 마우스 버튼 매핑

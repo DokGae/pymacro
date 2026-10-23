@@ -337,8 +337,7 @@ def _vk_to_macro_key(vk: int) -> str | None:
     elif 112 <= code <= 135:
         key = f"f{code - 111}"
     elif 96 <= code <= 105:
-        # 넘패드 숫자는 매크로에서 일반 숫자 키로 취급해도 동일하게 동작한다.
-        key = str(code - 96)
+        key = f"num{code - 96}"
     elif code in (106, 107, 109, 110, 111):
         key = {106: "*", 107: "+", 109: "-", 110: ".", 111: "/"}[code]
     else:
@@ -441,6 +440,9 @@ def _macro_key_from_qt_event(event: QtGui.QKeyEvent) -> str | None:
         qkey = int(event.key())
     except Exception:
         qkey = 0
+    if event.modifiers() & QtCore.Qt.KeyboardModifier.KeypadModifier:
+        if 48 <= qkey <= 57:
+            return f"num{qkey - 48}"
     mapped = _QT_SPECIAL_KEY_TO_MACRO_KEY.get(qkey)
     if mapped:
         return mapped
@@ -481,7 +483,10 @@ def _macro_key_text_from_qt_event(event: QtGui.QKeyEvent) -> str | None:
     if modifiers & QtCore.Qt.KeyboardModifier.MetaModifier and key_name != "win":
         parts.append("win")
     parts.append(key_name)
-    return normalize_trigger_key("+".join(parts))
+    return "+".join(
+        part.upper() if re.fullmatch(r"num[0-9]", part) else part
+        for part in normalize_trigger_key("+".join(parts)).split("+")
+    )
 
 
 _KEY_CAPTURE_BYPASS_CTRL_KEYS = {"a", "c", "s", "v", "x", "y", "z"}
@@ -525,6 +530,8 @@ class MacroKeyLineEdit(QtWidgets.QLineEdit):
         key_name = _macro_key_from_qt_event(event)
         if not key_name:
             return False
+        if re.fullmatch(r"num[0-9]", key_name):
+            return True
         if key_name in _DIRECT_CAPTURE_MACRO_KEYS:
             return True
         modifiers = event.modifiers()
