@@ -161,6 +161,9 @@ class StateHub:
     def evaluate(self, cond):
         try:
             client = self.client(cond.external_host, cond.external_port)
+            if getattr(cond,'type',None) == 'aion2':
+                from aion2_conditions import evaluate_aion2
+                return evaluate_aion2(client,cond)
             data, connection_status = client.snapshot(cond.external_source)
             available, actual, status = client.lookup(cond.external_source, cond.external_key)
             detail = dict(source=cond.external_source, key=cond.external_key, actual=actual,
@@ -194,7 +197,8 @@ class StateHub:
             elif isinstance(node, (list, tuple)):
                 for value in node: visit(value)
             elif hasattr(node, '__dict__'):
-                if getattr(node, 'type', None) == 'external':
+                if (getattr(node, 'type', None) in ('external','aion2')
+                        or getattr(node, 'key_source', None) == 'aion2'):
                     try: self.client(node.external_host, node.external_port)
                     except ValueError: pass
                 for field in ('macros','actions','stop_actions','else_actions','elif_blocks',
@@ -215,15 +219,17 @@ atexit.register(state_hub.close)
 def external_result(cond, cache=None):
     key = ('external', id(cond))
     if cache is not None and key in cache: return cache[key]
-    result = state_hub.evaluate(cond)
+    value, detail = state_hub.evaluate(cond)
+    # Missing data is a false comparison, never a substitute value such as 0.
+    # Keep the transport reason for the editor/debugger without blocking peers.
+    result = (False, dict(detail, false_on_unavailable=True)) if detail.get('unavailable') else (bool(value), detail)
     if cache is not None: cache[key] = result
     return result
 
 
 def external_conditions_ready(cond, cache=None):
-    if not getattr(cond, 'enabled', True): return True
-    if cond.type == 'external' and external_result(cond, cache)[1].get('unavailable'):
-        return False
-    children = list(cond.conditions or []) if cond.type in ('all','any') else []
-    children += list(cond.on_true or []) + list(cond.on_false or [])
-    return all(external_conditions_ready(child, cache) for child in children)
+    """Compatibility hook: unavailable inputs no longer gate a condition tree.
+
+    Evaluate only visited leaves so AND/OR keep normal short-circuit behavior.
+    """
+    return True

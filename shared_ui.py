@@ -240,6 +240,24 @@ class SharedController(QtCore.QObject):
         self.timer.start(1500)
         QtWidgets.QApplication.instance().installEventFilter(self)
         self.update_pending_buttons()
+        self._closing = False
+        state = getattr(owner, '_state', {}).get('shared_settings_dock', {})
+        self.dock.setVisible(bool(state.get('visible', True)))
+        self.dock.visibilityChanged.connect(self.save_visibility)
+
+    def save_visibility(self, *_):
+        if self._closing:
+            return
+        # Parent minimization/hiding is different from explicitly closing the dock.
+        visible = not self.dock.isHidden()
+        state = dict(self.owner._state.get('shared_settings_dock', {}))
+        if state.get('visible') != visible:
+            state['visible'] = visible
+            self.owner._update_state('shared_settings_dock', state)
+
+    def prepare_app_close(self):
+        self.save_visibility()
+        self._closing = True
 
     @property
     def entries(self):

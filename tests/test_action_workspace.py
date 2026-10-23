@@ -139,11 +139,82 @@ class TreeTests(unittest.TestCase):
         self.assertEqual(self.tree._disabled_text_brush(4).color().name(), '#c4c4c4')
         self.assertNotEqual(self.tree.itemDelegateForColumn(5).original.__class__.__name__, '_DepthCheckDelegate')
 
+    def test_ifnot_checkbox_disables_descendants_and_preserves_children(self):
+        tree = self.tree
+        owner = self.inner()
+        header = tree._find_else_header(owner)
+        original_children = copy.deepcopy(tree.collect_actions()[1].actions[1].else_actions)
+        self.assertTrue(header.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+        QtTest.QTest.mouseClick(tree.viewport(), QtCore.Qt.MouseButton.LeftButton,
+                               pos=tree.check_rect(header).center())
+        pump()
+        self.assertEqual(header.checkState(5), QtCore.Qt.CheckState.Unchecked)
+        self.assertIsNotNone(tree._disabled_depth(header))
+        self.assertIsNotNone(tree._disabled_depth(header.child(0)))
+        self.assertIsNone(tree._disabled_depth(owner.child(0)))
+        action = tree.collect_actions()[1].actions[1]
+        self.assertFalse(action.else_enabled)
+        self.assertEqual(action.else_actions, original_children)
+        self.assertTrue(action.else_actions[0].enabled)
+        tree.load_actions(tree.collect_actions())
+        pump()
+        header = tree._find_else_header(self.inner())
+        self.assertEqual(header.checkState(5), QtCore.Qt.CheckState.Unchecked)
+        header.setCheckState(5, QtCore.Qt.CheckState.Checked)
+        pump()
+        self.assertIsNone(tree._disabled_depth(header.child(0)))
+        self.assertTrue(tree.collect_actions()[1].actions[1].else_enabled)
+
     def test_parallel_restrictions(self):
         self.tree.parallel_roots = True
         before = self.tree.collect_actions()
         self.assertFalse(self.tree.transfer_items([self.inner().child(0)], None, 'end')[0])
         self.assertEqual(before, self.tree.collect_actions())
+
+    def test_editor_hide_disabled_covers_branches_and_survives_reload(self):
+        tree = self.tree
+        branch = tree._find_else_header(self.inner())
+        branch.setCheckState(5, QtCore.Qt.CheckState.Unchecked)
+        tree.topLevelItem(2).setCheckState(5, QtCore.Qt.CheckState.Unchecked)
+        before = tree.collect_actions()
+        tree.hide_disabled_button.click()
+        pump()
+        self.assertTrue(branch.isHidden())
+        self.assertTrue(branch.child(0).isHidden())
+        self.assertTrue(tree.topLevelItem(2).isHidden())
+        self.assertFalse(self.inner().child(0).isHidden())
+        self.assertEqual(tree.collect_actions(), before)
+        tree.load_actions(before)
+        pump()
+        branch = tree._find_else_header(self.inner())
+        self.assertTrue(branch.isHidden())
+        branch.setCheckState(5, QtCore.Qt.CheckState.Checked)
+        pump()
+        self.assertFalse(branch.isHidden())
+        self.assertFalse(branch.child(0).isHidden())
+        tree.hide_disabled_button.click()
+        pump()
+        self.assertFalse(tree.topLevelItem(2).isHidden())
+
+    def test_editor_hide_disabled_combines_with_focus(self):
+        tree = self.tree
+        branch = tree._find_else_header(self.inner())
+        branch.setCheckState(5, QtCore.Qt.CheckState.Unchecked)
+        tree.setCurrentItem(self.inner())
+        tree.toggle_focus()
+        tree.hide_disabled_button.click()
+        pump()
+        self.assertTrue(branch.isHidden())
+        self.assertTrue(self.outer().child(0).isHidden())
+        tree.hide_disabled_button.click()
+        pump()
+        self.assertFalse(branch.isHidden())
+        self.assertTrue(self.outer().child(0).isHidden())
+        tree.hide_disabled_button.click()
+        tree.toggle_focus()
+        pump()
+        self.assertTrue(branch.isHidden())
+        self.assertFalse(self.outer().child(0).isHidden())
 
     def test_disabled_scope_and_descendants_have_no_colored_pixels(self):
         tree = self.tree
@@ -337,7 +408,7 @@ class TreeTests(unittest.TestCase):
             event.y = rect.top()+offset
             self.assertEqual(tree._drop_target(event), (owner, expected))
 
-    def test_clicked_ifnot_parent_and_jump_button(self):
+    def test_clicked_ifnot_selects_branch_and_jump_button(self):
         tree = self.tree
         owner = self.inner()
         jump = tree.jump_rect(owner)
@@ -347,7 +418,16 @@ class TreeTests(unittest.TestCase):
         rect = tree.visualItemRect(branch)
         QtTest.QTest.mouseClick(tree.viewport(), QtCore.Qt.MouseButton.LeftButton,
                                pos=QtCore.QPoint(250, rect.top()+10))
-        self.assertIs(tree.currentItem(), owner)
+        self.assertIs(tree.currentItem(), branch)
+
+    def test_ifnot_name_survives_tree_and_profile_roundtrip(self):
+        action = Action(type='if', has_else_branch=True, else_name='실패 처리')
+        action = Action.from_dict(action.to_dict())
+        self.tree.load_actions([action])
+        pump()
+        branch = self.tree._find_else_header(self.tree.topLevelItem(0))
+        self.assertEqual(self.tree.original_name(branch), '실패 처리')
+        self.assertEqual(self.tree.collect_actions()[0].else_name, '실패 처리')
 
     def test_collapse_footer_and_repeated_disabled_copy(self):
         self.inner().setExpanded(False)

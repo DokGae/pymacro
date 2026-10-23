@@ -15,10 +15,14 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
 from action_workspace import ActionWorkspaceMixin, build_tree_panel, install_editor_history
+from execution_analysis_ui import ExecutionAnalysisDialog
+from quick_toggle import QuickToggleWindow, macro_actions
+from editor_view_state import collect_editor_view, restore_editor_view
 from external_state import state_hub, DEFAULT_PORT, parse_value
 import numpy as np
 from PIL import Image
@@ -1694,6 +1698,7 @@ def _condition_type_label(typ: str) -> str:
         "timer": "타이머",
         "schedule": "시간/날짜",
         "external": "외부 프로그램 상태",
+        "aion2": "AION2 전용",
     }.get(typ, typ)
 def _group_child_count(cond: Condition) -> int:
     if not isinstance(cond, Condition):
@@ -1764,6 +1769,9 @@ def _condition_brief(cond: Condition) -> str:
     if getattr(cond, "on_false", []):
         suffix_parts.append(f"거짓 {len(cond.on_false)}")
     suffix = f" | {' / '.join(suffix_parts)}" if suffix_parts else ""
+    if cond.type == 'aion2':
+        from aion2_conditions import condition_summary
+        return f'AION2 · {condition_summary(cond)}{suffix}'
     if cond.type == 'external':
         op = {'true':'켜짐', 'false':'꺼짐', 'eq':'==', 'ne':'!=', 'gt':'>', 'ge':'>=', 'lt':'<', 'le':'<='}.get(cond.external_operator, cond.external_operator)
         value = '' if cond.external_operator in ('true','false') else ' ' + cond.external_value
@@ -1912,6 +1920,21 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.type_combo.addItem("타이머", "timer")
         self.type_combo.addItem("시간/날짜", "schedule")
         self.type_combo.addItem('외부 프로그램 상태 (TCP)', 'external')
+        self.type_combo.addItem('AION2 전용', 'aion2')
+        from aion2_conditions import CHARGE_SKILLS
+        self.aion2_kind=QtWidgets.QComboBox();self.aion2_kind.addItem('스킬 사용 후 대기 완료','use_wait')
+        self.aion2_kind.addItem('스킬 쿨타임 확인','cooldown')
+        self.aion2_kind.addItem('소모품 쿨타임','consumable_cooldown')
+        self.aion2_skill=QtWidgets.QComboBox()
+        for code,label,_ in CHARGE_SKILLS:self.aion2_skill.addItem(label,code)
+        self.aion2_skill.setCurrentIndex(self.aion2_skill.findData(18120000))
+        self.aion2_wait=QtWidgets.QDoubleSpinBox();self.aion2_wait.setRange(0,3600);self.aion2_wait.setDecimals(3);self.aion2_wait.setSuffix(' 초');self.aion2_wait.setValue(1)
+        self.aion2_role=QtWidgets.QComboBox();self.aion2_role.addItem('내 스킬','own');self.aion2_role.addItem('현재 대상 스킬','target')
+        self.aion2_cooldown_op=QtWidgets.QComboBox()
+        for label,op in [('사용 가능 (= 0초)','ready'),('쿨타임 중 (> 0초)','cooling'),('남은 시간 이하 (≤)','le'),('남은 시간 미만 (<)','lt'),('남은 시간 이상 (≥)','ge'),('남은 시간 초과 (>)','gt'),('남은 시간 같음 (=)','eq'),('남은 시간 다름 (≠)','ne')]:self.aion2_cooldown_op.addItem(label,op)
+        self.aion2_cooldown_value=QtWidgets.QDoubleSpinBox();self.aion2_cooldown_value.setRange(0,86400);self.aion2_cooldown_value.setDecimals(3);self.aion2_cooldown_value.setSuffix(' 초')
+        self.aion2_hint=QtWidgets.QLabel('실제 사용 확인 후 설정 시간 미만이면 거짓, 시간이 지나면 참입니다.\n매크로를 멈추지 않으며 다음 IF는 계속 처리합니다. 연타 간격은 press 액션에서 설정하세요.\n연결·사용 정보 미확인은 실행을 건너뜁니다. 감시 시작 후 아직 사용을 감지하지 않았다면 참으로 시작합니다.')
+        self.aion2_hint.setWordWrap(True)
         self.external_source = QtWidgets.QComboBox(); self.external_source.setEditable(True)
         self.external_source.addItem('leesangjin-monitor')
         self.external_source.setToolTip('상대 프로그램이 전송하는 고정 프로그램 ID입니다. 프로세스 ID와 다릅니다.')
@@ -1926,7 +1949,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.external_status = QtWidgets.QLabel('연결 대기 중'); self.external_status.setWordWrap(True)
         self.external_status.setStyleSheet('color: #c62828; font-weight: bold;')
         self.external_item_status = QtWidgets.QLabel(); self.external_item_status.setWordWrap(True)
-        self.external_hint = QtWidgets.QLabel('상대 프로그램이 TCP 소켓 상태 통신(external-state-v1)을 지원해야 합니다.\n같은 PC의 127.0.0.1로 자동 접속·재접속합니다. 연결 끊김이나 감지 대기 중에는 이 IF의 참/거짓 분기를 모두 건너뜁니다.')
+        self.external_hint = QtWidgets.QLabel('상대 프로그램이 TCP 소켓 상태 통신(external-state-v1)을 지원해야 합니다.\n같은 PC의 127.0.0.1로 자동 접속·재접속합니다. 연결 끊김·감지 대기·미수신 조건은 거짓으로 처리하며 AND/OR의 다른 조건은 정상적으로 계산합니다.')
         self.external_hint.setWordWrap(True)
         self._external_items_key = None
         self.external_op.currentIndexChanged.connect(lambda *_: self._sync_external_value())
@@ -2033,6 +2056,13 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.group_hint = QtWidgets.QLabel("하위 조건은 트리에서 추가/삭제하세요.")
         self.group_hint.setStyleSheet("color: gray;")
         self.form.addRow("조건 타입", self.type_combo)
+        self.form.addRow('AION2 조건',self.aion2_kind)
+        self.form.addRow('충전 스킬',self.aion2_skill)
+        self.form.addRow('확인 대상',self.aion2_role)
+        self.form.addRow('쿨타임 판정',self.aion2_cooldown_op)
+        self.form.addRow('남은 시간 비교값',self.aion2_cooldown_value)
+        self.form.addRow('사용 후 제한 시간',self.aion2_wait)
+        self.form.addRow('',self.aion2_hint)
         self.form.addRow('외부 프로그램 ID',self.external_source)
         self.form.addRow('TCP 포트 (같은 PC)',self.external_port)
         self.form.addRow('내용 이름',self.external_key)
@@ -2100,6 +2130,8 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         self.type_combo.currentIndexChanged.connect(self._sync_type_visibility)
+        self.aion2_kind.currentIndexChanged.connect(self._sync_type_visibility)
+        self.aion2_cooldown_op.currentIndexChanged.connect(self._sync_type_visibility)
         self.schedule_mode_combo.currentIndexChanged.connect(self._sync_schedule_hint)
         self.var_name_edit.currentTextChanged.connect(lambda *_: self._sync_var_condition_fields())
         self.pattern_combo.currentIndexChanged.connect(self._sync_type_visibility)
@@ -2125,18 +2157,24 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         if label is not None: label.setVisible(visible)
 
     def _refresh_external_state(self):
-        if self._current_type() != 'external' or not self.isVisible(): return
+        if self._current_type() not in ('external','aion2') or not self.isVisible(): return
         source=self.external_source.currentText().strip(); key=self.external_key.currentText().strip()
         try:client=state_hub.client('127.0.0.1',self.external_port.value())
         except ValueError as exc:
             self.external_status.setText(f'연결 실패 · {exc}')
             self.external_status.setStyleSheet('color: #c62828; font-weight: bold;')
-            self.external_item_status.setText('현재 값 확인 불가');return
+            self.external_item_status.setText('거짓 처리 · 현재 값 확인 불가');return
         data,status=client.snapshot(source)
         connected=data is not None
         self.external_status.setText('연결된 상태 · 상태 수신 중' if connected else f'연결 실패 / 대기 중 · {status}')
         self.external_status.setStyleSheet('color: #22863a; font-weight: bold;' if connected else 'color: #c62828; font-weight: bold;')
-        self.external_item_status.setText('현재 값 확인 불가')
+        if self._current_type()=='aion2':
+            if self.aion2_skill.currentData() is None or not source:
+                self.external_item_status.setText('프로그램 ID와 스킬을 선택하세요.');return
+            cond=self._get_direct_condition();result,detail=state_hub.evaluate(cond)
+            self.external_item_status.setText(f"{'거짓 (미수신)' if detail.get('unavailable') else '참' if result else '거짓'} · {detail.get('status','')}")
+            return
+        self.external_item_status.setText('거짓 처리 · 현재 값 확인 불가')
         if data is not None:
             items=dict(data.get('items',{}))
             for name in data['values']:items.setdefault(name,name)
@@ -2153,6 +2191,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             if available:
                 shown='참' if value is True else '거짓' if value is False else str(value)
                 status=f'{key} = {shown}'
+            else:status=f'거짓 처리 · {status}'
             self.external_item_status.setText(status)
     def _refresh_var_name_combo(self, preserve: str | None = None):
         names: list[str] = []
@@ -2266,10 +2305,48 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         is_external=typ=='external'
         _toggle((self.external_source,self.external_port,self.external_key,self.external_op,self.external_value,
                  self.external_status,self.external_item_status,self.external_hint),visible=is_external,enabled=is_external)
+        is_aion2=typ=='aion2'
+        _toggle((self.aion2_kind,self.aion2_skill,self.aion2_wait,self.aion2_hint),visible=is_aion2,enabled=is_aion2)
+        consumable=self.aion2_kind.currentData()=='consumable_cooldown'
+        cooling=self.aion2_kind.currentData() in ('cooldown','consumable_cooldown')
+        _toggle((self.aion2_cooldown_op,),visible=is_aion2 and cooling,enabled=is_aion2 and cooling)
+        _toggle((self.aion2_role,),visible=is_aion2 and cooling and not consumable,enabled=is_aion2 and cooling and not consumable)
+        compare=cooling and self.aion2_cooldown_op.currentData() not in ('ready','cooling')
+        _toggle((self.aion2_cooldown_value,),visible=is_aion2 and compare,enabled=is_aion2 and compare)
+        _toggle((self.aion2_wait,),visible=is_aion2 and not cooling,enabled=is_aion2 and not cooling)
+        if is_aion2:
+            from aion2_conditions import ALL_SKILLS,CHARGE_SKILLS
+            mode=self.aion2_kind.currentData()
+            if getattr(self,'_aion2_skill_mode',None)!=mode:
+                code=self.aion2_skill.currentData()
+                with QtCore.QSignalBlocker(self.aion2_skill):
+                    self.aion2_skill.clear()
+                    from aion2_consumables import CHOICES, group_item
+                    choices=tuple((k,v[0],'') for k,v in CHOICES.items()) if consumable else ALL_SKILLS if cooling else CHARGE_SKILLS
+                    for skill,label,_ in choices:self.aion2_skill.addItem(label,skill)
+                    self.aion2_skill.setCurrentIndex(max(0,self.aion2_skill.findData(group_item(code) if consumable else code)))
+                self._aion2_skill_mode=mode
+            self.form.labelForField(self.aion2_skill).setText('소모품 종류' if consumable else '스킬' if cooling else '충전 스킬')
+            self.aion2_hint.setText('모니터에서 전송을 체크한 스킬의 남은 쿨타임을 확인합니다. 사용 가능은 0초이며 충전이 하나라도 남으면 0초입니다.\n내 스킬이 퀵슬롯에 없으면 미채용으로 표시하며 쿨 조건은 모두 거짓입니다.\n전송 OFF·미감지·연결 끊김은 미확인으로 처리합니다. 모니터의 스킬 관리에서 내 통신·대상 통신을 켜세요.' if cooling else
+                '실제 사용 확인 후 설정 시간 미만이면 거짓, 시간이 지나면 참입니다.\n매크로를 멈추지 않으며 다음 IF는 계속 처리합니다. 연타 간격은 press 액션에서 설정하세요.\n연결·사용 정보 미확인은 실행을 건너뜁니다. 감시 시작 후 아직 사용을 감지하지 않았다면 참으로 시작합니다.')
+        if is_aion2 and consumable:
+            self.aion2_hint.setText('모니터의 소모품 퀵슬롯 단축키에서 외부 전송을 켜세요. 실제 사용 패킷 이후 예상 쿨타임을 계산합니다.\n생명의 비약은 30초, 바람의 비약·치유 물약은 10초이며 각 종류의 상급·일반은 쿨타임을 공유합니다. 사용 감지 전에는 0초로 시작합니다.\n슬롯 미등록은 조건 거짓, 연결·슬롯 미수신은 미확인으로 처리합니다.')
+        if is_aion2:
+            _toggle((self.external_source,self.external_port,self.external_status,self.external_item_status),visible=True,enabled=True)
         self._sync_external_value()
         self.group_hint.setVisible(is_group)
     def _load(self, cond: Condition):
         self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(cond.type)))
+        if cond.type == 'aion2':
+            self.aion2_kind.setCurrentIndex(self.aion2_kind.findData(cond.aion2_kind))
+            self.external_source.setEditText(cond.external_source)
+            self.external_port.setValue(cond.external_port)
+            from aion2_consumables import group_item
+            self.aion2_skill.setCurrentIndex(self.aion2_skill.findData(group_item(cond.aion2_item) if cond.aion2_kind=='consumable_cooldown' else cond.aion2_skill))
+            self.aion2_wait.setValue(cond.aion2_wait_seconds)
+            self.aion2_role.setCurrentIndex(self.aion2_role.findData(cond.aion2_role))
+            self.aion2_cooldown_op.setCurrentIndex(self.aion2_cooldown_op.findData(cond.aion2_cooldown_operator))
+            self.aion2_cooldown_value.setValue(cond.aion2_cooldown_seconds)
         if cond.type == 'external':
             self.external_source.setEditText(cond.external_source)
             self.external_port.setValue(cond.external_port)
@@ -2344,6 +2421,15 @@ class ConditionNodeDialog(QtWidgets.QDialog):
     def _get_direct_condition(self) -> Condition:
         typ = self._current_type()
         name = self.name_edit.text().strip() or None
+        if typ == 'aion2':
+            source=self.external_source.currentText().strip()
+            if not source or len(source)>200:raise ValueError('외부 프로그램 ID를 1~200자로 입력하세요.')
+            code=self.aion2_skill.currentData()
+            if code is None:raise ValueError('충전 스킬을 선택하세요.')
+            return Condition(type='aion2',name=name,external_source=source,external_port=self.external_port.value(),
+                             aion2_skill=code if self.aion2_kind.currentData()!='consumable_cooldown' else 18120000,aion2_item=code if self.aion2_kind.currentData()=='consumable_cooldown' else 530116010,aion2_wait_seconds=self.aion2_wait.value(),aion2_kind=self.aion2_kind.currentData(),
+                             aion2_role=self.aion2_role.currentData(),aion2_cooldown_operator=self.aion2_cooldown_op.currentData(),
+                             aion2_cooldown_seconds=self.aion2_cooldown_value.value())
         if typ == 'external':
             source=self.external_source.currentText().strip();key=self.external_key.currentText().strip()
             if not source or len(source)>200:raise ValueError('외부 프로그램 ID를 1~200자로 입력하세요.')
@@ -3334,6 +3420,18 @@ class ConditionDialog(QtWidgets.QDialog):
 
         self._refresh_condition_tree()
     def _validate_group_children(self, cond: Condition):
+        if cond.shared_ref:
+            from shared_ui import controller_for
+            controller = controller_for(self)
+            if controller is None:
+                raise ValueError("연결된 공용 설정을 확인할 수 없습니다. 공용 설정 창에서 연결을 확인하세요.")
+            # Linked nodes may only contain an empty snapshot of an AND/OR.
+            # Validate the current shared definition without replacing its link.
+            data = cond.to_dict()
+            data['enabled'] = True
+            expanded = Condition.from_dict(expand_condition(data, controller.entries), self._resolver)
+            self._validate_group_children(expanded)
+            return
         if cond.type in ("all", "any"):
             if not cond.conditions:
                 raise ValueError("AND/OR 그룹에는 최소 1개의 하위 조건이 필요합니다.")
@@ -6245,6 +6343,8 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
                 is_disabled_holder = True
             elif isinstance(data, dict) and data.get("marker") == "__elif__":
                 is_disabled_holder = current.checkState(5) != QtCore.Qt.CheckState.Checked or data.get("enabled") is False
+            elif data == "__else__":
+                is_disabled_holder = current.checkState(5) != QtCore.Qt.CheckState.Checked
             if is_disabled_holder:
                 ancestor_level = self._item_level(self.indexFromItem(current))
                 return max(0, level - ancestor_level)
@@ -6452,6 +6552,10 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
             rep = max(1, int(getattr(act, "repeat", 1) or 1))
             rep_txt = f" ({rep}회)" if rep > 1 else ""
             key_text = getattr(act, "key_raw", None) or act.key or ""
+            if act.type == 'press' and getattr(act, 'key_source', 'direct') in ('aion2','aion2_consumable'):
+                from aion2_conditions import skill_label
+                from aion2_consumables import item_label
+                key_text = 'AION2 전용 · ' + (item_label(act.aion2_item) if act.key_source=='aion2_consumable' else skill_label(act.aion2_skill))
             return key_text + rep_txt + suffix
         if act.type in ("mouse_click", "mouse_down", "mouse_up", "mouse_move"):
             rep = max(1, int(getattr(act, "repeat", 1) or 1))
@@ -6659,7 +6763,12 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
         else_header.setData(0, QtCore.Qt.ItemDataRole.UserRole, "__else__")
         else_header.setFlags(
             QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
+            | QtCore.Qt.ItemFlag.ItemIsUserCheckable
         )
+        data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        enabled = getattr(data, "else_enabled", True)
+        else_header.setText(2, getattr(data, "else_name", ""))
+        else_header.setCheckState(5, QtCore.Qt.CheckState.Checked if enabled else QtCore.Qt.CheckState.Unchecked)
         self._set_drop_enabled(else_header, True)
         item.addChild(else_header)
         return else_header
@@ -6984,6 +7093,8 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
             marker = child.data(0, QtCore.Qt.ItemDataRole.UserRole)
             if marker == "__else__":
                 act.has_else_branch = True
+                act.else_enabled = child.checkState(5) == QtCore.Qt.CheckState.Checked
+                act.else_name = self.original_name(child)
                 for j in range(child.childCount()):
                     child_action = self._action_from_item(child.child(j))
                     if child_action:
@@ -7234,6 +7345,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._existing_children: List[Action] = []
         self._existing_else: List[Action] = []
         self._existing_has_else = False
+        self._existing_else_enabled = True
+        self._existing_else_name = ""
         self._existing_elifs: List[tuple[Condition, List[Action]]] = []
         self._updating_action_key_builder = False
         layout = QtWidgets.QVBoxLayout(self)
@@ -7276,12 +7389,43 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.enabled_check = QtWidgets.QCheckBox("활성")
         self.enabled_check.setChecked(True)
         self.enabled_check.setChecked(getattr(action, "enabled", True) if action else True)
+        self._quick_toggle_id = getattr(action, 'quick_toggle_id', '') if action else ''
+        self.quick_toggle_check = QtWidgets.QCheckBox('빠른 토글에 표시')
+        self.quick_toggle_check.setChecked(bool(self._quick_toggle_id))
+        self.quick_toggle_name = QtWidgets.QLineEdit(getattr(action, 'quick_toggle_name', '') if action else '')
+        self.quick_toggle_name.setPlaceholderText('표시 이름 · 비워 두면 액션 이름 사용')
+        self.quick_toggle_name.setEnabled(self.quick_toggle_check.isChecked())
+        self.quick_toggle_check.toggled.connect(self.quick_toggle_name.setEnabled)
         self.once_check = QtWidgets.QCheckBox("첫 사이클만 실행")
         self.force_first_check = QtWidgets.QCheckBox("첫 입력 1회 무조건 실행(트리거 상태 무시)")
         self.force_first_check.setToolTip("트리거가 풀려도 첫 사이클을 한 번은 끝까지 실행")
         self.key_edit = MacroKeyLineEdit()
         self.key_edit.setPlaceholderText("예: r / space (조합은 아래 체크박스로 설정)")
         self.key_edit.setToolTip("문자 키는 직접 입력하고, CapsLock/Space/F키 같은 특수키는 키보드에서 바로 눌러 입력할 수 있습니다.")
+        self.key_source_combo = QtWidgets.QComboBox()
+        self.key_source_combo.addItem('직접 키 지정', 'direct')
+        self.key_source_combo.addItem('AION2 전용 → 스킬 단축키', 'aion2')
+        self.key_source_combo.addItem('AION2 전용 → 소모품 자동 선택', 'aion2_consumable')
+        self.aion2_key_skill = QtWidgets.QComboBox()
+        from aion2_conditions import ALL_SKILLS
+        for code, label, _ in ALL_SKILLS:
+            self.aion2_key_skill.addItem(label, code)
+        self.aion2_key_skill.setCurrentIndex(self.aion2_key_skill.findData(18120000))
+        self.aion2_key_item = QtWidgets.QComboBox()
+        from aion2_consumables import CHOICES, group_item
+        for code,(label,seconds) in CHOICES.items():self.aion2_key_item.addItem(f'{label} ({seconds}초)',code)
+        self.aion2_key_item.setCurrentIndex(self.aion2_key_item.findData(530116010))
+        self.aion2_key_source = QtWidgets.QLineEdit('leesangjin-monitor')
+        self.aion2_key_port = QtWidgets.QSpinBox()
+        self.aion2_key_port.setRange(1, 65535)
+        self.aion2_key_port.setValue(DEFAULT_PORT)
+        self.aion2_key_status = QtWidgets.QLabel()
+        self.aion2_key_status.setWordWrap(True)
+        self.aion2_key_hint = QtWidgets.QLabel(
+            '모니터의 퀵슬롯 단축키 외부 전송을 켜세요. 등록 스킬의 키를 자동으로 사용합니다.\n'
+            '여러 슬롯에 있으면 빠른 사용 번호가 앞선 칸을 사용합니다.\n'
+            '미수신·미등록·키 미설정·연결 끊김이면 이 액션만 건너뛰고 다음 액션을 계속합니다.')
+        self.aion2_key_hint.setWordWrap(True)
         self.action_mod_ctrl = QtWidgets.QCheckBox("Ctrl")
         self.action_mod_shift = QtWidgets.QCheckBox("Shift")
         self.action_mod_alt = QtWidgets.QCheckBox("Alt")
@@ -7501,6 +7645,10 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.repeat_edit.setPlaceholderText("예: 1 (1회), 5 (5회), 3~10 또는 3-10 (랜덤 반복)")
         self.repeat_edit.setToolTip("반복 횟수 입력: 1=1회, 5=5회, 3~10/3-10=3~10 사이 랜덤 반복. 프레스/다운/업/마우스 입력에 적용.")
         self.pause_keep_check = QtWidgets.QCheckBox("일시중지 중에도 눌림 유지")
+        self.skip_pressed_check = QtWidgets.QCheckBox("이미 눌린 키는 다시 누르지 않기")
+        self.release_pressed_check = QtWidgets.QCheckBox("눌린 키만 떼기")
+        self.skip_pressed_check.setToolTip("키별로 현재 눌림 상태를 확인하여 이미 눌린 키는 건너뜁니다.")
+        self.release_pressed_check.setToolTip("키별로 현재 눌림 상태를 확인하여 눌려 있지 않은 키는 건너뜁니다.")
         self.pause_keep_check.setToolTip("끄면 일시중지/대기 시 자동으로 뗐다가 재개 시 다시 눌러줍니다. 켜면 일시중지 중에도 계속 누른 상태로 유지합니다.")
         self.pixel_target_edit = QtWidgets.QLineEdit("momo")
         self.parallel_check = QtWidgets.QCheckBox("병렬 실행")
@@ -7569,9 +7717,17 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("이름(선택)", self.name_edit)
         form.addRow("설명", self.desc_edit)
         form.addRow(self.enabled_check)
+        form.addRow(self.quick_toggle_check, self.quick_toggle_name)
         form.addRow(self.once_check)
         form.addRow(self.force_first_check)
         form.addRow("키", self.key_edit)
+        form.addRow('입력 방식', self.key_source_combo)
+        form.addRow('AION2 전용 스킬', self.aion2_key_skill)
+        form.addRow('소모품 종류', self.aion2_key_item)
+        form.addRow('외부 프로그램 ID', self.aion2_key_source)
+        form.addRow('TCP 포트 (같은 PC)', self.aion2_key_port)
+        form.addRow('현재 연결 키', self.aion2_key_status)
+        form.addRow('', self.aion2_key_hint)
         form.addRow("조합 구성", self.action_key_builder_row)
         form.addRow("", self.key_warn_label)
         form.addRow("마우스 버튼", self.mouse_button_combo)
@@ -7584,6 +7740,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("휠 간격", self.wheel_interval_spin)
         form.addRow("반복 횟수", self.repeat_edit)
         form.addRow("일시중지 시 유지", self.pause_keep_check)
+        form.addRow("중복 누르기 방지", self.skip_pressed_check)
+        form.addRow("떼기 조건", self.release_pressed_check)
         form.addRow("Sleep 값", self.sleep_wrap)
         form.addRow("", self.sleep_hint_label)
         form.addRow("사운드 파일(선택)", self.sound_file_wrap)
@@ -7642,6 +7800,15 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.edit_cond_btn.clicked.connect(self._edit_condition)
         self.type_combo.currentIndexChanged.connect(self._sync_fields)
+        self.key_source_combo.currentIndexChanged.connect(self._sync_fields)
+        self.aion2_key_skill.currentIndexChanged.connect(self._refresh_aion2_key)
+        self.aion2_key_item.currentIndexChanged.connect(self._refresh_aion2_key)
+        self.aion2_key_source.textChanged.connect(self._refresh_aion2_key)
+        self.aion2_key_port.valueChanged.connect(self._refresh_aion2_key)
+        self.aion2_key_timer = QtCore.QTimer(self)
+        self.aion2_key_timer.setInterval(500)
+        self.aion2_key_timer.timeout.connect(self._refresh_aion2_key)
+        self.aion2_key_timer.start()
         self.group_mode_combo.currentIndexChanged.connect(self._sync_fields)
         self.parallel_check.toggled.connect(self._sync_fields)
         self.sound_wait_mode_combo.currentIndexChanged.connect(self._sync_fields)
@@ -8015,6 +8182,19 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.macro_target_combo.blockSignals(False)
     def _current_type(self) -> str:
         return self.type_combo.currentData()
+    def _refresh_aion2_key(self, *_):
+        if (not self.isVisible() or self._current_type() != 'press'
+                or self.key_source_combo.currentData() not in ('aion2','aion2_consumable')):
+            return
+        from aion2_actions import resolve_action_key
+        action = Action(type='press', key_source=self.key_source_combo.currentData(),
+                        aion2_item=self.aion2_key_item.currentData(),
+                        aion2_skill=self.aion2_key_skill.currentData(),
+                        external_source=self.aion2_key_source.text().strip(),
+                        external_port=self.aion2_key_port.value())
+        key, reason = resolve_action_key(action)
+        self.aion2_key_status.setText((key + ' · ' if key else '건너뜀 · ') + reason)
+        self.aion2_key_status.setStyleSheet('color:#22863a;' if key else 'color:#c62828;')
     def _sync_fields(self):
         typ = self._current_type()
         show_parallel = typ in ("group", "if")
@@ -8068,9 +8248,21 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_group_repeat = show_group and self.group_mode_combo.currentData() == "repeat_n"
         show_pause_keep = typ in ("down", "mouse_down")
         self._set_field_visible(self.key_edit, show_key)
-        self.key_edit.setEnabled(show_key)
-        self._set_field_visible(self.action_key_builder_row, show_key)
-        self.action_key_builder_row.setEnabled(show_key)
+        use_aion2 = typ == 'press' and self.key_source_combo.currentData() in ('aion2','aion2_consumable')
+        self.key_edit.setEnabled(show_key and not use_aion2)
+        self._set_field_visible(self.action_key_builder_row, show_key and not use_aion2)
+        self.action_key_builder_row.setEnabled(show_key and not use_aion2)
+        self._set_field_visible(self.key_source_combo, typ == 'press')
+        for widget in (self.aion2_key_skill, self.aion2_key_source, self.aion2_key_port,
+                       self.aion2_key_status, self.aion2_key_hint):
+            self._set_field_visible(widget, use_aion2)
+        self._set_field_visible(self.aion2_key_item, use_aion2 and self.key_source_combo.currentData()=='aion2_consumable')
+        self._set_field_visible(self.aion2_key_skill, use_aion2 and self.key_source_combo.currentData()=='aion2')
+        if use_aion2 and self.key_source_combo.currentData()=='aion2_consumable':
+            self.aion2_key_hint.setText('모니터의 소모품 퀵슬롯 단축키에서 외부 전송을 켜세요. 현재 슬롯의 키를 자동으로 사용합니다.\n슬롯에 있는 상급을 먼저 선택하고, 없거나 키가 미설정이면 일반을 사용합니다. 같은 등급은 앞쪽 슬롯을 선택합니다.\n사용 여부는 IF의 AION2 전용 → 소모품 쿨타임 조건으로 설정하세요.')
+        else:
+            self.aion2_key_hint.setText('모니터의 퀵슬롯 단축키 외부 전송을 켜세요. 등록 스킬의 키를 자동으로 사용합니다.\n여러 슬롯에 있으면 빠른 사용 번호가 앞선 칸을 사용합니다.\n미수신·미등록·키 미설정·연결 끊김이면 이 액션만 건너뛰고 다음 액션을 계속합니다.')
+        self._refresh_aion2_key()
         self._set_field_visible(self.mouse_button_combo, show_mouse_btn)
         self.mouse_button_combo.setEnabled(show_mouse_btn)
         self._set_field_visible(self.mouse_pos_mode_combo, show_mouse_move_mode)
@@ -8088,6 +8280,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.repeat_edit.setEnabled(show_repeat)
         self._set_field_visible(self.pause_keep_check, show_pause_keep)
         self.pause_keep_check.setEnabled(show_pause_keep)
+        self._set_field_visible(self.skip_pressed_check, typ in ('press', 'down'))
+        self._set_field_visible(self.release_pressed_check, typ == 'up')
         self._set_field_visible(self.sleep_wrap, show_sleep)
         self._set_field_visible(self.sleep_hint_label, show_sleep)
         for w in (self.sleep_edit, self.sleep_unit_combo):
@@ -8221,11 +8415,20 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.name_edit.setText(act.name or "")
         self.desc_edit.setText(getattr(act, "description", "") or "")
         self.enabled_check.setChecked(getattr(act, "enabled", True))
+        self._quick_toggle_id = getattr(act, 'quick_toggle_id', '')
+        self.quick_toggle_check.setChecked(bool(self._quick_toggle_id))
+        self.quick_toggle_name.setText(getattr(act, 'quick_toggle_name', ''))
         self.once_check.setChecked(getattr(act, "once_per_macro", False))
         self.force_first_check.setChecked(getattr(act, "force_first_run", False))
         self.parallel_interval_spin.setValue(getattr(act, "parallel_interval_sec", 1.0))
         self.parallel_check.setChecked(getattr(act, "parallel_enabled", False))
         self.key_edit.setText(getattr(act, "key_raw", None) or act.key or "")
+        self.key_source_combo.setCurrentIndex(max(0, self.key_source_combo.findData(act.key_source)))
+        self.aion2_key_skill.setCurrentIndex(self.aion2_key_skill.findData(act.aion2_skill))
+        from aion2_consumables import group_item
+        self.aion2_key_item.setCurrentIndex(self.aion2_key_item.findData(group_item(act.aion2_item)))
+        self.aion2_key_source.setText(act.external_source)
+        self.aion2_key_port.setValue(act.external_port)
         if getattr(act, "repeat_raw", None):
             repeat_raw_txt = str(act.repeat_raw).strip()
             if "~" not in repeat_raw_txt and "-" in repeat_raw_txt:
@@ -8351,6 +8554,8 @@ class ActionEditDialog(QtWidgets.QDialog):
             )
             _set_combo_data(self.timer_unit_combo, getattr(act, "timer_unit", "sec"), fallback="sec")
         self.delay_override_check.setChecked(getattr(act, "key_delay_override_enabled", False))
+        self.skip_pressed_check.setChecked(getattr(act, 'skip_if_pressed', False))
+        self.release_pressed_check.setChecked(getattr(act, 'release_only_pressed', False))
         override_cfg = getattr(act, "key_delay_override", None)
         if isinstance(override_cfg, KeyDelayConfig):
             press_txt = _delay_text_from_config(override_cfg, press=True)
@@ -8361,6 +8566,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._existing_children = copy.deepcopy(getattr(act, "actions", []))
         self._existing_else = copy.deepcopy(getattr(act, "else_actions", []))
         self._existing_has_else = bool(getattr(act, "has_else_branch", False) or self._existing_else)
+        self._existing_else_enabled = getattr(act, "else_enabled", True)
+        self._existing_else_name = getattr(act, "else_name", "")
         self._sync_fields()
         self._update_trigger_warning()
     def _update_trigger_warning(self):
@@ -8369,7 +8576,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         typ = self._current_type()
         act_key: str | None = None
         if typ in ("press", "down", "up"):
-            act_key = (self.key_edit.text() or "").strip().lower()
+            if typ != 'press' or self.key_source_combo.currentData() not in ('aion2','aion2_consumable'):
+                act_key = (self.key_edit.text() or "").strip().lower()
         elif typ in ("mouse_click", "mouse_down", "mouse_up", "mouse_move"):
             act_key = (self.mouse_button_combo.currentData() or "").strip().lower()
         warn = ""
@@ -8400,6 +8608,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         typ_for_build = "if" if is_elif else typ
         act = Action(
             type=typ_for_build,
+            quick_toggle_id=(self._quick_toggle_id or uuid.uuid4().hex) if self.quick_toggle_check.isChecked() else '',
+            quick_toggle_name=self.quick_toggle_name.text().strip(),
             name=name,
             description=description,
             enabled=enabled,
@@ -8411,18 +8621,31 @@ class ActionEditDialog(QtWidgets.QDialog):
         act.actions = copy.deepcopy(self._existing_children)
         act.else_actions = copy.deepcopy(self._existing_else)
         act.has_else_branch = bool(self._existing_has_else or act.else_actions)
+        act.else_enabled = self._existing_else_enabled
+        act.else_name = self._existing_else_name
         act.elif_blocks = copy.deepcopy(self._existing_elifs) if typ_for_build == "if" else []
         if typ in ("press", "down", "up"):
             key = self.key_edit.text().strip()
-            if not key:
+            use_aion2 = typ == 'press' and self.key_source_combo.currentData() in ('aion2','aion2_consumable')
+            if not key and not use_aion2:
                 raise ValueError("키를 입력하세요.")
-            act.key = key
-            act.key_raw = key
+            act.key = None if use_aion2 else key
+            act.key_raw = None if use_aion2 else key
+            if use_aion2:
+                act.key_source = self.key_source_combo.currentData()
+                act.aion2_item = self.aion2_key_item.currentData()
+                act.aion2_skill = self.aion2_key_skill.currentData()
+                act.external_source = self.aion2_key_source.text().strip()
+                act.external_port = self.aion2_key_port.value()
+                from aion2_actions import validate_settings
+                validate_settings(vars(act))
             repeat_val, repeat_range, repeat_raw = self._parse_repeat_input()
             act.repeat = repeat_val
             act.repeat_range = repeat_range
             act.repeat_raw = repeat_raw
             act.hold_keep_on_pause = self.pause_keep_check.isChecked() if typ == "down" else False
+            act.skip_if_pressed = self.skip_pressed_check.isChecked() if typ in ('press', 'down') else False
+            act.release_only_pressed = self.release_pressed_check.isChecked() if typ == 'up' else False
             act.key_delay_override_enabled = self.delay_override_check.isChecked()
             if act.key_delay_override_enabled:
                 press_val, press_rand, press_min, press_max = _parse_delay_text(self.override_press_edit.text())
@@ -10095,6 +10318,19 @@ class MacroDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "선택 없음", "편집할 액션을 선택하세요.")
             return
         act_data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if act_data == "__else__":
+            name, ok = QtWidgets.QInputDialog.getText(
+                self, "IF NOT 이름", "이름(선택)",
+                text=self.action_tree.original_name(item),
+            )
+            if ok:
+                name = name.strip()
+                item.setData(2, QtCore.Qt.ItemDataRole.UserRole + 61, name)
+                owner_data = item.parent().data(0, QtCore.Qt.ItemDataRole.UserRole)
+                if isinstance(owner_data, Action):
+                    owner_data.else_name = name
+                self.action_tree.renumber()
+            return
         if isinstance(act_data, dict) and act_data.get("marker") == "__elif__":
             cond_src = act_data.get("condition") if isinstance(act_data.get("condition"), Condition) else Condition(
                 type="pixel", region=(0, 0, 1, 1), color=(255, 0, 0)
@@ -10507,6 +10743,14 @@ class MacroDialog(QtWidgets.QDialog):
         actions = self.main_action_tree.collect_actions() + self.parallel_action_tree.collect_actions()
         stop_enabled = self.stop_group.isChecked()
         stop_actions = self.stop_action_tree.collect_actions() if stop_enabled else []
+        # A copied action must have its own switch, even within the same macro.
+        seen_toggle_ids = set()
+        from action_controls import walk_actions
+        for action, _ in walk_actions(actions + stop_actions):
+            if action.quick_toggle_id:
+                if action.quick_toggle_id in seen_toggle_ids:
+                    action.quick_toggle_id = uuid.uuid4().hex
+                seen_toggle_ids.add(action.quick_toggle_id)
         Action.validate_parallel_actions(actions)
         Action.validate_parallel_actions(stop_actions, allow_parallel=False)
         cycle_val = self.cycle_spin.value()
@@ -12694,7 +12938,7 @@ class DebuggerDialog(QtWidgets.QDialog):
             info=detail.get('external') or {}
             connection='연결된 상태 · 상태 수신 중' if info.get('connected') else f"연결 실패 / 대기 중 · {info.get('connection_status',info.get('status',''))}"
             if info.get('unavailable'):
-                value=f"항목 대기: {info.get('status','')}"
+                value=f"미수신 → 거짓 처리: {info.get('status','')}"
             else:
                 actual=info.get('actual')
                 shown='참' if actual is True else '거짓' if actual is False else str(actual)
@@ -17231,6 +17475,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._keyboard_settings_dialog: KeyboardSettingsDialog | None = None
         self._variable_manager_dialog: VariableManagerDialog | None = None
         self._macro_status_popup: MacroStatusPopup | None = None
+        self._quick_toggle_window = None
         self._last_backend_state: dict | None = None
         pixel_state = self._state.get("pixel_test", {}) if isinstance(self._state, dict) else {}
         self._pixel_test_defaults = {
@@ -17313,11 +17558,49 @@ class MacroWindow(QtWidgets.QMainWindow):
         self.poll_timer.setInterval(100)
         self.poll_timer.timeout.connect(self._poll_engine)
         self.poll_timer.start()
+        if self._state.get('quick_toggle', {}).get('visible', False):
+            QtCore.QTimer.singleShot(0, self._open_quick_toggle)
         if bool(self._macro_status_popup_state.get("visible", False)):
             QtCore.QTimer.singleShot(0, self._restore_macro_status_popup)
         self._status_hint = "상단 ON/OFF=트리거 감지, 적용=현재 프로필 반영, 기능 메뉴=디버거/픽셀 테스트"
         self.statusBar().showMessage(self._status_hint)
         self._set_capture_status(self.screenshot_manager.is_running)
+    def _open_quick_toggle(self):
+        if self._quick_toggle_window is None:
+            self._quick_toggle_window = QuickToggleWindow(self)
+        self._quick_toggle_window.refresh()
+        self._quick_toggle_window.show()
+        self._quick_toggle_window.raise_()
+        self._quick_toggle_window.save_state()
+
+    def _set_quick_toggle(self, row, key, enabled):
+        macro = self._macro_from_row(row)
+        if macro is None:
+            return
+        found = False
+        for action, _ in macro_actions(macro):
+            if action.quick_toggle_id == key:
+                action.enabled = enabled
+                found = True
+        if not found:
+            return
+        if row < len(self.profile.macros):
+            for action, _ in macro_actions(self.profile.macros[row]):
+                if action.quick_toggle_id == key:
+                    action.enabled = enabled
+        self.engine.set_quick_toggle(row, key, enabled)
+        controller = getattr(self, '_shared_controller', None)
+        editor = getattr(controller, 'macro_editor', None)
+        if editor is not None and getattr(controller, 'macro_editor_row', -1) == row:
+            for tree in (editor.main_action_tree, editor.parallel_action_tree, editor.stop_action_tree):
+                for item in tree.items():
+                    action = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+                    if isinstance(action, Action) and action.quick_toggle_id == key:
+                        item.setCheckState(5, QtCore.Qt.CheckState.Checked if enabled else QtCore.Qt.CheckState.Unchecked)
+        self._mark_dirty()
+        if self._quick_toggle_window:
+            self._quick_toggle_window.refresh()
+
     def _show_apply_feedback(self, ok: bool):
         """적용 버튼에 짧은 색상 피드백 표시."""
         if not getattr(self, "_apply_flash_timer", None):
@@ -17387,6 +17670,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         for act in (new_action, load_action, save_action, save_as_action):
             file_menu.addAction(act)
         feature_menu = menu_bar.addMenu("기능(&G)")
+        quick_toggle_action = feature_menu.addAction('빠른 토글')
+        quick_toggle_action.triggered.connect(self._open_quick_toggle)
         status_popup_action = QtGui.QAction("매크로 상태 팝업", self)
         status_popup_action.triggered.connect(self._open_macro_status_popup)
         feature_menu.addAction(status_popup_action)
@@ -17396,6 +17681,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         debugger_action = QtGui.QAction("디버거", self)
         debugger_action.triggered.connect(self._open_debugger)
         feature_menu.addAction(debugger_action)
+        analysis_action = QtGui.QAction("실행 분석", self)
+        analysis_action.triggered.connect(self._open_execution_analysis)
+        feature_menu.addAction(analysis_action)
         pixel_test_action = QtGui.QAction("픽셀 테스트", self)
         pixel_test_action.triggered.connect(self._open_pixel_test_dialog)
         feature_menu.addAction(pixel_test_action)
@@ -17579,6 +17867,16 @@ class MacroWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         return self.debugger
+    def _open_execution_analysis(self):
+        dialog = getattr(self, '_execution_analysis_dialog', None)
+        if dialog is None:
+            dialog = ExecutionAnalysisDialog(self.engine.execution_analysis, self,
+                                            start_measurement=self.engine.start_execution_analysis)
+            self._execution_analysis_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
     def _open_debugger(self):
         dbg = self._ensure_debugger()
         dbg.show_and_raise()
@@ -19342,6 +19640,7 @@ class MacroWindow(QtWidgets.QMainWindow):
     def _sync_runtime_profile_from_macro_table(self):
         if self._loading_profile:
             return
+        previous_toggles = {a.quick_toggle_id for m in self.profile.macros for a, _ in macro_actions(m) if a.quick_toggle_id}
         macros = [copy.deepcopy(m) for m in self._collect_macros() if isinstance(m, Macro)]
         self.profile.macros = macros
         try:
@@ -19355,10 +19654,16 @@ class MacroWindow(QtWidgets.QMainWindow):
             runtime_profile = copy.deepcopy(self.profile)
             runtime_profile.macros = [copy.deepcopy(m) for m in macros]
         self.engine.update_profile(runtime_profile)
+        if any(a.quick_toggle_id and a.quick_toggle_id not in previous_toggles
+               for macro in macros for a, _ in macro_actions(macro)):
+            QtCore.QTimer.singleShot(0, self._open_quick_toggle)
         if hasattr(self, '_shared_controller'):
             self._shared_controller.mark_applied()
     def _run_macro_dialog(self, dlg: MacroDialog, *, row: int = -1) -> int:
         state = self._state.get("macro_editor", {}) if isinstance(self._state, dict) else {}
+        view_key = json.dumps([self.current_profile_path or '', row], ensure_ascii=False)
+        saved_views = dict(state.get('views', {}))
+        specific_view = saved_views.get(view_key)
         if isinstance(state, dict):
             size = state.get("size")
             if (
@@ -19369,6 +19674,10 @@ class MacroWindow(QtWidgets.QMainWindow):
                 dlg.resize(*size)
             if state.get("maximized"):
                 dlg.setWindowState(dlg.windowState() | QtCore.Qt.WindowState.WindowMaximized)
+        # Restore after showing so scroll ranges and tab layouts are established.
+        presentation = {**state, **(specific_view or {})}
+        QtCore.QTimer.singleShot(0, lambda: restore_editor_view(
+            dlg, presentation, restore_tree_views=specific_view is not None))
         self._shared_controller.macro_editor = dlg
         self._shared_controller.macro_editor_row = row
         try:
@@ -19376,11 +19685,15 @@ class MacroWindow(QtWidgets.QMainWindow):
         finally:
             self._shared_controller.macro_editor = None
             QtCore.QTimer.singleShot(0, lambda: self._shared_controller.refresh(True))
-            size = dlg.normalGeometry().size() if dlg.isMaximized() else dlg.size()
-            self._update_state("macro_editor", {
-                "size": [size.width(), size.height()],
-                "maximized": dlg.isMaximized(),
-            })
+            self._save_macro_editor_view(dlg, row)
+    def _save_macro_editor_view(self, dlg, row):
+        presentation = collect_editor_view(dlg)
+        saved_views = dict(self._state.get('macro_editor', {}).get('views', {}))
+        if row >= 0:
+            view_key = json.dumps([self.current_profile_path or '', row], ensure_ascii=False)
+            saved_views.pop(view_key, None)
+            saved_views[view_key] = presentation
+        self._update_state('macro_editor', {**presentation, 'views': dict(list(saved_views.items())[-100:])})
     def _add_macro(self):
         resolver = None
         try:
@@ -20781,6 +21094,17 @@ class MacroWindow(QtWidgets.QMainWindow):
             event.ignore()
             return
         # 최신 스크린샷 설정을 저장
+        controller = getattr(self, '_shared_controller', None)
+        editor = getattr(controller, 'macro_editor', None)
+        if editor is not None:
+            self._save_macro_editor_view(editor, getattr(controller, 'macro_editor_row', -1))
+        if controller is not None:
+            controller.prepare_app_close()
+        if self._quick_toggle_window:
+            self._quick_toggle_window.prepare_app_close()
+            self._quick_toggle_window.close()
+        if getattr(self, '_execution_analysis_dialog', None):
+            self._execution_analysis_dialog.close()
         self._persist_screenshot_state(_current_screenshot_state(self))
         self._stop_condition_debug_session(notify=False)
         self._stop_pixel_test_loop()

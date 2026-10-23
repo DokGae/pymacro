@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from PyQt6 import QtCore, QtGui, QtWidgets
 from engine import Action
+from action_controls import if_scope_label
 
 ROLE = QtCore.Qt.ItemDataRole.UserRole
 
@@ -30,6 +32,7 @@ class ActionWorkspaceMixin:
         self._scope_ids, self._ends, self._bands = {}, {}, {}
         self._focus_item = None
         self._focus_view = None
+        self._hide_disabled = False
         self._destination_items = []
         self._workspace_pending = False
         self._workspace_updating = False
@@ -54,7 +57,12 @@ class ActionWorkspaceMixin:
         self.setColumnWidth(1, 142)
         self.setColumnWidth(2, 310)
         self.header().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(5, 60)
+        self.header().setMinimumSectionSize(28)
+        self.setColumnWidth(5, 28)
+        self.headerItem().setText(5, '')
+        self.headerItem().setToolTip(5, '활성')
+        self.setColumnHidden(4, True)
+        self.header().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.setStyleSheet(self.styleSheet() +
             'QTreeWidget {border:1px solid #cbd5e2;background:white;color:#24364e;}'
             'QHeaderView::section {background:#f6f8fb;color:#4e5e74;border:0;'
@@ -92,7 +100,7 @@ class ActionWorkspaceMixin:
         if item is None:
             return '일반 액션'
         data = item.data(0, ROLE)
-        return f"#{self._scope_ids.get(id(item), '?')} {getattr(data, 'name', '') or '이름 없는 IF'}"
+        return if_scope_label(self._scope_ids.get(id(item), '?'), getattr(data, 'name', ''))
 
     def ends_for(self, index):
         return self._bands.get(id(self.itemFromIndex(index)), [])
@@ -122,18 +130,25 @@ class ActionWorkspaceMixin:
             self._bands = {}
             blocker = QtCore.QSignalBlocker(self)
             for item in items:
+                in_focus = (self._focus_item is None or item is self._focus_item
+                            or self._is_descendant(item, self._focus_item)
+                            or self._is_descendant(self._focus_item, item))
+                hidden = not in_focus or (self._hide_disabled and self._disabled_depth(item) is not None)
+                item.setHidden(hidden)
+                if hidden and item.isSelected():
+                    item.setSelected(False)
+                if hidden and item is self.currentItem():
+                    self.setCurrentItem(None)
                 data = item.data(0, ROLE)
                 if data == '__else__' or isinstance(data, dict) and data.get('marker') == '__elif__':
                     if item.data(2, ROLE + 61) is None:
                         item.setData(2, ROLE + 61, item.text(2))
                     item.setText(2, self.scope_name(item.parent()))
-                    item.setToolTip(2, '부모 IF: ' + self.scope_name(item.parent()))
                 elif self.is_if(item):
                     item.setText(2, self.scope_name(item))
-                if self._disabled_depth(item) is not None:
-                    item.setToolTip(5, '이 항목 또는 부모가 비활성이므로 실행하지 않습니다.')
-                else:
-                    item.setToolTip(5, '활성 상태')
+                description = item.text(4).strip()
+                for column in range(self.columnCount()):
+                    item.setToolTip(column, description)
             # Inner ends precede outer ends when they share the same last visible row.
             def last_visible(item):
                 last = item
@@ -190,6 +205,11 @@ class ActionWorkspaceMixin:
         enabled = item.checkState(5) == QtCore.Qt.CheckState.Checked
         if isinstance(data, Action):
             data.enabled = enabled
+        elif data == '__else__':
+            owner = item.parent()
+            owner_data = owner.data(0, ROLE) if owner else None
+            if isinstance(owner_data, Action):
+                owner_data.else_enabled = enabled
         elif isinstance(data, dict) and data.get('marker') == '__elif__':
             data['enabled'] = enabled
             if data.get('condition') is not None:
@@ -400,7 +420,7 @@ class ActionWorkspaceMixin:
             painter.setPen(QtGui.QColor('#c4c4c4' if disabled else '#8a652e' if data == '__else__' else '#577291'))
             painter.drawText(badge, QtCore.Qt.AlignmentFlag.AlignCenter, badge_text)
             text_rect.setLeft(badge.right()+8)
-            text = self.original_name(owner) or '이름 없는 IF'
+            text = self.original_name(item)
             font.setWeight(QtGui.QFont.Weight.DemiBold if self.is_if(item) else QtGui.QFont.Weight.Normal)
             painter.setFont(font)
             if self.is_if(item) and self._find_else_header(item):
@@ -548,6 +568,11 @@ class ActionWorkspaceMixin:
                 item.setSelected(True)
         self.verticalScrollBar().setValue(state['scroll'])
 
+    def toggle_hide_disabled(self, checked):
+        self._hide_disabled = checked
+        self.hide_disabled_button.setText('비활성 숨기기: ' + ('켜짐' if checked else '꺼짐'))
+        self.refresh_workspace()
+
     def toggle_focus(self):
         if self._focus_item:
             self._focus_item = None
@@ -596,12 +621,6 @@ class ActionWorkspaceMixin:
             event.accept()
             return
         if item:
-            if item.data(0, ROLE) == '__else__' and self.columnAt(int(event.position().x())) == 2:
-                owner = item.parent()
-                self.setCurrentItem(owner)
-                self.scrollToItem(owner, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
-                event.accept()
-                return
             if self.is_if(item) and self._find_else_header(item) and self.jump_rect(item).contains(event.position().toPoint()):
                 self.setCurrentItem(item)
                 self.jump_else()
@@ -887,6 +906,21 @@ class ActionWorkspaceMixin:
 
     def workspace_menu(self, point):
         menu = QtWidgets.QMenu(self)
+        item = self.itemAt(point)
+        action = item.data(0, ROLE) if item is not None else None
+        if isinstance(action, Action):
+            toggle = menu.addAction('빠른 토글에 표시')
+            toggle.setCheckable(True)
+            toggle.setChecked(bool(action.quick_toggle_id))
+            def register(checked):
+                if self.history:
+                    self.history.flush()
+                action.quick_toggle_id = (action.quick_toggle_id or uuid.uuid4().hex) if checked else ''
+                self.model().dataChanged.emit(self.indexFromItem(item), self.indexFromItem(item))
+                if self.history:
+                    self.history.flush()
+            toggle.triggered.connect(register)
+            menu.addSeparator()
         if self.history:
             undo = menu.addAction('실행 취소  Ctrl+Z', self.history.undo)
             undo.setEnabled(bool(self.history.position))
@@ -934,6 +968,11 @@ def build_tree_panel(tree):
         tree.refresh_workspace()
     density.toggled.connect(set_density)
     toolbar.addWidget(density)
+    tree.hide_disabled_button = QtWidgets.QPushButton('비활성 숨기기: 꺼짐')
+    tree.hide_disabled_button.setCheckable(True)
+    tree.hide_disabled_button.setToolTip('비활성 액션과 IF NOT·ELIF 분기 및 그 하위 항목을 숨깁니다.')
+    tree.hide_disabled_button.toggled.connect(tree.toggle_hide_disabled)
+    toolbar.addWidget(tree.hide_disabled_button)
     tree.focus_button = QtWidgets.QPushButton('이 IF만 보기')
     tree.focus_button.clicked.connect(tree.toggle_focus)
     toolbar.addWidget(tree.focus_button)

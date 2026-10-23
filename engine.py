@@ -4,6 +4,8 @@ from lib.shared_settings import expand_condition, SharedSettingError, has_shared
 
 
 import copy
+from execution_analysis import ExecutionRecorder, action_catalog, macro_signature
+from condition_evidence import condition_template, finish_condition_evidence
 import ctypes
 import io
 import math
@@ -47,7 +49,7 @@ from lib.processes import get_foreground_process, terminate_processes
 from lib.windows import focus_window, target_client_region
 from external_state import state_hub, DEFAULT_PORT, external_result, external_conditions_ready
 
-ConditionType = Literal["key", "pixel", "all", "any", "var", "timer", "schedule", "external"]
+ConditionType = Literal["key", "pixel", "all", "any", "var", "timer", "schedule", "external", "aion2"]
 KeyMode = Literal["press", "down", "up", "hold", "released"]
 ActionType = Literal[
     "press",
@@ -1304,6 +1306,13 @@ class Condition:
     external_key: str = ''
     external_operator: str = 'true'
     external_value: str = ''
+    aion2_skill: int = 18120000
+    aion2_item: int = 530116010
+    aion2_wait_seconds: float = 1.0
+    aion2_kind: str = 'use_wait'
+    aion2_role: str = 'own'
+    aion2_cooldown_operator: str = 'ready'
+    aion2_cooldown_seconds: float = 0.0
 
     @classmethod
     def _parse_region(cls, raw: Any, resolver: Optional[VariableResolver]) -> tuple[Region, Optional[str]]:
@@ -1469,6 +1478,13 @@ class Condition:
             enabled_val = bool(enabled_raw) if enabled_raw is not None else True
         cond = cls(
             type=ctype,
+            aion2_skill=int(data.get('aion2_skill',18120000)),
+            aion2_item=int(data.get('aion2_item',530116010)),
+            aion2_wait_seconds=float(data.get('aion2_wait_seconds',1.0)),
+            aion2_kind=str(data.get('aion2_kind','use_wait')),
+            aion2_role=str(data.get('aion2_role','own')),
+            aion2_cooldown_operator=str(data.get('aion2_cooldown_operator','ready')),
+            aion2_cooldown_seconds=float(data.get('aion2_cooldown_seconds',0)),
             external_host=str(data.get('external_host', '127.0.0.1')),
             external_port=int(data.get('external_port', DEFAULT_PORT)),
             external_source=str(data.get('external_source', 'leesangjin-monitor')),
@@ -1536,10 +1552,14 @@ class Condition:
         }
         if self.type in ("all", "any"):
             payload["conditions"] = [c.to_dict() for c in self.conditions]
-        if self.type == 'external':
+        if self.type in ('external','aion2'):
             payload.update(external_host=self.external_host, external_port=self.external_port,
                            external_source=self.external_source, external_key=self.external_key,
                            external_operator=self.external_operator, external_value=self.external_value)
+        if self.type == 'aion2':
+            payload.update(aion2_skill=self.aion2_skill,aion2_item=self.aion2_item,aion2_wait_seconds=self.aion2_wait_seconds)
+            payload.update(aion2_kind=self.aion2_kind,aion2_role=self.aion2_role,
+                           aion2_cooldown_operator=self.aion2_cooldown_operator,aion2_cooldown_seconds=self.aion2_cooldown_seconds)
         if self.on_true:
             payload["on_true"] = [c.to_dict() for c in self.on_true]
         if self.on_false:
@@ -1577,10 +1597,18 @@ class Action:
     name: Optional[str] = None
     description: Optional[str] = None
     enabled: bool = True
+    quick_toggle_id: str = ""
+    quick_toggle_name: str = ""
     once_per_macro: bool = False
     force_first_run: bool = False
     key: Optional[str] = None
     key_raw: Optional[str] = None
+    key_source: str = 'direct'
+    aion2_skill: int = 18120000
+    aion2_item: int = 530116010
+    external_host: str = '127.0.0.1'
+    external_port: int = DEFAULT_PORT
+    external_source: str = 'leesangjin-monitor'
     repeat: int = 1
     repeat_raw: Optional[str] = None
     repeat_range: Optional[tuple[int, int]] = None
@@ -1641,6 +1669,10 @@ class Action:
     key_delay_override_enabled: bool = False
     key_delay_override: Optional[KeyDelayConfig] = None
     has_else_branch: bool = False
+    else_enabled: bool = True
+    else_name: str = ""
+    skip_if_pressed: bool = False
+    release_only_pressed: bool = False
 
     @staticmethod
     def parse_sleep(raw: Any, *, default_unit: TimeUnit = "ms") -> tuple[int, Optional[tuple[int, int]]]:
@@ -1787,6 +1819,8 @@ class Action:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], resolver: Optional[VariableResolver] = None) -> "Action":
+        from aion2_actions import validate_settings
+        validate_settings(data)
         typ = data.get("type", "press")
         cond_data = data.get("condition")
         cond = Condition.from_dict(cond_data, resolver) if cond_data else None
@@ -1985,9 +2019,17 @@ class Action:
             description=data.get("description"),
             enabled=bool(data.get("enabled", True)),
             once_per_macro=bool(data.get("once_per_macro", False)),
+            quick_toggle_id=str(data.get("quick_toggle_id") or ""),
+            quick_toggle_name=str(data.get("quick_toggle_name") or ""),
             force_first_run=bool(data.get("force_first_run", False)),
             key=key_resolved,
             key_raw=str(key_raw) if key_raw is not None else None,
+            key_source=data.get('key_source', 'direct'),
+            aion2_skill=data.get('aion2_skill', 18120000),
+            aion2_item=data.get('aion2_item', 530116010),
+            external_host=data.get('external_host', '127.0.0.1'),
+            external_port=data.get('external_port', DEFAULT_PORT),
+            external_source=data.get('external_source', 'leesangjin-monitor'),
             repeat=repeat_val,
             repeat_range=repeat_range,
             repeat_raw=str(repeat_raw) if repeat_raw is not None else None,
@@ -2005,6 +2047,10 @@ class Action:
             actions=actions,
             else_actions=else_actions,
             has_else_branch=has_else_branch,
+            else_enabled=bool(data.get("else_enabled", True)),
+            else_name=str(data.get("else_name") or ""),
+            skip_if_pressed=bool(data.get("skip_if_pressed", False)),
+            release_only_pressed=bool(data.get("release_only_pressed", False)),
             label=data.get("label"),
             goto_label=data.get("goto_label"),
             macro_target=data.get("macro_target", data.get("macro_name")),
@@ -2057,8 +2103,16 @@ class Action:
             "description": self.description,
             "enabled": self.enabled,
             "once_per_macro": self.once_per_macro,
+            "quick_toggle_id": self.quick_toggle_id,
+            "quick_toggle_name": self.quick_toggle_name,
             "force_first_run": getattr(self, "force_first_run", False),
             "key": self.key_raw if self.key_raw is not None else self.key,
+            "key_source": self.key_source,
+            "aion2_skill": self.aion2_skill,
+            "aion2_item": self.aion2_item,
+            "external_host": self.external_host,
+            "external_port": self.external_port,
+            "external_source": self.external_source,
             "repeat": self.repeat,
             "repeat_raw": self.repeat_raw if self.repeat_raw is not None else None,
             "var_name": self.var_name,
@@ -2129,6 +2183,14 @@ class Action:
                 payload["elif_blocks"] = blocks
         if getattr(self, "has_else_branch", False):
             payload["has_else_branch"] = True
+        if not self.else_enabled:
+            payload["else_enabled"] = False
+        if self.else_name:
+            payload["else_name"] = self.else_name
+        if self.skip_if_pressed:
+            payload["skip_if_pressed"] = True
+        if self.release_only_pressed:
+            payload["release_only_pressed"] = True
         if self.else_actions:
             payload["else_actions"] = [a.to_dict() for a in self.else_actions]
         return payload
@@ -3150,6 +3212,10 @@ class MacroRunner:
         inherit_held_keys: Optional[Iterable[str]] = None,
         inherit_held_mouse: Optional[Iterable[str]] = None,
     ):
+        self._analysis_id = None
+        self._analysis_generation = -1
+        self._analysis_catalogs = set()
+        self._analysis_keys = {}
         self._root_macro = macro
         self._root_index = index
         self.macro = macro
@@ -3212,10 +3278,11 @@ class MacroRunner:
         Action.validate_parallel_actions(macro.stop_actions, allow_parallel=False)
         workers = []
         for position, action in enumerate(macro.actions):
-            if not action.enabled or not action.parallel_enabled:
+            if (not action.enabled and not action.quick_toggle_id) or not action.parallel_enabled:
                 continue
             worker = MacroRunner(macro, self.engine, index)
             worker._parallel_owner = self
+            worker._analysis_id = self._analysis_id
             worker._parallel_entry = action
             worker._vars = self._vars
             worker._vars_lock = self._vars_lock
@@ -3307,9 +3374,10 @@ class MacroRunner:
         return bool(self._thread and self._thread.is_alive()) or any(w.is_alive() for w in self._parallel_snapshot())
 
     class _Result:
-        def __init__(self, signal: str = "none", goto_label: Optional[str] = None, condition_hit: bool = False, repeat: bool = False):
+        def __init__(self, signal: str = "none", goto_label: Optional[str] = None, condition_hit: bool = False, repeat: bool = False, goto_path=None):
             self.signal = signal
             self.goto_label = goto_label
+            self.goto_path = goto_path
             self.condition_hit = condition_hit
             self.repeat = repeat
 
@@ -3397,7 +3465,71 @@ class MacroRunner:
         label = action.name or action.description or action.type
         return f"{idx}:{label}"
 
+    def _begin_analysis(self):
+        recorder = getattr(self.engine, 'execution_analysis', None)
+        if recorder is not None and recorder.enabled:
+            self._analysis_id = recorder.begin()
+            self._analysis_generation = recorder.generation
+            self._analysis_catalogs = set()
+            self._analysis_keys = {}
+            self._analysis_record('registered', [])
+
+    def _analysis_record(self, stage, idx_path, **extra):
+        recorder = getattr(self.engine, 'execution_analysis', None)
+        if recorder is None or not recorder.enabled:
+            return
+        with recorder._lock:
+            if not recorder.enabled:
+                return
+            if self._analysis_generation != recorder.generation:
+                self._analysis_catalogs = set()
+                self._analysis_keys = {}
+                self._analysis_generation = recorder.generation
+            self._analysis_id = recorder.generation
+            self._analysis_record_enabled(recorder, stage, idx_path, **extra)
+
+    def _analysis_record_enabled(self, recorder, stage, idx_path, **extra):
+        identity = (self.index, self._running_stop_actions)
+        if identity not in self._analysis_keys:
+            self._analysis_keys[identity] = f'{self.index}:{macro_signature(self.macro)}:{int(self._running_stop_actions)}'
+        key = self._analysis_keys[identity]
+        if key not in self._analysis_catalogs:
+            actions = self.macro.stop_actions if self._running_stop_actions else self.macro.actions
+            label = self._macro_label() + (' · 종료 액션' if self._running_stop_actions else '')
+            effective_enabled = None
+            if hasattr(self.engine, 'quick_action_enabled'):
+                effective_enabled = lambda action: self.engine.quick_action_enabled(self.index, action)
+            catalog = action_catalog(actions, enabled_override=effective_enabled)
+            if not recorder.register(self._analysis_id, key, label, catalog, slot=identity):
+                return
+            self._analysis_catalogs.add(key)
+        recorder.record(self._analysis_id, key, idx_path, stage, **extra)
+
+    def _condition_probe(self):
+        recorder = getattr(self.engine, 'execution_analysis', None)
+        if recorder is not None and recorder.enabled:
+            return {}, recorder.generation
+        return None, None
+
+    def _evaluate_if_condition(self, cond, path, idx_path, pixel_cache, evidence, generation):
+        options = dict(key_states=self._cond_key_states, resolver=self._resolver,
+                       macro_ctx=self._macro_context(), path=path, vars_ctx=self._vars,
+                       pixel_cache=pixel_cache)
+        if evidence is not None:
+            options['evidence'] = evidence
+        try:
+            return self.engine._evaluate_condition(cond, **options)
+        except Exception as exc:
+            if evidence is not None:
+                if not evidence:
+                    evidence.update(condition_template(cond))
+                evidence.update(state='error', result=None, reason=str(exc)[:500])
+                self._analysis_record('action_end', idx_path, status='error',
+                                      condition_detail=evidence, evidence_generation=generation)
+            raise
+
     def _emit_action_event(self, stage: str, action: Action, path: List[str], idx_path: List[int], **extra):
+        self._analysis_record(stage, idx_path, **extra)
         detail: Dict[str, Any] = {}
         if action.type == "pixel_get":
             region = action.pixel_region
@@ -3554,6 +3686,7 @@ class MacroRunner:
         self._current_cycle = self._start_cycle
         self._terminal_status = "running"
         name = f"Macro-{self.macro.primary_trigger().key or self.macro.trigger_key}"
+        self._begin_analysis()
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._thread.start()
         limit = self.macro.cycle_count
@@ -3760,7 +3893,7 @@ class MacroRunner:
                 continue
             act_path = base_path + [self._action_label(act, idx)]
             act_idx_path = base_idx_path + [base_offset + idx]
-            if not getattr(act, "enabled", True):
+            if not (self.engine.quick_action_enabled(self.index, act) if act.quick_toggle_id else act.enabled):
                 self._emit_action_event("action_end", act, act_path, act_idx_path, status="disabled")
                 idx += 1
                 continue
@@ -3775,12 +3908,15 @@ class MacroRunner:
                 if self._parallel_owner is not None and res.goto_label:
                     local_labels = self._label_index(actions)
                     if res.goto_label in local_labels:
+                        self._analysis_record("jump", res.goto_path or act_idx_path, destination=base_idx_path + [base_offset + local_labels[res.goto_label]], label=res.goto_label)
                         idx = local_labels[res.goto_label]
                         continue
                 if root and res.goto_label and res.goto_label in labels:
+                    self._analysis_record("jump", res.goto_path or act_idx_path, destination=[labels[res.goto_label]], label=res.goto_label)
                     idx = labels[res.goto_label]
                     continue
                 if root:
+                    self._analysis_record("action_end", res.goto_path or act_idx_path, status="error")
                     self.engine._emit_log(f"라벨을 찾을 수 없습니다: {res.goto_label}")
                 return res
             if res.signal in ("return", "continue", "break"):
@@ -3876,11 +4012,11 @@ class MacroRunner:
                 condition_hit=condition_hit,
                 **extra,
             )
-            return self._Result(signal=signal, goto_label=goto_label, condition_hit=condition_hit, repeat=repeat)
+            return self._Result(signal=signal, goto_label=goto_label, condition_hit=condition_hit, repeat=repeat, goto_path=list(idx_path) if signal == "goto" else None)
 
         if self._stop_event.is_set() and not self._running_stop_actions:
             return self._Result(signal="break")
-        if not action.enabled:
+        if not (self.engine.quick_action_enabled(self.index, action) if action.quick_toggle_id else action.enabled):
             return end_result(status="disabled")
 
         # once_per_macro 액션은 첫 사이클 이후에는 바로 스킵 처리하고 로그를 남기지 않는다.
@@ -4181,7 +4317,8 @@ class MacroRunner:
                 return 1
 
         if action.type in ("press", "down", "up"):
-            if not action.key:
+            aion2 = getattr(action, 'key_source', 'direct') in ('aion2', 'aion2_consumable')
+            if not action.key and not aion2:
                 self.engine._emit_log(f"키 없음: {action.type} 스킵")
                 return end_result(status="error", error="missing_key")
             press_delay, gap_delay = self.engine._resolve_key_delays(action)
@@ -4189,7 +4326,36 @@ class MacroRunner:
             for i in range(repeat):
                 if self._stop_event.is_set() and not self._running_stop_actions:
                     return end_result(status="stopped", signal="break")
-                ok = self.engine._send_key(action.type, action.key, hold_ms=press_delay if action.type == "press" else 0)
+                key = action.key
+                if aion2:
+                    from aion2_actions import resolve_action_key
+                    key, reason = resolve_action_key(action)
+                    if key is None:
+                        # Recheck each repeated press. Never reuse the last key
+                        # after a disconnect, slot move, or transmit disable.
+                        errors = getattr(self, '_aion2_key_errors', None)
+                        if errors is None:errors = self._aion2_key_errors = {}
+                        if errors.get(id(action)) != reason:
+                            self.engine._emit_log('AION2 단축키 건너뜀: ' + reason)
+                            errors[id(action)] = reason
+                        return end_result(status='external_unavailable', reason=reason)
+                    getattr(self, '_aion2_key_errors', {}).pop(id(action), None)
+                guarded = ((action.type in ('press', 'down') and action.skip_if_pressed)
+                           or (action.type == 'up' and action.release_only_pressed))
+                if guarded:
+                    parts = MacroEngine._parse_combo_keys(self.engine, key)
+                    with self._held_lock:
+                        held = {part for combo in self._held_keys
+                                for part in MacroEngine._parse_combo_keys(self.engine, combo)}
+                    filtered = []
+                    for part in parts:
+                        pressed = part in held or bool(get_keystate(part, async_=True))
+                        if pressed == (action.type == 'up'):
+                            filtered.append(part)
+                    if not filtered:
+                        continue
+                    key = '+'.join(filtered)
+                ok = self.engine._send_key(action.type, key, hold_ms=press_delay if action.type == "press" else 0)
                 if not ok:
                     if self._stop_event.is_set() and not self._running_stop_actions:
                         return end_result(status="stopped", signal="break")
@@ -4197,13 +4363,22 @@ class MacroRunner:
                 if action.type == "down":
                     policy = bool(getattr(action, "hold_keep_on_pause", False))
                     with self._held_lock:
-                        self._held_keys.add(action.key)
-                        self._held_key_policy[action.key] = policy
+                        for part in MacroEngine._parse_combo_keys(self.engine, key) if guarded else [action.key]:
+                            self._held_keys.add(part)
+                            self._held_key_policy[part] = policy
                 elif action.type == "up":
                     with self._held_lock:
-                        self._held_keys.discard(action.key)
-                        self._held_key_policy.pop(action.key, None)
-                self.engine._emit_event({"type": "action", "action": action.type, "key": action.key})
+                        released = set(MacroEngine._parse_combo_keys(self.engine, key))
+                        for held_key in list(self._held_keys):
+                            remaining = [part for part in MacroEngine._parse_combo_keys(self.engine, held_key) if part not in released]
+                            policy = self._held_key_policy.pop(held_key, False)
+                            self._held_keys.discard(held_key)
+                            if remaining:
+                                remaining_key = '+'.join(remaining)
+                                self._held_keys.add(remaining_key)
+                                self._held_key_policy[remaining_key] = policy
+                self._analysis_record("input", idx_path)
+                self.engine._emit_event({"type": "action", "action": action.type, "key": key})
                 if gap_delay > 0 and i < repeat - 1:
                     self._sleep_with_condition_poll(gap_delay, allow_condition=False)
             if gap_delay > 0:
@@ -4272,6 +4447,7 @@ class MacroRunner:
                     with self._held_lock:
                         self._held_mouse.discard(button)
                         self._held_mouse_policy.pop(button, None)
+                self._analysis_record("input", idx_path)
                 self.engine._emit_event({"type": "action", "action": action.type, "button": event_target, "pos": run_pos})
                 if gap_delay > 0 and i < repeat - 1:
                     self._sleep_with_condition_poll(gap_delay, allow_condition=False)
@@ -4290,6 +4466,7 @@ class MacroRunner:
                 ok = self.engine._send_mouse_wheel(delta)
                 if not ok:
                     return end_result(status="error", error="send_failed")
+                self._analysis_record("input", idx_path)
                 self.engine._emit_event({"type": "action", "action": "mouse_wheel", "direction": direction, "delta": delta})
                 if interval_ms > 0 and i < amount - 1:
                     self._sleep_with_condition_poll(interval_ms, allow_condition=False)
@@ -4570,22 +4747,20 @@ class MacroRunner:
             cond = action.condition
             if not cond:
                 self.engine._emit_log("if 조건이 없습니다.")
-                return end_result(status="error", error="missing_condition")
+                evidence, evidence_generation = self._condition_probe()
+                if evidence is not None:
+                    evidence.update(condition_template(None))
+                    evidence.update(state='error', reason='IF에 검사할 조건이 지정되지 않았습니다.')
+                return end_result(status="error", error="missing_condition", condition_detail=evidence,
+                                  evidence_generation=evidence_generation)
             path_key = tuple(idx_path)
             confirm_fails = max(1, getattr(action, "confirm_fails", 1))
             pixel_cache: Dict[Tuple[int, int, int, int], Any] = {}
-            if not external_conditions_ready(cond, pixel_cache):
-                self._if_false_streaks[path_key] = 0
-                return end_result(status='external_unavailable')
-            cond_true = self.engine._evaluate_condition(
-                cond,
-                key_states=self._cond_key_states,
-                resolver=self._resolver,
-                macro_ctx=self._macro_context(),
-                path=path + ["if"],
-                vars_ctx=self._vars,
-                pixel_cache=pixel_cache,
-            )
+            evidence, evidence_generation = self._condition_probe()
+            cond_true = self._evaluate_if_condition(cond, path + ['if'], idx_path, pixel_cache,
+                                                   evidence, evidence_generation)
+            self._analysis_record("condition", idx_path, value=bool(cond_true),
+                                  condition_detail=evidence, evidence_generation=evidence_generation)
             if cond_true:
                 self._if_false_streaks[path_key] = 0
                 res = self._run_actions(action.actions, labels, path=path + ["if_true"], idx_path=idx_path)
@@ -4599,18 +4774,13 @@ class MacroRunner:
                 if getattr(elif_cond, "enabled", True) is False:
                     elif_offset += len(elif_actions or [])
                     continue
-                if not external_conditions_ready(elif_cond, pixel_cache):
-                    self._if_false_streaks[path_key] = 0
-                    return end_result(status='external_unavailable')
-                if self.engine._evaluate_condition(
-                    elif_cond,
-                    key_states=self._cond_key_states,
-                    resolver=self._resolver,
-                    macro_ctx=self._macro_context(),
-                    path=path + [f"elif[{idx}]"],
-                    vars_ctx=self._vars,
-                    pixel_cache=pixel_cache,
-                ):
+                evidence, evidence_generation = self._condition_probe()
+                branch_path = list(idx_path) + [f'elif{idx}']
+                elif_true = self._evaluate_if_condition(elif_cond, path + [f'elif[{idx}]'], branch_path,
+                                                       pixel_cache, evidence, evidence_generation)
+                self._analysis_record("condition", branch_path, value=bool(elif_true), elif_branch=True,
+                                      condition_detail=evidence, evidence_generation=evidence_generation)
+                if elif_true:
                     self._if_false_streaks[path_key] = 0
                     res = self._run_actions(elif_actions, labels, path=path + [f"elif[{idx}]"], idx_path=idx_path, base_offset=elif_offset)
                     res.condition_hit = True
@@ -4625,6 +4795,10 @@ class MacroRunner:
                 # 연속 실패 횟수 도달 전에는 기다렸다가 다시 평가
                 return self._Result(repeat=True)
             self._if_false_streaks[path_key] = 0
+            if not action.else_enabled:
+                self._analysis_record("action_end", list(idx_path) + ["else"], status="disabled")
+                return end_result(status="else_disabled", branch="else")
+            self._analysis_record("branch_enter", list(idx_path) + ["else"])
             res = self._run_actions(
                 action.else_actions,
                 labels,
@@ -4744,6 +4918,7 @@ class MacroEngine:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self.execution_analysis = ExecutionRecorder()
         self._events: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self._hotkey_states: Dict[str, bool] = {}
         self._cond_key_states: Dict[str, bool] = {}
@@ -5138,11 +5313,44 @@ class MacroEngine:
             return max(0.0, offset)
         return max(0.0, offset + (time.monotonic() - start))
 
+    def start_execution_analysis(self):
+        with self._lock:
+            self.execution_analysis.start()
+
+    def quick_action_enabled(self, index, action):
+        key = action.quick_toggle_id
+        if key:
+            return getattr(self, '_quick_toggle_states', {}).get((index, key), action.enabled)
+        return action.enabled
+
+    def set_quick_toggle(self, index, key, enabled):
+        from action_controls import macro_actions
+        with self._lock:
+            if not 0 <= index < len(self._profile.macros):
+                return
+            for action, _ in macro_actions(self._profile.macros[index]):
+                if action.quick_toggle_id == key:
+                    recorder = getattr(self, 'execution_analysis', None)
+                    if action.enabled != enabled and recorder is not None and recorder.enabled:
+                        recorder.stop('설정이 변경되어 측정을 멈췄습니다. 다시 시작하세요.')
+                    action.enabled = enabled
+            states = dict(getattr(self, '_quick_toggle_states', {}))
+            states[index, key] = enabled
+            self._quick_toggle_states = states
+
     def update_profile(self, profile: MacroProfile):
         state_hub.connect_profile(profile)
         app_ctx = self._get_app_context(force=True)
         with self._lock:
+            if self.execution_analysis.enabled and self._profile.to_dict() != profile.to_dict():
+                self.execution_analysis.stop('설정이 변경되어 측정을 멈췄습니다. 다시 시작하세요.')
             self._profile = copy.deepcopy(profile)
+            from action_controls import macro_actions
+            self._quick_toggle_states = {
+                (index, action.quick_toggle_id): action.enabled
+                for index, macro in enumerate(self._profile.macros)
+                for action, _ in macro_actions(macro) if action.quick_toggle_id
+            }
             swallow_keys = self._swallow_keys_locked(app_ctx)
             device_id = self._profile.keyboard_device_id
             hardware_id = self._profile.keyboard_hardware_id
@@ -6620,255 +6828,277 @@ class MacroEngine:
         path: Optional[List[str]] = None,
         vars_ctx: Optional[MacroVariables] = None,
         pixel_cache: Optional[Dict[Tuple[int, int, int, int], Any]] = None,
+        evidence: Optional[dict] = None,
     ) -> bool:
-        if cond is not None:
-            entries = getattr(getattr(self, "_profile", None), "shared_settings", {})
-            if has_shared(cond):
-                cond = Condition.from_dict(expand_condition(cond.to_dict(), entries), resolver)
-        base_result: bool
-        detail: Dict[str, Any] = {}
-        vars_state = vars_ctx if vars_ctx is not None else getattr(self, "_vars", None)
+        try:
+            if cond is not None:
+                entries = getattr(getattr(self, "_profile", None), "shared_settings", {})
+                if has_shared(cond):
+                    cond = Condition.from_dict(expand_condition(cond.to_dict(), entries), resolver)
+            if evidence is not None and not evidence:
+                evidence.update(condition_template(cond))
+            base_result: bool
+            detail: Dict[str, Any] = {}
+            vars_state = vars_ctx if vars_ctx is not None else getattr(self, "_vars", None)
 
-        if getattr(cond, "enabled", True) is False:
-            return False
-
-        if pixel_cache is None: pixel_cache = {}
-        if not self._external_conditions_ready(cond, pixel_cache): return False
-
-        if cond.type == "key":
-            if not cond.key:
+            if getattr(cond, "enabled", True) is False:
                 return False
-            pressed = self._key_pressed(cond.key)
-            mode = str(cond.key_mode or "hold").lower()
-            if key_states is None:
-                with self._cond_lock:
-                    prev = self._cond_key_states.get(cond.key, False)
-                    self._cond_key_states[cond.key] = pressed
-            else:
-                prev = key_states.get(cond.key, False)
-                key_states[cond.key] = pressed
-            if mode in ("press", "down"):
-                base_result = pressed and not prev
-            elif mode == "up":
-                base_result = (not pressed) and prev
-            elif mode == "released":
-                base_result = not pressed
-            else:
-                base_result = pressed
-            detail["key"] = {"key": cond.key, "mode": mode, "pressed": pressed, "prev": prev}
-        elif cond.type == 'external':
-            base_result, external_detail = self._external_result(cond, pixel_cache)
-            detail['external'] = external_detail
-        elif cond.type == "pixel":
-            region = cond.region
-            color = cond.color
-            if cond.region_raw is not None and resolver:
-                region = Condition._parse_region(cond.region_raw, resolver)[0]
-            if cond.color_raw is not None:
-                if resolver:
-                    if cond.color_raw.startswith(("/", "$", "@")):
-                        resolved = resolver.resolve(cond.color_raw, "color")
-                        try:
-                            color = Condition._parse_color(resolved, None)[0]
-                        except Exception:
-                            color = None
-                    else:
-                        color = Condition._parse_color(cond.color_raw, resolver)[0]
+
+            if pixel_cache is None: pixel_cache = {}
+
+            if cond.type == "key":
+                if not cond.key:
+                    if evidence is not None:
+                        evidence.update(state='unavailable', reason='검사할 키가 지정되지 않았습니다.')
+                    return False
+                pressed = self._key_pressed(cond.key)
+                mode = str(cond.key_mode or "hold").lower()
+                if key_states is None:
+                    with self._cond_lock:
+                        prev = self._cond_key_states.get(cond.key, False)
+                        self._cond_key_states[cond.key] = pressed
                 else:
-                    color = cond.color
-            pattern_name = getattr(cond, "pixel_pattern", None)
-            pattern_obj = resolve_pattern(self._pixel_patterns, pattern_name)
-            if region is None or (color is None and pattern_obj is None):
-                return False
-            region_tuple: Region = tuple(int(v) for v in region)
-            color_tuple: Optional[RGB] = tuple(int(c) for c in color) if color is not None else None
-            expect_exists = getattr(cond, "pixel_exists", True)
-            min_count = max(1, int(getattr(cond, "pixel_min_count", 1) or 1))
-            check = self._pixel_check(
-                region_tuple,
-                color_tuple,
-                cond.tolerance,
-                expect_exists=expect_exists,
-                min_count=min_count,
-                pixel_cache=pixel_cache,
-                pattern=pattern_obj,
-                window_target=cond.window_target,
-            )
-            base_result = bool(check.get("result"))
-            detail["pixel"] = {
-                "region": region_tuple,
-                "color": color_tuple,
-                "pattern": pattern_name,
-                "tolerance": cond.tolerance,
-                "expect_exists": expect_exists,
-                "min_count": min_count,
-                "match_count": check.get("match_count"),
-                "error": check.get("error"),
-                "unavailable": check.get("unavailable", False),
-                "window_target": cond.window_target,
-                "found": check.get("found"),
-                "coord": check.get("coord"),
-                "sample_coord": check.get("sample_coord"),
-                "sample_color": check.get("sample_color"),
-                "pattern_points": check.get("pattern_points"),
-                "pattern_size": check.get("pattern_size"),
-                "matched_coords": check.get("matched_coords"),
-            }
-        elif cond.type == "all":
-            active_children = [c for c in (cond.conditions or []) if getattr(c, "enabled", True)]
-            base_result = bool(active_children) and all(
-                self._evaluate_condition(
-                    c,
-                    key_states=key_states,
-                    resolver=resolver,
-                    macro_ctx=macro_ctx,
-                    path=(path or []) + [f"and[{idx}]"],
-                    vars_ctx=vars_state,
+                    prev = key_states.get(cond.key, False)
+                    key_states[cond.key] = pressed
+                if mode in ("press", "down"):
+                    base_result = pressed and not prev
+                elif mode == "up":
+                    base_result = (not pressed) and prev
+                elif mode == "released":
+                    base_result = not pressed
+                else:
+                    base_result = pressed
+                detail["key"] = {"key": cond.key, "mode": mode, "pressed": pressed, "prev": prev}
+            elif cond.type in ('external','aion2'):
+                base_result, external_detail = self._external_result(cond, pixel_cache)
+                if external_detail.get('unavailable'):base_result = False
+                detail['external'] = external_detail
+            elif cond.type == "pixel":
+                region = cond.region
+                color = cond.color
+                if cond.region_raw is not None and resolver:
+                    region = Condition._parse_region(cond.region_raw, resolver)[0]
+                if cond.color_raw is not None:
+                    if resolver:
+                        if cond.color_raw.startswith(("/", "$", "@")):
+                            resolved = resolver.resolve(cond.color_raw, "color")
+                            try:
+                                color = Condition._parse_color(resolved, None)[0]
+                            except Exception:
+                                color = None
+                        else:
+                            color = Condition._parse_color(cond.color_raw, resolver)[0]
+                    else:
+                        color = cond.color
+                pattern_name = getattr(cond, "pixel_pattern", None)
+                pattern_obj = resolve_pattern(self._pixel_patterns, pattern_name)
+                if region is None or (color is None and pattern_obj is None):
+                    if evidence is not None:
+                        evidence.update(state='unavailable', reason='영역 또는 목표 색상·패턴이 지정되지 않았습니다.')
+                    return False
+                region_tuple: Region = tuple(int(v) for v in region)
+                color_tuple: Optional[RGB] = tuple(int(c) for c in color) if color is not None else None
+                expect_exists = getattr(cond, "pixel_exists", True)
+                min_count = max(1, int(getattr(cond, "pixel_min_count", 1) or 1))
+                check = self._pixel_check(
+                    region_tuple,
+                    color_tuple,
+                    cond.tolerance,
+                    expect_exists=expect_exists,
+                    min_count=min_count,
                     pixel_cache=pixel_cache,
+                    pattern=pattern_obj,
+                    window_target=cond.window_target,
                 )
-                for idx, c in enumerate(active_children)
-            )
-            detail["group"] = {
-                "mode": "all",
-                "count": len(active_children),
-                "total": len(cond.conditions or []),
-            }
-        elif cond.type == "any":
-            active_children = [c for c in (cond.conditions or []) if getattr(c, "enabled", True)]
-            base_result = bool(active_children) and any(
-                self._evaluate_condition(
-                    c,
-                    key_states=key_states,
-                    resolver=resolver,
-                    macro_ctx=macro_ctx,
-                    path=(path or []) + [f"or[{idx}]"],
-                    vars_ctx=vars_state,
-                    pixel_cache=pixel_cache,
-                )
-                for idx, c in enumerate(active_children)
-            )
-            detail["group"] = {
-                "mode": "any",
-                "count": len(active_children),
-                "total": len(cond.conditions or []),
-            }
-        elif cond.type == "var":
-            name = (cond.var_name or "").strip()
-            if not name:
-                return False
-            op = str(getattr(cond, "var_operator", "eq") or "eq").lower()
-            actual_value = vars_state.var.get(name) if vars_state else None  # type: ignore[union-attr]
-            expected = ""
-            if op in ("eq", "ne"):
-                expected_raw = cond.var_value_raw if cond.var_value_raw is not None else cond.var_value
-                expected = str(expected_raw) if expected_raw is not None else ""
-                if resolver:
-                    try:
-                        expected = resolver.resolve(expected, "var")
-                    except Exception:
-                        pass
-                base_result = False if actual_value is None else str(actual_value) == expected
-                if op == "ne":
-                    base_result = not base_result
-            elif op == "even":
-                actual_int = _try_parse_var_integer(actual_value)
-                expected = "짝수"
-                base_result = actual_int is not None and actual_int % 2 == 0
-            elif op == "odd":
-                actual_int = _try_parse_var_integer(actual_value)
-                expected = "홀수"
-                base_result = actual_int is not None and actual_int % 2 != 0
-            else:
-                base_result = False
-            detail["var"] = {
-                "name": name,
-                "expected": expected,
-                "actual": actual_value,
-                "operator": op,
-            }
-        elif cond.type == "timer":
-            slot = cond.timer_index or 0
-            target_val = cond.timer_value
-            op = (cond.timer_operator or "ge").lower()
-            actual_val = round(self._get_timer_value(slot), 3) if slot else None
-            ops = {
-                "gt": lambda a, b: a > b,
-                "ge": lambda a, b: a >= b,
-                "lt": lambda a, b: a < b,
-                "le": lambda a, b: a <= b,
-                "eq": lambda a, b: a == b,
-                "ne": lambda a, b: a != b,
-            }
-            compare = ops.get(op, ops["ge"])
-            if actual_val is None or target_val is None or slot < 1 or slot > 20:
-                base_result = False
-            else:
-                base_result = compare(float(actual_val), float(target_val))
-            timer_unit = _normalize_time_unit(getattr(cond, "timer_unit", "sec"), default="sec")
-            detail["timer"] = {
-                "slot": slot,
-                "expected": target_val,
-                "expected_text": cond.timer_value_text() if hasattr(cond, "timer_value_text") else target_val,
-                "actual": actual_val,
-                "actual_text": _format_time_value_from_base(actual_val, from_unit="sec", to_unit=timer_unit, include_unit=True),
-                "operator": op,
-                "unit": timer_unit,
-            }
-        elif cond.type == "schedule":
-            base_result, schedule_detail = _evaluate_schedule_condition_result(cond)
-            detail.update(schedule_detail)
-        else:
-            base_result = False
-
-        final_result = base_result
-        if base_result and cond.on_true:
-            active_true_children = [c for c in cond.on_true if getattr(c, "enabled", True)]
-            if active_true_children:
-                final_result = any(
+                base_result = bool(check.get("result"))
+                detail["pixel"] = {
+                    "region": region_tuple,
+                    "color": color_tuple,
+                    "pattern": pattern_name,
+                    "tolerance": cond.tolerance,
+                    "expect_exists": expect_exists,
+                    "min_count": min_count,
+                    "match_count": check.get("match_count"),
+                    "error": check.get("error"),
+                    "unavailable": check.get("unavailable", False),
+                    "window_target": cond.window_target,
+                    "found": check.get("found"),
+                    "coord": check.get("coord"),
+                    "sample_coord": check.get("sample_coord"),
+                    "sample_color": check.get("sample_color"),
+                    "pattern_points": check.get("pattern_points"),
+                    "pattern_size": check.get("pattern_size"),
+                    "matched_coords": check.get("matched_coords"),
+                }
+            elif cond.type == "all":
+                active_children = [(idx, c) for idx, c in enumerate(cond.conditions or []) if getattr(c, "enabled", True)]
+                base_result = bool(active_children) and all(
                     self._evaluate_condition(
                         c,
                         key_states=key_states,
                         resolver=resolver,
                         macro_ctx=macro_ctx,
-                        path=(path or []) + ["on_true"],
+                        path=(path or []) + [f"and[{idx}]"],
                         vars_ctx=vars_state,
                         pixel_cache=pixel_cache,
+                        evidence=evidence['children'][idx] if evidence is not None else None,
                     )
-                    for c in active_true_children
+                    for idx, c in active_children
                 )
-        elif (not base_result) and cond.on_false:
-            active_false_children = [c for c in cond.on_false if getattr(c, "enabled", True)]
-            if active_false_children:
-                final_result = any(
+                detail["group"] = {
+                    "mode": "all",
+                    "count": len(active_children),
+                    "total": len(cond.conditions or []),
+                }
+            elif cond.type == "any":
+                active_children = [(idx, c) for idx, c in enumerate(cond.conditions or []) if getattr(c, "enabled", True)]
+                base_result = bool(active_children) and any(
                     self._evaluate_condition(
                         c,
                         key_states=key_states,
                         resolver=resolver,
                         macro_ctx=macro_ctx,
-                        path=(path or []) + ["on_false"],
+                        path=(path or []) + [f"or[{idx}]"],
                         vars_ctx=vars_state,
                         pixel_cache=pixel_cache,
+                        evidence=evidence['children'][idx] if evidence is not None else None,
                     )
-                    for c in active_false_children
+                    for idx, c in active_children
                 )
+                detail["group"] = {
+                    "mode": "any",
+                    "count": len(active_children),
+                    "total": len(cond.conditions or []),
+                }
+            elif cond.type == "var":
+                name = (cond.var_name or "").strip()
+                if not name:
+                    if evidence is not None:
+                        evidence.update(state='unavailable', reason='검사할 변수 이름이 지정되지 않았습니다.')
+                    return False
+                op = str(getattr(cond, "var_operator", "eq") or "eq").lower()
+                actual_value = vars_state.var.get(name) if vars_state else None  # type: ignore[union-attr]
+                expected = ""
+                if op in ("eq", "ne"):
+                    expected_raw = cond.var_value_raw if cond.var_value_raw is not None else cond.var_value
+                    expected = str(expected_raw) if expected_raw is not None else ""
+                    if resolver:
+                        try:
+                            expected = resolver.resolve(expected, "var")
+                        except Exception:
+                            pass
+                    base_result = False if actual_value is None else str(actual_value) == expected
+                    if op == "ne":
+                        base_result = not base_result
+                elif op == "even":
+                    actual_int = _try_parse_var_integer(actual_value)
+                    expected = "짝수"
+                    base_result = actual_int is not None and actual_int % 2 == 0
+                elif op == "odd":
+                    actual_int = _try_parse_var_integer(actual_value)
+                    expected = "홀수"
+                    base_result = actual_int is not None and actual_int % 2 != 0
+                else:
+                    base_result = False
+                detail["var"] = {
+                    "name": name,
+                    "expected": expected,
+                    "actual": actual_value,
+                    "operator": op,
+                }
+            elif cond.type == "timer":
+                slot = cond.timer_index or 0
+                target_val = cond.timer_value
+                op = (cond.timer_operator or "ge").lower()
+                actual_val = round(self._get_timer_value(slot), 3) if slot else None
+                ops = {
+                    "gt": lambda a, b: a > b,
+                    "ge": lambda a, b: a >= b,
+                    "lt": lambda a, b: a < b,
+                    "le": lambda a, b: a <= b,
+                    "eq": lambda a, b: a == b,
+                    "ne": lambda a, b: a != b,
+                }
+                compare = ops.get(op, ops["ge"])
+                if actual_val is None or target_val is None or slot < 1 or slot > 20:
+                    base_result = False
+                else:
+                    base_result = compare(float(actual_val), float(target_val))
+                timer_unit = _normalize_time_unit(getattr(cond, "timer_unit", "sec"), default="sec")
+                detail["timer"] = {
+                    "slot": slot,
+                    "expected": target_val,
+                    "expected_text": cond.timer_value_text() if hasattr(cond, "timer_value_text") else target_val,
+                    "actual": actual_val,
+                    "actual_text": _format_time_value_from_base(actual_val, from_unit="sec", to_unit=timer_unit, include_unit=True),
+                    "operator": op,
+                    "unit": timer_unit,
+                }
+            elif cond.type == "schedule":
+                base_result, schedule_detail = _evaluate_schedule_condition_result(cond)
+                detail.update(schedule_detail)
+            else:
+                base_result = False
 
-        if macro_ctx:
-            payload: Dict[str, Any] = {
-                "type": "condition_result",
-                "macro": macro_ctx,
-                "name": cond.name,
-                "condition_type": cond.type,
-                "enabled": getattr(cond, "enabled", True),
-                "result": final_result,
-                "base_result": base_result,
-                "path": path or [],
-                "path_text": " > ".join(path or []),
-                "timestamp": time.time(),
-            }
-            payload.update(detail)
-            self._emit_event(payload)
+            final_result = base_result
+            if base_result and cond.on_true:
+                active_true_children = [(idx, c) for idx, c in enumerate(cond.on_true) if getattr(c, "enabled", True)]
+                if active_true_children:
+                    final_result = any(
+                        self._evaluate_condition(
+                            c,
+                            key_states=key_states,
+                            resolver=resolver,
+                            macro_ctx=macro_ctx,
+                            path=(path or []) + ["on_true"],
+                            vars_ctx=vars_state,
+                            pixel_cache=pixel_cache,
+                            evidence=evidence['on_true'][idx] if evidence is not None else None,
+                        )
+                        for idx, c in active_true_children
+                    )
+            elif (not base_result) and cond.on_false:
+                active_false_children = [(idx, c) for idx, c in enumerate(cond.on_false) if getattr(c, "enabled", True)]
+                if active_false_children:
+                    final_result = any(
+                        self._evaluate_condition(
+                            c,
+                            key_states=key_states,
+                            resolver=resolver,
+                            macro_ctx=macro_ctx,
+                            path=(path or []) + ["on_false"],
+                            vars_ctx=vars_state,
+                            pixel_cache=pixel_cache,
+                            evidence=evidence['on_false'][idx] if evidence is not None else None,
+                        )
+                        for idx, c in active_false_children
+                    )
 
-        return final_result
+            if evidence is not None:
+                finish_condition_evidence(evidence, base_result, final_result, detail)
+            if macro_ctx:
+                payload: Dict[str, Any] = {
+                    "type": "condition_result",
+                    "macro": macro_ctx,
+                    "name": cond.name,
+                    "condition_type": cond.type,
+                    "enabled": getattr(cond, "enabled", True),
+                    "result": final_result,
+                    "base_result": base_result,
+                    "path": path or [],
+                    "path_text": " > ".join(path or []),
+                    "timestamp": time.time(),
+                }
+                payload.update(detail)
+                self._emit_event(payload)
+
+            return final_result
+        except Exception as exc:
+            if evidence is not None:
+                if not evidence:
+                    evidence.update(condition_template(cond))
+                evidence.update(state='error', result=None, reason=str(exc)[:500])
+            raise
 
     def debug_condition_tree(
         self,
@@ -6916,7 +7146,6 @@ class MacroEngine:
         cond_enabled = getattr(cond, "enabled", True)
         detail: Dict[str, Any] = {"enabled": cond_enabled}
         external_cache = _external_cache if _external_cache is not None else {}
-        external_ready = not cond_enabled or self._external_conditions_ready(cond, external_cache)
         children: List[Dict[str, Any]] = []
         true_branch: List[Dict[str, Any]] = []
         false_branch: List[Dict[str, Any]] = []
@@ -6973,10 +7202,10 @@ class MacroEngine:
                 else:
                     base_result = pressed
                 detail["key"] = {"key": cond.key, "mode": mode, "pressed": pressed, "prev": prev}
-            elif cond.type == 'external':
+            elif cond.type in ('external','aion2'):
                 base_result, external_detail = self._external_result(cond, external_cache)
                 detail['external'] = external_detail
-                if external_detail.get('unavailable'):base_result = None
+                if external_detail.get('unavailable'):base_result = False
             elif cond.type == "pixel":
                 region = cond.region
                 color = cond.color
@@ -7114,10 +7343,6 @@ class MacroEngine:
             detail["error"] = str(exc)
             base_result = False
 
-        if not external_ready:
-            base_result = None
-            detail['unavailable'] = True
-            detail['excluded_reason'] = 'external_unavailable'
         final_result: bool | None = base_result
         if base_result is True and cond.on_true:
             active_true: List[Dict[str, Any]] = []
