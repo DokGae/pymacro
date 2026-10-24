@@ -15,6 +15,8 @@ def macro_signature(macro):
                   'stop_actions': [action.to_dict() for action in macro.stop_actions]}
     def normalize(value):
         if isinstance(value, dict):
+            value.pop('transition_target_key', None)
+            value.pop('transition_target_label', None)
             # Quick switches affect live runner copies via engine overrides.
             # Their current enabled state is captured by the measurement catalog.
             if value.get('quick_toggle_id'):
@@ -80,6 +82,14 @@ def action_catalog(actions, *, enabled_override=None):
                     rows.append(dict(path=branch, parent=path, label=f'IF NOT · {label}', kind='else',
                                      number='↳', disabled=else_off, gate=path, parallel=False))
                     walk(action.else_actions, path, branch, else_off, child_offset, parallel=section)
+                child_offset += len(action.else_actions)
+                if action.transition_enabled or action.transition_actions:
+                    branch = path + ('transition',)
+                    transition_off = off or not action.transition_enabled
+                    target = action.transition_target_label or '전체 IF 결과'
+                    rows.append(dict(path=branch, parent=path, label=f'참→거짓 · {label} · {target}', kind='transition', target=target,
+                                     number='↳', disabled=transition_off, gate=path, parallel=False))
+                    walk(action.transition_actions, path, branch, transition_off, child_offset, parallel=section)
             elif action.type == 'group':
                 walk(action.actions, path, path, off, parallel=section)
 
@@ -89,7 +99,8 @@ def action_catalog(actions, *, enabled_override=None):
 
 def empty_counts():
     return dict(reached=0, true=0, false=0, inputs=0, jumps=0, errors=0,
-                unavailable=0, skipped=0, completed=0, last='', destination='', condition_detail=None)
+                unavailable=0, skipped=0, completed=0, last='', destination='', condition_detail=None,
+                transition_state='waiting', transition_target='', transition_reason='')
 
 
 class ExecutionRecorder:
@@ -162,6 +173,10 @@ class ExecutionRecorder:
                     and extra.get('evidence_generation') == self.generation else None)
             if stage == 'action_start':
                 counts['reached'] += 1
+            elif stage == 'transition_state':
+                counts['transition_state'] = extra['transition_state']
+                counts['transition_target'] = extra.get('target', '')
+                counts['transition_reason'] = extra.get('reason', '')
             elif stage == 'condition':
                 state = (counts['condition_detail'] or {}).get('state')
                 if state == 'unavailable':
@@ -205,6 +220,10 @@ def row_explanation(row, macro, by_path=None):
     counts = macro['counts'][row['path']]
     if row['disabled']:
         return '비활성 (부모 포함)'
+    if row['kind'] == 'transition':
+        from if_transition import TRANSITION_STATES
+        state = TRANSITION_STATES.get(counts['transition_state'], counts['transition_state'])
+        return state + (f" · {counts['transition_reason']}" if counts['transition_reason'] else '')
     if (counts['condition_detail'] or {}).get('state') == 'disabled':
         return '조건 비활성'
     if counts['skipped'] and not counts['reached']:
@@ -228,7 +247,7 @@ def row_explanation(row, macro, by_path=None):
         pc = macro['counts'][parent['path']]
         if parent['kind'] in ('if', 'elif') and row['parent'] == parent['path'] and pc['false'] and not pc['true']:
             # Direct true-branch children only; markers have separate branch rules.
-            if row['kind'] not in ('elif', 'else'):
+            if row['kind'] not in ('elif', 'else', 'transition'):
                 return f"부모 조건 참 0회: {parent['label']}"
         if pc['reached'] == 0:
             return f"부모 미도달: {parent['label']}"
@@ -264,6 +283,9 @@ def selection_evidence(row, macro):
     c = macro['counts'][selected]
     if row['disabled']:
         text = '이 항목 또는 부모가 비활성이라 실행 대상에서 제외됩니다.'
+    elif row['kind'] == 'transition':
+        target = c['transition_target'] or row.get('target', '전체 IF 결과')
+        text = f"감지 대상: {target}\n상태: {row_explanation(row, macro, rows)}"
     elif (c['condition_detail'] or {}).get('state') == 'disabled':
         text = '이 IF의 조건이 비활성이라 검사하지 않았습니다.'
     elif c['skipped'] and not c['reached']:

@@ -201,7 +201,7 @@ class StateHub:
                         or getattr(node, 'key_source', None) == 'aion2'):
                     try: self.client(node.external_host, node.external_port)
                     except ValueError: pass
-                for field in ('macros','actions','stop_actions','else_actions','elif_blocks',
+                for field in ('macros','actions','stop_actions','else_actions','transition_actions','elif_blocks',
                               'condition','conditions','on_true','on_false'):
                     value = getattr(node, field, None)
                     if value is not None: visit(value)

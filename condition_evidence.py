@@ -57,6 +57,8 @@ def condition_template(cond, inherited_reason=None):
 def finish_condition_evidence(node, base, result, detail):
     node.update(base_result=base, result=result, state='true' if result else 'false')
     typ = node['type']
+    node['unavailable'] = any(detail.get(kind, {}).get('unavailable') or detail.get(kind, {}).get('error')
+                              for kind in ('external', 'pixel'))
     comparison = None
     if typ == 'key':
         d = detail.get('key', {})

@@ -14,6 +14,7 @@ def walk_actions(actions, blocked=False):
             condition, children = block[:2]
             yield from walk_actions(children, child_blocked or not condition.enabled)
         yield from walk_actions(action.else_actions, child_blocked or not action.else_enabled)
+        yield from walk_actions(action.transition_actions, child_blocked or not action.transition_enabled)
 
 
 def macro_actions(macro):

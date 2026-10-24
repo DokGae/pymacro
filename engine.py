@@ -1625,6 +1625,14 @@ class Action:
     elif_blocks: List[tuple[Condition, List["Action"], str | None]] = field(default_factory=list)
     actions: List["Action"] = field(default_factory=list)
     else_actions: List["Action"] = field(default_factory=list)
+    transition_enabled: bool = False
+    transition_target: List[int] = field(default_factory=list)
+    transition_target_key: str = ''
+    transition_target_label: str = ''
+    transition_confirm_mode: str = 'immediate'
+    transition_confirm_count: int = 2
+    transition_confirm_ms: int = 50
+    transition_actions: List["Action"] = field(default_factory=list)
     label: Optional[str] = None
     goto_label: Optional[str] = None
     macro_target: Optional[str] = None
@@ -1812,7 +1820,7 @@ class Action:
                 Action.parse_parallel_interval(action.parallel_interval_sec)
                 if action.once_per_macro or action.force_first_run:
                     raise ValueError("병렬 항목에는 1회 실행·첫 입력 보장을 함께 설정할 수 없습니다.")
-            children = list(action.actions) + list(action.else_actions)
+            children = list(action.actions) + list(action.else_actions) + list(action.transition_actions)
             for _, branch, _ in _iter_elif_blocks(action.elif_blocks):
                 children.extend(branch)
             Action.validate_parallel_actions(children, allow_parallel=False)
@@ -1826,6 +1834,14 @@ class Action:
         cond = Condition.from_dict(cond_data, resolver) if cond_data else None
         actions = [Action.from_dict(s, resolver) for s in data.get("actions", data.get("steps", []))]
         else_actions = [Action.from_dict(s, resolver) for s in data.get("else_actions", [])]
+        transition_actions = [Action.from_dict(s, resolver) for s in data.get("transition_actions", [])]
+        transition_target = data.get("transition_target", [])
+        if not isinstance(transition_target, list) or any(type(i) is not int or i < 0 for i in transition_target):
+            raise ValueError('변화 감지 대상 경로가 올바르지 않습니다.')
+        from if_transition import confirmation_settings
+        transition_mode, transition_count, transition_ms = confirmation_settings(
+            data.get('transition_confirm_mode', 'immediate'), data.get('transition_confirm_count', 2),
+            data.get('transition_confirm_ms', 50))
         has_else_branch = bool(data.get("has_else_branch", bool(else_actions)))
         elif_blocks: List[tuple[Condition, List["Action"], str | None]] = []
         for blk in data.get("elif_blocks", []) or []:
@@ -2046,6 +2062,14 @@ class Action:
             elif_blocks=elif_blocks,
             actions=actions,
             else_actions=else_actions,
+            transition_enabled=bool(data.get('transition_enabled', False)) and typ == 'if',
+            transition_target=list(transition_target),
+            transition_target_key=str(data.get('transition_target_key') or ''),
+            transition_target_label=str(data.get('transition_target_label') or ''),
+            transition_confirm_mode=transition_mode,
+            transition_confirm_count=transition_count,
+            transition_confirm_ms=transition_ms,
+            transition_actions=transition_actions,
             has_else_branch=has_else_branch,
             else_enabled=bool(data.get("else_enabled", True)),
             else_name=str(data.get("else_name") or ""),
@@ -2193,6 +2217,15 @@ class Action:
             payload["release_only_pressed"] = True
         if self.else_actions:
             payload["else_actions"] = [a.to_dict() for a in self.else_actions]
+        if self.transition_enabled or self.transition_actions:
+            payload['transition_enabled'] = self.transition_enabled
+            payload['transition_target'] = list(self.transition_target)
+            payload['transition_target_key'] = self.transition_target_key
+            payload['transition_target_label'] = self.transition_target_label
+            payload['transition_confirm_mode'] = self.transition_confirm_mode
+            payload['transition_confirm_count'] = self.transition_confirm_count
+            payload['transition_confirm_ms'] = self.transition_confirm_ms
+            payload['transition_actions'] = [a.to_dict() for a in self.transition_actions]
         return payload
 
 
@@ -2816,9 +2849,21 @@ class MacroProfile:
         transform_meta = data.get("transform_matrix")
         if not isinstance(transform_meta, dict):
             transform_meta = None
+        macros = [Macro.from_dict(m, resolver) for m in data.get('macros', [])]
+        shared_settings = copy.deepcopy(data.get('shared_settings') or {})
+        from action_controls import macro_actions
+        from if_transition import bind_target
+        for macro in macros:
+            for action, _ in macro_actions(macro):
+                if action.transition_enabled or action.transition_actions:
+                    try:
+                        bind_target(action, shared_settings, resolver)
+                    except ValueError:
+                        # Keep invalid selections editable; the runner reports the error.
+                        pass
         return cls(
-            macros=[Macro.from_dict(m, resolver) for m in data.get("macros", [])],
-            shared_settings=copy.deepcopy(data.get("shared_settings") or {}),
+            macros=macros,
+            shared_settings=shared_settings,
             pixel_region=region,  # type: ignore[arg-type]
             pixel_region_raw=region_raw if isinstance(region_raw, str) else None,
             pixel_color=color,  # type: ignore[arg-type]
@@ -3242,6 +3287,10 @@ class MacroRunner:
         self._held_mouse_policy: Dict[str, bool] = {m: False for m in self._held_mouse}
         self._held_lock = threading.Lock()
         self._if_false_streaks: Dict[tuple[int, ...], int] = {}
+        self._if_transitions: Dict[tuple[int, ...], dict] = {}
+        self._transition_states: Dict[tuple[int, ...], tuple] = {}
+        self._polling_if_transitions = False
+        self._transition_poll_at = 0.0
         self._running_stop_actions = False
         self._stop_request_after_cycle = False
         self._stop_actions_run = False
@@ -3267,6 +3316,7 @@ class MacroRunner:
                 for _, eacts, _ in _iter_elif_blocks(getattr(act, "elif_blocks", [])):
                     children.extend(eacts)
                 children.extend(getattr(act, "else_actions", []))
+                children.extend(act.transition_actions)
             elif act.type == "group":
                 children.extend(act.actions)
             if children and self._has_force_first_action(children):
@@ -3439,6 +3489,7 @@ class MacroRunner:
                 for _, eacts, _ in _iter_elif_blocks(getattr(act, "elif_blocks", [])):
                     children.extend(eacts)
                 children.extend(getattr(act, "else_actions", []))
+                children.extend(act.transition_actions)
             elif act.type == "group":
                 children.extend(act.actions)
             if children:
@@ -3678,6 +3729,9 @@ class MacroRunner:
         self._seq_counter = 1
         self._build_seq_map(self._root_macro.actions, [])
         self._if_false_streaks = {}
+        self._if_transitions = {}
+        self._transition_states = {}
+        self._transition_poll_at = 0.0
         self._cond_key_states = {}
         root_stack_key = self._macro_stack_key_for(self._root_macro, self._root_index)
         self._macro_call_stack = (root_stack_key,)
@@ -3779,6 +3833,8 @@ class MacroRunner:
         prev_seq_map = self._seq_map
         prev_seq_counter = self._seq_counter
         prev_if_false_streaks = self._if_false_streaks
+        prev_if_transitions = self._if_transitions
+        prev_transition_states = self._transition_states
         prev_cond_key_states = self._cond_key_states
         prev_cycle = getattr(self, "_current_cycle", 0)
         prev_call_stack = getattr(self, "_macro_call_stack", ())
@@ -3788,6 +3844,8 @@ class MacroRunner:
         self._seq_counter = 1
         self._build_seq_map(actions, [])
         self._if_false_streaks = {}
+        self._if_transitions = {}
+        self._transition_states = {}
         self._cond_key_states = {}
         self._macro_call_stack = tuple(call_stack or (stack_key,))
         labels = self._label_index(actions)
@@ -3799,6 +3857,8 @@ class MacroRunner:
             self._seq_map = prev_seq_map
             self._seq_counter = prev_seq_counter
             self._if_false_streaks = prev_if_false_streaks
+            self._if_transitions = prev_if_transitions
+            self._transition_states = prev_transition_states
             self._cond_key_states = prev_cond_key_states
             self._current_cycle = prev_cycle
             self._macro_call_stack = prev_call_stack
@@ -3864,6 +3924,7 @@ class MacroRunner:
                 self._notify_macro_stop("finished")
         finally:
             self._stop_parallel_workers()
+            self._finish_if_transitions()
             self._release_held_keys()
 
     def _label_index(self, actions: List[Action]) -> Dict[str, int]:
@@ -3872,6 +3933,126 @@ class MacroRunner:
             if act.type == "label" and act.label:
                 labels[act.label] = idx
         return labels
+
+    def _transition_value(self, action, watch):
+        from if_transition import target_condition, reliable_result
+        entries = getattr(self.engine._profile, 'shared_settings', {})
+        cond = target_condition(action.condition, action.transition_target, entries, self._resolver,
+                                identity=action.transition_target_key)
+        evidence = {}
+        value = self.engine._evaluate_condition(
+            cond, key_states=watch['key_states'], resolver=self._resolver,
+            macro_ctx=self._macro_context(), path=watch['path'] + ['참→거짓 감지'],
+            vars_ctx=self._vars, pixel_cache={}, evidence=evidence)
+        return bool(value) if reliable_result(evidence) else None
+
+    def _set_transition_state(self, action, idx_path, state, reason=''):
+        from if_transition import TRANSITION_STATES
+        recorder = getattr(self.engine, 'execution_analysis', None)
+        generation = recorder.generation if recorder is not None and recorder.enabled else None
+        target = action.transition_target_label or '전체 IF 결과'
+        signature = (state, reason, target, generation)
+        key = tuple(idx_path)
+        if self._transition_states.get(key) == signature:
+            return False
+        self._transition_states[key] = signature
+        self._analysis_record('transition_state', list(idx_path) + ['transition'],
+            status=TRANSITION_STATES[state], transition_state=state, target=target, reason=reason)
+        self._emit_macro_event('if_transition_state', path=list(idx_path), state=state,
+                               target=target, reason=reason)
+        return True
+
+    def _finish_if_transitions(self):
+        for watch in self._if_transitions.values():
+            self._set_transition_state(watch['action'], watch['idx_path'], 'cancelled')
+        self._if_transitions.clear()
+
+    def _arm_if_transition(self, action, path, idx_path):
+        if not action.transition_enabled or self._running_stop_actions:
+            return
+        key = tuple(idx_path)
+        if key in self._if_transitions:
+            return
+        watch = dict(action=action, path=list(path), idx_path=list(idx_path),
+                     seen_true=not action.transition_target, key_states={}, false_count=0, false_since=None)
+        try:
+            from if_transition import bind_target, confirmation_settings
+            confirmation_settings(action.transition_confirm_mode, action.transition_confirm_count, action.transition_confirm_ms)
+            bind_target(action, getattr(self.engine._profile, 'shared_settings', {}), self._resolver)
+            if action.transition_target:
+                watch['seen_true'] = self._transition_value(action, watch) is True
+        except Exception as exc:
+            if self._set_transition_state(action, idx_path, 'target_error', str(exc)):
+                self.engine._emit_log(f'IF 변화 감지 시작 실패: {exc}')
+            return
+        self._if_transitions[key] = watch
+        self._set_transition_state(action, idx_path, 'watching' if watch['seen_true'] else 'waiting_true')
+        self._transition_poll_at = 0.0
+
+    def _poll_if_transitions(self, labels):
+        if self._polling_if_transitions or self._running_stop_actions or not self._if_transitions:
+            return None
+        now = time.perf_counter()
+        if now < self._transition_poll_at:
+            return None
+        self._transition_poll_at = now + max(0.001, self.engine.tick)
+        self._polling_if_transitions = True
+        try:
+            for key, watch in list(self._if_transitions.items()):
+                action = watch['action']
+                enabled = (self.engine.quick_action_enabled(self.index, action)
+                           if action.quick_toggle_id else action.enabled)
+                if not enabled or not action.transition_enabled:
+                    self._if_transitions.pop(key, None)
+                    self._set_transition_state(action, watch['idx_path'], 'disabled')
+                    continue
+                try:
+                    value = self._transition_value(action, watch)
+                except Exception as exc:
+                    self._if_transitions.pop(key, None)
+                    self._set_transition_state(action, watch['idx_path'], 'target_error', str(exc))
+                    self.engine._emit_log(f'IF 변화 감지 중단: {exc}')
+                    continue
+                if value is None:
+                    watch.update(false_count=0, false_since=None)
+                    self._set_transition_state(action, watch['idx_path'], 'unavailable')
+                    continue
+                if value:
+                    watch.update(seen_true=True, false_count=0, false_since=None)
+                    self._set_transition_state(action, watch['idx_path'], 'watching')
+                    continue
+                if not watch['seen_true']:
+                    self._set_transition_state(action, watch['idx_path'], 'waiting_true')
+                    continue
+                watch['false_count'] += 1
+                if watch['false_since'] is None:
+                    watch['false_since'] = now
+                mode = action.transition_confirm_mode
+                elapsed_ms = max(0, (now - watch['false_since']) * 1000)
+                confirmed = (mode == 'immediate' or
+                    mode == 'count' and watch['false_count'] >= action.transition_confirm_count or
+                    mode == 'duration' and elapsed_ms + 0.000001 >= action.transition_confirm_ms)
+                if not confirmed:
+                    reason = (f"연속 {watch['false_count']}/{action.transition_confirm_count}회" if mode == 'count'
+                              else f"거짓 유지 {elapsed_ms:.0f}/{action.transition_confirm_ms}ms")
+                    self._set_transition_state(action, watch['idx_path'], 'confirming', reason)
+                    continue
+                # Consume the edge before running actions, including nested IFs/gotos.
+                self._if_transitions.pop(key, None)
+                branch_path = watch['idx_path'] + ['transition']
+                self._analysis_record('branch_enter', branch_path)
+                self._set_transition_state(action, watch['idx_path'], 'executing')
+                offset = len(action.actions) + len(action.else_actions)
+                offset += sum(len(acts) for _, acts, _ in _iter_elif_blocks(action.elif_blocks))
+                self.engine._emit_log(f"IF 참→거짓: {action.name or '조건'}")
+                result = self._run_actions(action.transition_actions, labels,
+                    path=watch['path'] + ['참→거짓'], idx_path=watch['idx_path'], base_offset=offset)
+                self._analysis_record('action_end', branch_path, status='transition_fired')
+                self._set_transition_state(action, watch['idx_path'], 'completed')
+                return result
+        finally:
+            self._polling_if_transitions = False
+        return None
 
     def _run_actions(
         self,
@@ -3987,6 +4168,15 @@ class MacroRunner:
         return True
 
     def _exec_action(self, action: Action, labels: Dict[str, int], path: List[str], idx_path: List[int]) -> "MacroRunner._Result":
+        # All paths (including first_true/all groups) pass this boundary.
+        while True:
+            transition = self._poll_if_transitions(labels)
+            if self._stop_event.is_set() and not self._running_stop_actions:
+                return self._Result(signal='break')
+            if transition is None:
+                break
+            if transition.signal != 'none':
+                return transition
         # Variable read/modify/write must be atomic across main and parallel tasks.
         if action.type == "set_var":
             with self._vars_lock:
@@ -4494,6 +4684,10 @@ class MacroRunner:
             prev_seq_map = self._seq_map
             prev_seq_counter = self._seq_counter
             prev_if_false_streaks = self._if_false_streaks
+            prev_if_transitions = self._if_transitions
+            prev_transition_states = self._transition_states
+            prev_transition_polling = self._polling_if_transitions
+            prev_transition_poll_at = self._transition_poll_at
             prev_cond_key_states = self._cond_key_states
             prev_cycle = getattr(self, "_current_cycle", 0)
             prev_call_stack = getattr(self, "_macro_call_stack", ())
@@ -4507,6 +4701,10 @@ class MacroRunner:
             self._seq_counter = 1
             self._build_seq_map(target_macro.actions, [])
             self._if_false_streaks = {}
+            self._if_transitions = {}
+            self._transition_states = {}
+            self._polling_if_transitions = False
+            self._transition_poll_at = 0.0
             self._cond_key_states = {}
             self._current_cycle = 0
             self._macro_call_stack = prev_call_stack + (target_stack_key,)
@@ -4524,6 +4722,7 @@ class MacroRunner:
                 )
             finally:
                 self._stop_parallel_workers(nested_workers)
+                self._finish_if_transitions()
                 if self._stop_event.is_set() and not self._stop_actions_run and not self._running_stop_actions:
                     self._running_stop_actions = True
                     try:
@@ -4544,6 +4743,10 @@ class MacroRunner:
                 self._seq_map = prev_seq_map
                 self._seq_counter = prev_seq_counter
                 self._if_false_streaks = prev_if_false_streaks
+                self._if_transitions = prev_if_transitions
+                self._transition_states = prev_transition_states
+                self._polling_if_transitions = prev_transition_polling
+                self._transition_poll_at = min(prev_transition_poll_at, time.perf_counter())
                 self._cond_key_states = prev_cond_key_states
                 self._current_cycle = prev_cycle
                 self._macro_call_stack = prev_call_stack
@@ -4763,10 +4966,15 @@ class MacroRunner:
                                   condition_detail=evidence, evidence_generation=evidence_generation)
             if cond_true:
                 self._if_false_streaks[path_key] = 0
+                self._arm_if_transition(action, path, idx_path)
                 res = self._run_actions(action.actions, labels, path=path + ["if_true"], idx_path=idx_path)
                 res.condition_hit = True
                 self._emit_action_event("action_end", action, path, idx_path, status="branch_true", condition_hit=True, branch="if_true")
                 return res
+            if action.transition_enabled and path_key not in self._if_transitions and not self._running_stop_actions:
+                prior = self._transition_states.get(path_key)
+                if prior is None or prior[0] not in ('completed', 'target_error'):
+                    self._set_transition_state(action, idx_path, 'waiting')
             offset = len(action.actions or [])
             elif_offset = offset
             elif_blocks = list(_iter_elif_blocks(getattr(action, "elif_blocks", [])))

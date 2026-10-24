@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
 from action_workspace import ActionWorkspaceMixin, build_tree_panel, install_editor_history
+from condition_editor_ui import ConditionStructureTreeMixin
 from execution_analysis_ui import ExecutionAnalysisDialog
 from quick_toggle import QuickToggleWindow, macro_actions
 from editor_view_state import collect_editor_view, restore_editor_view
@@ -1144,6 +1145,8 @@ def _apply_affine_transform(
             transform_action(child, macro_ctx, path_parts + [f"{act.type}[{idx + 1}]"])
         for idx, child in enumerate(getattr(act, "else_actions", []) or []):
             transform_action(child, macro_ctx, path_parts + [f"{act.type}-else[{idx + 1}]"])
+        for idx, child in enumerate(act.transition_actions):
+            transform_action(child, macro_ctx, path_parts + [f"{act.type}-transition[{idx + 1}]"])
         for blk_idx, blk in enumerate(getattr(act, "elif_blocks", []) or []):
             cond, acts, _, _ = _split_elif_block(blk)
             if cond:
@@ -2601,7 +2604,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._reload_patterns()
-class ConditionTreeWidget(QtWidgets.QTreeWidget):
+class ConditionTreeWidget(ConditionStructureTreeMixin, QtWidgets.QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._drop_callback: Callable[[], None] | None = None
@@ -2695,6 +2698,7 @@ class ConditionTreeWidget(QtWidgets.QTreeWidget):
             result.append(it)
         return sorted(result, key=self._item_path_key)
 class ConditionDialog(QtWidgets.QDialog):
+    condition_changed = QtCore.pyqtSignal()
     _condition_clipboard: list[Condition] | None = None
     def __init__(
         self,
@@ -2749,7 +2753,7 @@ class ConditionDialog(QtWidgets.QDialog):
         layout.addLayout(name_form)
         viewer_row = QtWidgets.QHBoxLayout()
         self.viewer_btn = QtWidgets.QPushButton("이미지 뷰어/피커")
-        self.debug_test_btn = QtWidgets.QPushButton("디버그 테스트")
+        self.debug_test_btn = QtWidgets.QPushButton("테스트")
         self._viewer_status_hint = "F1 좌표 복사 | Ctrl+F1 범위 선택 | F2 색상 복사 | Ctrl+Enter 좌표로 이동"
         self.viewer_status = QtWidgets.QLabel(self._viewer_status_hint)
         self.viewer_status.setStyleSheet("color: gray;")
@@ -2762,7 +2766,7 @@ class ConditionDialog(QtWidgets.QDialog):
         cond_group = QtWidgets.QGroupBox("조건 트리 (최상위 OR, AND로 묶기)")
         cond_group_layout = QtWidgets.QVBoxLayout(cond_group)
         self.condition_tree = ConditionTreeWidget()
-        self.condition_tree.setHeaderLabels(["타입", "이름", "요약", "활성"])
+        self.condition_tree.setHeaderLabels(["조건 구조", "이름", "판정 기준", ""])
         self.condition_tree.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         # PyQt6 이름 변경: ExtendedSelection 이 올바른 상수
         self.condition_tree.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -2780,8 +2784,8 @@ class ConditionDialog(QtWidgets.QDialog):
         tree_btn_row = QtWidgets.QHBoxLayout()
         self.add_node_btn = QtWidgets.QPushButton("조건 추가")
         self.add_group_btn = QtWidgets.QPushButton("그룹 추가 (AND/OR)")
-        self.add_true_child_btn = QtWidgets.QPushButton("참일 때 하위")
-        self.add_false_child_btn = QtWidgets.QPushButton("거짓일 때 하위")
+        self.condition_up_btn = QtWidgets.QPushButton("↑ 위로")
+        self.condition_down_btn = QtWidgets.QPushButton("↓ 아래로")
         self.edit_node_btn = QtWidgets.QPushButton("선택 편집")
         self.copy_node_btn = QtWidgets.QPushButton("복사")
         self.paste_node_btn = QtWidgets.QPushButton("붙여넣기")
@@ -2789,15 +2793,22 @@ class ConditionDialog(QtWidgets.QDialog):
         self.delete_node_btn = QtWidgets.QPushButton("선택 삭제")
         tree_btn_row.addWidget(self.add_node_btn)
         tree_btn_row.addWidget(self.add_group_btn)
-        tree_btn_row.addWidget(self.add_true_child_btn)
-        tree_btn_row.addWidget(self.add_false_child_btn)
         tree_btn_row.addWidget(self.edit_node_btn)
-        tree_btn_row.addWidget(self.copy_node_btn)
-        tree_btn_row.addWidget(self.paste_node_btn)
-        tree_btn_row.addWidget(self.clone_node_btn)
         tree_btn_row.addWidget(self.delete_node_btn)
         tree_btn_row.addStretch()
         cond_group_layout.addLayout(tree_btn_row)
+        organize_row = QtWidgets.QHBoxLayout()
+        for button in (self.copy_node_btn, self.paste_node_btn, self.clone_node_btn):
+            organize_row.addWidget(button)
+        organize_row.addSpacing(16)
+        organize_row.addWidget(self.condition_up_btn)
+        organize_row.addWidget(self.condition_down_btn)
+        organize_row.addStretch()
+        cond_group_layout.addLayout(organize_row)
+        move_hint = QtWidgets.QLabel("드래그로 그룹·참·거짓 분기 이동 · 위로/아래로 버튼으로 같은 분기 내 순서 변경")
+        move_hint.setWordWrap(True)
+        move_hint.setStyleSheet("color: gray;")
+        cond_group_layout.addWidget(move_hint)
         layout.addWidget(cond_group)
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
@@ -2810,8 +2821,10 @@ class ConditionDialog(QtWidgets.QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.add_node_btn.clicked.connect(self._add_condition_node)
         self.add_group_btn.clicked.connect(self._add_group_condition)
-        self.add_true_child_btn.clicked.connect(lambda: self._add_child_condition("true"))
-        self.add_false_child_btn.clicked.connect(lambda: self._add_child_condition("false"))
+        self.condition_up_btn.clicked.connect(lambda: self._move_condition_nodes(-1))
+        self.condition_down_btn.clicked.connect(lambda: self._move_condition_nodes(1))
+        self.condition_up_btn.setToolTip("선택한 조건을 같은 그룹·분기 안에서 위로 이동합니다.")
+        self.condition_down_btn.setToolTip("선택한 조건을 같은 그룹·분기 안에서 아래로 이동합니다.")
         self.edit_node_btn.clicked.connect(self._edit_condition_node)
         self.copy_node_btn.clicked.connect(self._copy_condition_nodes)
         self.paste_node_btn.clicked.connect(self._paste_condition_nodes)
@@ -2825,6 +2838,8 @@ class ConditionDialog(QtWidgets.QDialog):
         else:
             self.root_condition = Condition(type="any", conditions=[])
             self._refresh_condition_tree()
+        from action_editor_ui import arrange_condition_editor
+        arrange_condition_editor(self, cond_group, tree_btn_row, organize_row)
         attach_condition_tree(self)
     def _pattern_names(self) -> list[str]:
         if callable(self._pattern_provider):
@@ -2836,6 +2851,8 @@ class ConditionDialog(QtWidgets.QDialog):
     def _load(self, cond: MacroCondition):
         self.cond_name_edit.setText(cond.name or "")
         self.root_condition = copy.deepcopy(cond.condition)
+        from lib.shared_settings import fingerprint
+        self._loaded_root_definition = fingerprint(self.root_condition.to_dict())
         self._refresh_condition_tree()
     def _append_condition_item(self, cond: Condition, parent_item=None):
         enabled_flag = getattr(cond, "enabled", True)
@@ -2881,6 +2898,14 @@ class ConditionDialog(QtWidgets.QDialog):
                 self._append_condition_item(child, false_header)
         return item
     def _refresh_condition_tree(self):
+        # Editing the contents of a linked group creates a local definition.
+        # Retaining its reference would replace those edits with the old shared group.
+        root = self.root_condition
+        if root is not None and root.shared_ref and root.type in ('all', 'any'):
+            from lib.shared_settings import fingerprint
+            loaded = getattr(self, '_loaded_root_definition', None)
+            if loaded is not None and fingerprint(root.to_dict()) != loaded:
+                root.shared_ref = None
         prev_block = self.condition_tree.blockSignals(True)
         try:
             self.condition_tree.clear()
@@ -2934,6 +2959,9 @@ class ConditionDialog(QtWidgets.QDialog):
                 walk(item.child(idx), is_disabled)
         for i in range(self.condition_tree.topLevelItemCount()):
             walk(self.condition_tree.topLevelItem(i), False)
+        from condition_editor_ui import refresh_condition_presentation
+        refresh_condition_presentation(self)
+        self.condition_changed.emit()
     def _on_item_changed(self, item: QtWidgets.QTreeWidgetItem, column: int):
         if column != 3:
             return
@@ -3012,6 +3040,49 @@ class ConditionDialog(QtWidgets.QDialog):
     def _selected_item(self) -> QtWidgets.QTreeWidgetItem | None:
         selected = self.condition_tree.selectedItems()
         return selected[0] if selected else None
+    def _move_condition_nodes(self, direction: int):
+        tree = self.condition_tree
+        selected = tree.selectedItems()
+        # Move selected siblings together; never move branch headers or descendants twice.
+        selected_ids = {id(item) for item in selected}
+        groups = {}
+        for item in selected:
+            if not isinstance(item.data(0, QtCore.Qt.ItemDataRole.UserRole), Condition):
+                continue
+            ancestor = item.parent()
+            while ancestor is not None and id(ancestor) not in selected_ids:
+                ancestor = ancestor.parent()
+            if ancestor is not None:
+                continue
+            parent = item.parent() or tree.invisibleRootItem()
+            groups.setdefault(id(parent), (parent, []))[1].append(item)
+        moved = []
+        for parent, items in groups.values():
+            identities = {id(item) for item in items}
+            for item in sorted(items, key=parent.indexOfChild, reverse=direction > 0):
+                index = parent.indexOfChild(item)
+                target = index + direction
+                if not 0 <= target < parent.childCount():
+                    continue
+                neighbor = parent.child(target)
+                if id(neighbor) in identities or not isinstance(neighbor.data(0, QtCore.Qt.ItemDataRole.UserRole), Condition):
+                    continue
+                parent.takeChild(index)
+                parent.insertChild(target, item)
+                moved.append(item.data(0, QtCore.Qt.ItemDataRole.UserRole))
+        if moved:
+            conditions = [item.data(0, QtCore.Qt.ItemDataRole.UserRole) for item in selected
+                          if isinstance(item.data(0, QtCore.Qt.ItemDataRole.UserRole), Condition)]
+            self._sync_condition_from_tree()
+            tree.clearSelection()
+            for condition in conditions:
+                item = self._find_item_for_condition(condition)
+                if item is not None:
+                    item.setSelected(True)
+            current = self._find_item_for_condition(moved[-1])
+            if current is not None:
+                tree.scrollToItem(current)
+
     def _selected_branch_marker(self) -> str | None:
         item = self._selected_item()
         if not item:
@@ -3487,7 +3558,7 @@ class ConditionDialog(QtWidgets.QDialog):
         stop_cb = self._start_condition_debug_fn(provider, on_stop=self._on_condition_debug_finished)
         if stop_cb:
             self._debug_stop_cb = stop_cb
-            self.debug_test_btn.setText("디버그 중지")
+            self.debug_test_btn.setText("중지")
             return True
         if not silent:
             QtWidgets.QMessageBox.information(self, "시작 실패", "디버그 테스트를 시작하지 못했습니다.")
@@ -3500,7 +3571,7 @@ class ConditionDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._debug_stop_cb = None
-        self.debug_test_btn.setText("디버그 테스트")
+        self.debug_test_btn.setText("테스트")
         self._start_condition_debug_session_internal(silent=True)
     def _toggle_condition_debug(self):
         if self._debug_stop_cb:
@@ -3512,7 +3583,7 @@ class ConditionDialog(QtWidgets.QDialog):
         self._start_condition_debug_session_internal()
     def _on_condition_debug_finished(self):
         self._debug_stop_cb = None
-        self.debug_test_btn.setText("디버그 테스트")
+        self.debug_test_btn.setText("테스트")
     def _refresh_viewer_status_label(self, last_dir: str | None = None):
         base_dir = last_dir or self._image_viewer_state.get("last_dir")
         text = f"최근 폴더: {base_dir}" if base_dir else self._viewer_status_hint
@@ -3568,7 +3639,7 @@ class ConditionDialog(QtWidgets.QDialog):
             except Exception:
                 pass
             self._debug_stop_cb = None
-            self.debug_test_btn.setText("디버그 테스트")
+            self.debug_test_btn.setText("테스트")
         if self._image_viewer and self._image_viewer.isVisible():
             try:
                 self._image_viewer.close()
@@ -6048,7 +6119,7 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
         if not item:
             return 0
         data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if data == "__else__" or (isinstance(data, dict) and data.get("marker") == "__elif__"):
+        if data in ("__else__", "__transition__") or (isinstance(data, dict) and data.get("marker") == "__elif__"):
             parent = item.parent()
             if parent:
                 return self._item_level(self.indexFromItem(parent))
@@ -6065,7 +6136,7 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
     def _is_block_marker(self, data) -> bool:
         if isinstance(data, Action) and data.type in ("if", "group"):
             return True
-        if data == "__else__":
+        if data in ("__else__", "__transition__"):
             return True
         if isinstance(data, dict) and data.get("marker") == "__elif__":
             return True
@@ -6073,7 +6144,7 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
     def _can_have_children_data(self, data) -> bool:
         if isinstance(data, Action) and data.type in ("if", "group"):
             return True
-        if data == "__else__":
+        if data in ("__else__", "__transition__"):
             return True
         if isinstance(data, dict) and data.get("marker") == "__elif__":
             return True
@@ -6350,7 +6421,7 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
                 is_disabled_holder = True
             elif isinstance(data, dict) and data.get("marker") == "__elif__":
                 is_disabled_holder = current.checkState(5) != QtCore.Qt.CheckState.Checked or data.get("enabled") is False
-            elif data == "__else__":
+            elif data in ("__else__", "__transition__"):
                 is_disabled_holder = current.checkState(5) != QtCore.Qt.CheckState.Checked
             if is_disabled_holder:
                 ancestor_level = self._item_level(self.indexFromItem(current))
@@ -6736,6 +6807,10 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
                 else_header = self._ensure_else_header(item, create_if_missing=True)
                 for child in act.else_actions:
                     self._append_action_item(child, else_header)
+            if act.transition_enabled or act.transition_actions:
+                header = self._ensure_transition_header(item)
+                for child in act.transition_actions:
+                    self._append_action_item(child, header)
         elif act.type == "group":
             for child in act.actions:
                 self._append_action_item(child, item)
@@ -6753,7 +6828,7 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
             return None
         for i in range(parent_item.childCount()):
             marker = parent_item.child(i).data(0, QtCore.Qt.ItemDataRole.UserRole)
-            if marker == "__else__" or (isinstance(marker, dict) and marker.get("marker") == "__elif__"):
+            if marker in ("__else__", "__transition__") or (isinstance(marker, dict) and marker.get("marker") == "__elif__"):
                 return i
         return None
     def _find_else_header(self, item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QTreeWidgetItem | None:
@@ -6762,6 +6837,23 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
             if child.data(0, QtCore.Qt.ItemDataRole.UserRole) == "__else__":
                 return child
         return None
+    def _ensure_transition_header(self, item):
+        for i in range(item.childCount()):
+            if item.child(i).data(0, QtCore.Qt.ItemDataRole.UserRole) == '__transition__':
+                return item.child(i)
+        action = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        target = action.transition_target_label or ('전체 IF' if not action.transition_target else '조건 ' + '.'.join(str(i + 1) for i in action.transition_target))
+        confirm = {'immediate': '거짓 즉시', 'count': f'거짓 {action.transition_confirm_count}회 연속',
+                   'duration': f'거짓 {action.transition_confirm_ms}ms 유지'}[action.transition_confirm_mode]
+        header = QtWidgets.QTreeWidgetItem(['', '참→거짓', '', target + ' · ' + confirm,
+            'IF가 참으로 실행된 후 선택 조건이 참에서 거짓으로 바뀌면 한 번 실행합니다.', ''])
+        header.setData(0, QtCore.Qt.ItemDataRole.UserRole, '__transition__')
+        header.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
+                        | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+        self._set_drop_enabled(header, True)
+        header.setCheckState(5, QtCore.Qt.CheckState.Checked if action.transition_enabled else QtCore.Qt.CheckState.Unchecked)
+        item.addChild(header)
+        return header
     def _ensure_else_header(self, item: QtWidgets.QTreeWidgetItem, *, create_if_missing: bool) -> QtWidgets.QTreeWidgetItem | None:
         found = self._find_else_header(item)
         if found or not create_if_missing:
@@ -6777,7 +6869,12 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
         else_header.setText(2, getattr(data, "else_name", ""))
         else_header.setCheckState(5, QtCore.Qt.CheckState.Checked if enabled else QtCore.Qt.CheckState.Unchecked)
         self._set_drop_enabled(else_header, True)
-        item.addChild(else_header)
+        transition_header = next((item.child(i) for i in range(item.childCount())
+                                  if item.child(i).data(0, QtCore.Qt.ItemDataRole.UserRole) == '__transition__'), None)
+        if transition_header:
+            item.insertChild(item.indexOfChild(transition_header), else_header)
+        else:
+            item.addChild(else_header)
         return else_header
     def _create_elif_header(self, parent: QtWidgets.QTreeWidgetItem, cond: Condition, desc: str | None = None) -> QtWidgets.QTreeWidgetItem:
         enabled_flag = getattr(cond, "enabled", True)
@@ -6799,7 +6896,8 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
         )
         self._set_drop_enabled(header, True)
         header.setCheckState(5, QtCore.Qt.CheckState.Checked if enabled_flag else QtCore.Qt.CheckState.Unchecked)
-        else_header = self._find_else_header(parent)
+        else_header = self._find_else_header(parent) or next((parent.child(i) for i in range(parent.childCount())
+            if parent.child(i).data(0, QtCore.Qt.ItemDataRole.UserRole) == '__transition__'), None)
         if else_header:
             idx = parent.indexOfChild(else_header)
             parent.insertChild(idx, header)
@@ -6843,8 +6941,8 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
             if item is None:
                 return
             data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-            if data == "__else__" and parent_seq:
-                seq = f"{parent_seq}-NOT"
+            if data in ("__else__", "__transition__") and parent_seq:
+                seq = f"{parent_seq}-{'NOT' if data == '__else__' else 'EDGE'}"
                 item.setText(0, seq)
             else:
                 seq = str(counter)
@@ -7093,11 +7191,20 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
                 pass
         act.actions = []
         act.else_actions = []
+        act.transition_actions = []
+        act.transition_enabled = False
         act.has_else_branch = False
         act.elif_blocks = []
         for idx in range(item.childCount()):
             child = item.child(idx)
             marker = child.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if marker == '__transition__':
+                act.transition_enabled = child.checkState(5) == QtCore.Qt.CheckState.Checked
+                for j in range(child.childCount()):
+                    child_action = self._action_from_item(child.child(j))
+                    if child_action:
+                        act.transition_actions.append(child_action)
+                continue
             if marker == "__else__":
                 act.has_else_branch = True
                 act.else_enabled = child.checkState(5) == QtCore.Qt.CheckState.Checked
@@ -7331,7 +7438,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             | QtCore.Qt.WindowType.WindowMaximizeButtonHint
             | QtCore.Qt.WindowType.WindowCloseButtonHint
         )
-        self.resize(420, 360)
+        self.resize(720, 640)
         self._variable_provider = variable_provider
         self._add_variable = add_variable
         self._label_provider = label_provider
@@ -7351,6 +7458,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._condition: Condition | None = None
         self._existing_children: List[Action] = []
         self._existing_else: List[Action] = []
+        self._existing_transition: List[Action] = []
         self._existing_has_else = False
         self._existing_else_enabled = True
         self._existing_else_name = ""
@@ -7438,9 +7546,9 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.action_mod_alt = QtWidgets.QCheckBox("Alt")
         self.action_mod_win = QtWidgets.QCheckBox("Win")
         self.action_main_key_edit = MacroKeyLineEdit()
-        self.action_main_key_edit.setPlaceholderText("주 키 (예: 2, r, f1)")
+        self.action_main_key_edit.setPlaceholderText("함께 누를 키 (Ctrl+2라면 2)")
         self.action_main_key_edit.setClearButtonEnabled(True)
-        self.action_main_key_edit.setToolTip("주 키도 직접 눌러 입력할 수 있습니다. 예: Space, CapsLock, F1")
+        self.action_main_key_edit.setToolTip("조합키에서 보조키(Ctrl·Shift·Alt·Win)를 제외한 키입니다.\n예: Ctrl+2는 Ctrl 체크 후 여기에 2를 입력합니다.\n위의 ‘키’와 같은 설정이며, 어느 쪽을 수정해도 서로 반영됩니다.")
         action_key_builder_row = QtWidgets.QWidget()
         action_key_builder_layout = QtWidgets.QHBoxLayout(action_key_builder_row)
         action_key_builder_layout.setContentsMargins(0, 0, 0, 0)
@@ -7685,6 +7793,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.if_confirm_spin = QtWidgets.QSpinBox()
         self.if_confirm_spin.setRange(1, 10)
         self.if_confirm_spin.setValue(1)
+        self.if_confirm_spin.setToolTip('일반 IF의 ELSE 분기로 진입하기 전 연속 거짓 확인 횟수입니다. 참→거짓 분기는 별도의 거짓 확정 설정을 사용합니다.')
         # 액션별 딜레이 오버라이드
         self.delay_override_group = QtWidgets.QGroupBox("키/마우스 입력 딜레이 오버라이드")
         delay_layout = QtWidgets.QGridLayout(self.delay_override_group)
@@ -7720,23 +7829,59 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.key_warn_label.setVisible(False)
         self.cond_label = QtWidgets.QLabel("(조건 없음)")
         self.edit_cond_btn = QtWidgets.QPushButton("조건 편집")
+        self.transition_check = QtWidgets.QCheckBox('참 실행 후 참→거짓 변화 감지')
+        self.transition_target_combo = QtWidgets.QComboBox()
+        self.transition_target_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.transition_target_combo.setMinimumContentsLength(20)
+        self.transition_target_combo.addItem('전체 IF 결과', [])
+        self.transition_confirm_combo = QtWidgets.QComboBox()
+        for label, value in [('즉시 실행', 'immediate'), ('연속 N회 거짓 확인', 'count'), ('일정 시간 거짓 유지', 'duration')]:
+            self.transition_confirm_combo.addItem(label, value)
+        self.transition_count_spin = QtWidgets.QSpinBox()
+        self.transition_count_spin.setRange(1, 1000000)
+        self.transition_count_spin.setValue(2)
+        self.transition_count_spin.setSuffix(' 회')
+        self.transition_ms_spin = QtWidgets.QSpinBox()
+        self.transition_ms_spin.setRange(1, 86400000)
+        self.transition_ms_spin.setValue(50)
+        self.transition_ms_spin.setSuffix(' ms')
+        self.transition_hint = QtWidgets.QLabel('IF가 참으로 실행되면 감지를 시작합니다. 선택 조건이 참→거짓이 되면 한 번 실행하며, 새 트리거에서 초기화합니다.\n액션 사이에서 검사합니다. 확인 후 IF 아래의 ‘참→거짓’ 분기에 액션을 추가하세요.')
+        self.transition_hint.setWordWrap(True)
+        self.settings_tabs = QtWidgets.QTabWidget()
+        self._settings_forms = []
+        for title in ("기본 정보", "실행 설정", "조건·분기", "입력 간격"):
+            scroll = QtWidgets.QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            page = QtWidgets.QWidget()
+            page_form = QtWidgets.QFormLayout(page)
+            page_form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+            page_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+            page_form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
+            scroll.setWidget(page)
+            self.settings_tabs.addTab(scroll, title)
+            self._settings_forms.append(page_form)
+        # Keep the action type available while switching between settings tabs.
         form.addRow("타입", self.type_combo)
+        layout.addLayout(form)
+        form = self._settings_forms[0]
         form.addRow("이름(선택)", self.name_edit)
         form.addRow("설명", self.desc_edit)
         form.addRow(self.enabled_check)
         form.addRow(self.quick_toggle_check, self.quick_toggle_name)
         form.addRow(self.once_check)
         form.addRow(self.force_first_check)
+        form = self._settings_forms[1]
         form.addRow("키", self.key_edit)
         form.addRow('입력 방식', self.key_source_combo)
+        form.addRow("조합 구성", self.action_key_builder_row)
+        form.addRow("", self.key_warn_label)
         form.addRow('AION2 전용 스킬', self.aion2_key_skill)
         form.addRow('소모품 종류', self.aion2_key_item)
         form.addRow('외부 프로그램 ID', self.aion2_key_source)
         form.addRow('TCP 포트 (같은 PC)', self.aion2_key_port)
         form.addRow('현재 연결 키', self.aion2_key_status)
         form.addRow('', self.aion2_key_hint)
-        form.addRow("조합 구성", self.action_key_builder_row)
-        form.addRow("", self.key_warn_label)
         form.addRow("마우스 버튼", self.mouse_button_combo)
         form.addRow("마우스 이동 기준", self.mouse_pos_mode_combo)
         form.addRow("마우스 좌표 x,y (선택)", self.mouse_pos_edit)
@@ -7789,20 +7934,30 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow(self.parallel_check)
         form.addRow("병렬 실행 주기", self.parallel_interval_spin)
         form.addRow("", self.parallel_hint)
-        form.addRow("연속 실패(횟수)", self.if_confirm_spin)
+        form = self._settings_forms[2]
+        form.addRow("일반 IF 거짓 확인 횟수", self.if_confirm_spin)
         form.addRow("조건", self.cond_label)
+        form.addRow(self.edit_cond_btn)
+        form.addRow(self.transition_check)
+        form.addRow('변화 감지 기준', self.transition_target_combo)
+        form.addRow('변화 감지의 거짓 확정', self.transition_confirm_combo)
+        form.addRow('거짓 연속 확인 횟수', self.transition_count_spin)
+        form.addRow('거짓 유지 시간', self.transition_ms_spin)
+        form.addRow('', self.transition_hint)
+        form = self._settings_forms[3]
         form.addRow(self.delay_override_group)
-        layout.addLayout(form)
-        self._form_layout = form
+        layout.addWidget(self.settings_tabs, 1)
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.ok_btn = QtWidgets.QPushButton("확인")
         self.cancel_btn = QtWidgets.QPushButton("취소")
-        btn_row.addWidget(self.edit_cond_btn)
         btn_row.addStretch()
         btn_row.addWidget(self.ok_btn)
         btn_row.addWidget(self.cancel_btn)
         layout.addLayout(btn_row)
+        from action_editor_ui import arrange_action_editor
+        self._describe_condition = _condition_brief
+        arrange_action_editor(self)
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         self.edit_cond_btn.clicked.connect(self._edit_condition)
@@ -7818,6 +7973,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.aion2_key_timer.start()
         self.group_mode_combo.currentIndexChanged.connect(self._sync_fields)
         self.parallel_check.toggled.connect(self._sync_fields)
+        self.transition_check.toggled.connect(self._sync_fields)
+        self.transition_confirm_combo.currentIndexChanged.connect(self._sync_fields)
         self.sound_wait_mode_combo.currentIndexChanged.connect(self._sync_fields)
         for chk in (
             self.action_mod_ctrl,
@@ -7848,12 +8005,22 @@ class ActionEditDialog(QtWidgets.QDialog):
                     self.type_combo.removeItem(index)
             action = copy.deepcopy(action) if action else Action(type="group", group_mode="all")
             action.parallel_enabled = True
+        from action_editor_ui import group_action_types
+        group_action_types(self.type_combo)
         if action:
             self._load(action)
         else:
             self._sync_action_key_builder_from_text()
             self._sync_fields()
             self._update_trigger_warning()
+        from action_editor_ui import ActionEditorGeometry
+        self._saved_geometry = ActionEditorGeometry(self)
+        from compact_action_layout import refresh_condition_summary
+        self._condition_preview_timer = QtCore.QTimer(self)
+        self._condition_preview_timer.setInterval(150)
+        self._condition_preview_timer.timeout.connect(lambda: refresh_condition_summary(self))
+        self._condition_preview_timer.start()
+        self.finished.connect(self._condition_preview_timer.stop)
     def showEvent(self, event: QtGui.QShowEvent):
         super().showEvent(event)
         if self._current_type() == "goto":
@@ -7891,7 +8058,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_var = self._current_type() == "set_var"
         mode = str(self.var_update_mode_combo.currentData() or "set")
         target_name = self._current_var_name() or "변수1"
-        value_label = self._form_layout.labelForField(self.var_value_edit) if hasattr(self, "_form_layout") else None
+        value_label = self._field_label(self.var_value_edit)
         if mode == "set":
             self.var_value_edit.setPlaceholderText("예: 123, hello, 1~100, /변수2")
             self.var_value_edit.setToolTip("입력한 값을 변수에 그대로 저장합니다. `1~100`처럼 쓰면 실행할 때마다 랜덤 숫자가 들어갑니다.")
@@ -8056,8 +8223,11 @@ class ActionEditDialog(QtWidgets.QDialog):
         )
         if path:
             self.sound_file_edit.setText(path)
+    def _field_label(self, widget):
+        return self._field_labels.get(id(widget))
+
     def _set_field_visible(self, widget: QtWidgets.QWidget, visible: bool):
-        label = self._form_layout.labelForField(widget) if hasattr(self, "_form_layout") else None
+        label = self._field_label(widget)
         if label:
             label.setVisible(visible)
         widget.setVisible(visible)
@@ -8377,13 +8547,37 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.if_confirm_spin.setEnabled(show_if)
         self._set_field_visible(self.cond_label, show_if)
         self.cond_label.setEnabled(show_if)
+        show_transition = typ == 'if'
+        self._set_field_visible(self.transition_check, show_transition)
+        self._set_field_visible(self.transition_target_combo, show_transition and self.transition_check.isChecked())
+        confirm_visible = show_transition and self.transition_check.isChecked()
+        self._set_field_visible(self.transition_confirm_combo, confirm_visible)
+        self._set_field_visible(self.transition_count_spin, confirm_visible and self.transition_confirm_combo.currentData() == 'count')
+        self._set_field_visible(self.transition_ms_spin, confirm_visible and self.transition_confirm_combo.currentData() == 'duration')
+        self._set_field_visible(self.transition_hint, show_transition and self.transition_check.isChecked())
         self.edit_cond_btn.setVisible(show_if)
         self.edit_cond_btn.setEnabled(show_if)
         self._set_field_visible(self.delay_override_group, show_override)
         self.delay_override_group.setEnabled(show_override)
         self._toggle_override_enabled()
         self._sync_mouse_pos_hint()
+        from action_editor_ui import refresh_action_cards
+        refresh_action_cards(self)
     def _edit_condition(self):
+        active = getattr(self, '_condition_preview_dialog', None)
+        if active is not None:
+            active.show()
+            active.raise_()
+            active.activateWindow()
+            return
+        previous_target = self.transition_target_combo.currentData()
+        previous_definition = None
+        if previous_target:
+            try:
+                from if_transition import target_condition
+                previous_definition = target_condition(self._condition, previous_target, self._transition_entries(), self._resolver, allow_disabled=True).to_dict()
+            except ValueError:
+                pass
         seed_cond = self._condition or Condition(type="pixel", region=(0, 0, 1, 1), color=(255, 0, 0), tolerance=0)
         seed_name = getattr(seed_cond, "name", None)
         macro_cond = MacroCondition(condition=copy.deepcopy(seed_cond), actions=[], else_actions=[], name=seed_name)
@@ -8404,7 +8598,22 @@ class ActionEditDialog(QtWidgets.QDialog):
             trigger_keys_provider=self._trigger_keys_provider,
         )
         prepare_usage_condition(self, dlg)
-        if not _run_dialog_non_modal(dlg):
+        self._condition_preview_dialog = dlg
+        from compact_action_layout import refresh_condition_summary
+        def update_preview():
+            refresh_condition_summary(self)
+        dlg.condition_changed.connect(update_preview)
+        dlg.cond_name_edit.textChanged.connect(update_preview)
+        update_preview()
+        try:
+            accepted = _run_dialog_non_modal(dlg)
+        finally:
+            dlg.condition_changed.disconnect(update_preview)
+            dlg.cond_name_edit.textChanged.disconnect(update_preview)
+            self._condition_preview_dialog = None
+            from compact_action_layout import refresh_condition_summary
+            refresh_condition_summary(self)
+        if not accepted:
             return
         try:
             result = dlg.get_condition()
@@ -8414,8 +8623,38 @@ class ActionEditDialog(QtWidgets.QDialog):
             except Exception:
                 pass
             self.cond_label.setText(_condition_brief(self._condition))
+            self._refresh_transition_targets(previous_target, previous_definition)
+            from compact_action_layout import refresh_condition_summary
+            refresh_condition_summary(self)
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "조건 오류", str(exc))
+    def _transition_entries(self):
+        from shared_ui import controller_for
+        controller = controller_for(self)
+        return controller.entries if controller else {}
+
+    def _refresh_transition_targets(self, target=None, previous_definition=None, target_key=''):
+        from if_transition import target_choices, condition_identity
+        if previous_definition is not None:
+            target_key = condition_identity(Condition.from_dict(previous_definition))
+        self.transition_target_combo.clear()
+        try:
+            choices = target_choices(self._condition, self._transition_entries(), self._resolver)
+        except ValueError:
+            choices = [((), '전체 IF 결과', self._condition)]
+        selected = -1
+        for path, label, condition in choices:
+            self.transition_target_combo.addItem(label, list(path))
+            if target_key:
+                matches = bool(path) and condition is not None and condition_identity(condition) == target_key
+            else:
+                matches = list(path) == list(target or [])
+            if matches and selected < 0:
+                selected = self.transition_target_combo.count() - 1
+        if selected < 0:
+            self.transition_target_combo.addItem('대상 조건이 변경되었습니다 · 다시 선택하세요', None)
+            selected = self.transition_target_combo.count() - 1
+        self.transition_target_combo.setCurrentIndex(selected)
     def _load(self, act: Action):
         load_type = "process_control" if act.type == "window_focus" else act.type
         self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(load_type)))
@@ -8539,6 +8778,11 @@ class ActionEditDialog(QtWidgets.QDialog):
                 self.if_confirm_spin.setValue(1)
             self._condition = copy.deepcopy(act.condition)
             self.cond_label.setText(_condition_brief(self._condition))
+            self._refresh_transition_targets(act.transition_target, target_key=act.transition_target_key)
+            self.transition_check.setChecked(act.transition_enabled)
+            self.transition_confirm_combo.setCurrentIndex(max(0, self.transition_confirm_combo.findData(act.transition_confirm_mode)))
+            self.transition_count_spin.setValue(act.transition_confirm_count)
+            self.transition_ms_spin.setValue(act.transition_confirm_ms)
             self._existing_elifs = copy.deepcopy(getattr(act, "elif_blocks", []))
         else:
             self._existing_elifs = []
@@ -8572,6 +8816,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self._toggle_override_enabled()
         self._existing_children = copy.deepcopy(getattr(act, "actions", []))
         self._existing_else = copy.deepcopy(getattr(act, "else_actions", []))
+        self._existing_transition = copy.deepcopy(act.transition_actions)
         self._existing_has_else = bool(getattr(act, "has_else_branch", False) or self._existing_else)
         self._existing_else_enabled = getattr(act, "else_enabled", True)
         self._existing_else_name = getattr(act, "else_name", "")
@@ -8612,6 +8857,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         description = self.desc_edit.text().strip() or None
         enabled = self.enabled_check.isChecked()
         is_elif = typ == "elif"
+        if is_elif and (self.transition_check.isChecked() or self._existing_transition):
+            raise ValueError('참→거짓 분기가 있는 IF는 ELIF로 변환할 수 없습니다. 변화 분기를 먼저 삭제하세요.')
         typ_for_build = "if" if is_elif else typ
         act = Action(
             type=typ_for_build,
@@ -8631,6 +8878,22 @@ class ActionEditDialog(QtWidgets.QDialog):
         act.else_enabled = self._existing_else_enabled
         act.else_name = self._existing_else_name
         act.elif_blocks = copy.deepcopy(self._existing_elifs) if typ_for_build == "if" else []
+        if typ == 'if':
+            act.transition_enabled = self.transition_check.isChecked()
+            act.transition_actions = copy.deepcopy(self._existing_transition)
+            target = self.transition_target_combo.currentData()
+            if target is None and (act.transition_enabled or act.transition_actions):
+                raise ValueError('참→거짓 변화 감지 대상 조건을 다시 선택하세요.')
+            act.transition_confirm_mode = self.transition_confirm_combo.currentData()
+            act.transition_confirm_count = self.transition_count_spin.value()
+            act.transition_confirm_ms = self.transition_ms_spin.value()
+            if act.transition_enabled:
+                if target is None:
+                    raise ValueError('참→거짓 변화 감지 대상 조건을 다시 선택하세요.')
+                from if_transition import target_condition
+                target_condition(self._condition, target, self._transition_entries(), self._resolver,
+                                 allow_disabled=not enabled)
+            act.transition_target = list(target or [])
         if typ in ("press", "down", "up"):
             key = self.key_edit.text().strip()
             use_aion2 = typ == 'press' and self.key_source_combo.currentData() in ('aion2','aion2_consumable')
@@ -8851,6 +9114,9 @@ class ActionEditDialog(QtWidgets.QDialog):
                 raise ValueError("조건을 설정하세요.")
             act.condition = copy.deepcopy(self._condition)
             act.confirm_fails = max(1, int(self.if_confirm_spin.value()))
+            if typ == 'if' and (act.transition_enabled or act.transition_actions):
+                from if_transition import bind_target
+                bind_target(act, self._transition_entries(), self._resolver)
             if is_elif:
                 setattr(act, "_as_elif", True)
         return act
@@ -9887,6 +10153,7 @@ class MacroDialog(QtWidgets.QDialog):
                     labels.append(act.label)
                 walk(getattr(act, "actions", []) or [])
                 walk(getattr(act, "else_actions", []) or [])
+                walk(act.transition_actions)
                 for blk in getattr(act, "elif_blocks", []) or []:
                     _, branch, _, _ = _split_elif_block(blk)
                     walk(branch or [])
@@ -10319,6 +10586,10 @@ class MacroDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "선택 없음", "편집할 액션을 선택하세요.")
             return
         act_data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if act_data == '__transition__':
+            self.action_tree.setCurrentItem(item.parent())
+            self._edit_action()
+            return
         if act_data == "__else__":
             name, ok = QtWidgets.QInputDialog.getText(
                 self, "IF NOT 이름", "이름(선택)",
@@ -10491,6 +10762,9 @@ class MacroDialog(QtWidgets.QDialog):
                 new_act.actions = []
                 new_act.else_actions = []
                 new_act.elif_blocks = []
+            if new_act.type != 'if':
+                new_act.transition_enabled = False
+                new_act.transition_actions = []
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, new_act)
             self.action_tree._set_type_text(item, new_act.type)
             item.setText(2, new_act.name or "")
@@ -10517,6 +10791,10 @@ class MacroDialog(QtWidgets.QDialog):
                 if else_header:
                     for child in new_act.else_actions:
                         self.action_tree._append_action_item(child, else_header)
+                if new_act.transition_enabled or new_act.transition_actions:
+                    header = self.action_tree._ensure_transition_header(item)
+                    for child in new_act.transition_actions:
+                        self.action_tree._append_action_item(child, header)
             elif new_act.type == "group":
                 for child in new_act.actions:
                     self.action_tree._append_action_item(child, item)
@@ -10609,7 +10887,7 @@ class MacroDialog(QtWidgets.QDialog):
             insert_row = target_tree.topLevelItemCount()
         else:
             data = target_item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-            if data == "__else__" or (isinstance(data, dict) and data.get("marker") == "__elif__"):
+            if data in ("__else__", "__transition__") or (isinstance(data, dict) and data.get("marker") == "__elif__"):
                 parent = target_item
                 insert_row = parent.childCount()
                 expand_item = target_item

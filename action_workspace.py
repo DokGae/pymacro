@@ -140,7 +140,7 @@ class ActionWorkspaceMixin:
                 if hidden and item is self.currentItem():
                     self.setCurrentItem(None)
                 data = item.data(0, ROLE)
-                if data == '__else__' or isinstance(data, dict) and data.get('marker') == '__elif__':
+                if data in ('__else__', '__transition__') or isinstance(data, dict) and data.get('marker') == '__elif__':
                     if item.data(2, ROLE + 61) is None:
                         item.setData(2, ROLE + 61, item.text(2))
                     item.setText(2, self.scope_name(item.parent()))
@@ -186,7 +186,7 @@ class ActionWorkspaceMixin:
         if hasattr(self, '_scope_ids'):
             blocker = QtCore.QSignalBlocker(self)
             for item in self.items():
-                if item.data(0, ROLE) == '__else__':
+                if item.data(0, ROLE) in ('__else__', '__transition__'):
                     item.setText(0, '↳')
             del blocker
             self.schedule_workspace()
@@ -210,6 +210,11 @@ class ActionWorkspaceMixin:
             owner_data = owner.data(0, ROLE) if owner else None
             if isinstance(owner_data, Action):
                 owner_data.else_enabled = enabled
+        elif data == '__transition__':
+            owner = item.parent()
+            owner_data = owner.data(0, ROLE) if owner else None
+            if isinstance(owner_data, Action):
+                owner_data.transition_enabled = enabled
         elif isinstance(data, dict) and data.get('marker') == '__elif__':
             data['enabled'] = enabled
             if data.get('condition') is not None:
@@ -295,6 +300,8 @@ class ActionWorkspaceMixin:
             return '#d5f0ec'
         if marker == '__else__':
             return '#fff4e2'
+        if marker == '__transition__':
+            return '#edf7f3'
         if isinstance(marker, dict) and marker.get('marker') == '__elif__':
             return '#f5f1e9'
         if self.is_if(item):
@@ -337,7 +344,7 @@ class ActionWorkspaceMixin:
         rect.setHeight(self.row_height)
         data = item.data(0, ROLE)
         disabled = self._disabled_depth(item) is not None
-        is_branch = data == '__else__' or isinstance(data, dict) and data.get('marker') == '__elif__'
+        is_branch = data in ('__else__', '__transition__') or isinstance(data, dict) and data.get('marker') == '__elif__'
         painter.save()
         painter.setClipRect(rect)
         painter.fillRect(rect, QtGui.QColor(self.html_row_color(item)))
@@ -505,6 +512,8 @@ class ActionWorkspaceMixin:
             data = item.data(0, ROLE)
             if data == '__else__':
                 pieces.append('거짓 · IF NOT')
+            elif data == '__transition__':
+                pieces.append('참→거짓 · 1회')
             elif isinstance(data, dict) and data.get('marker') == '__elif__':
                 pieces.append('ELIF')
             elif self.is_if(item):
@@ -512,7 +521,7 @@ class ActionWorkspaceMixin:
             elif isinstance(data, Action) and not pieces:
                 pieces.append(data.name or f'{data.type} {self._format_value(data)}')
             parent = item.parent()
-            if parent and self.is_if(parent) and data != '__else__' and not isinstance(data, dict):
+            if parent and self.is_if(parent) and data not in ('__else__', '__transition__') and not isinstance(data, dict):
                 pieces.append('참')
             item = parent
         return '일반 액션 → ' + ' → '.join(reversed(pieces))

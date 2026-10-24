@@ -1449,6 +1449,7 @@ def navigate_usage(editor, path, macro):
         targets.append((prefix, tree, item))
         direct = []
         else_header = None
+        transition_header = None
         elif_headers = []
         for i in range(item.childCount()):
             child = item.child(i)
@@ -1457,6 +1458,8 @@ def navigate_usage(editor, path, macro):
                 direct.append(child)
             elif marker == '__else__':
                 else_header = child
+            elif marker == '__transition__':
+                transition_header = child
             elif isinstance(marker, dict) and marker.get('marker') == '__elif__':
                 elif_headers.append(child)
         for i, (child, action) in enumerate(zip(direct, data.get('actions', []))):
@@ -1465,6 +1468,10 @@ def navigate_usage(editor, path, macro):
             for i, action in enumerate(data.get('else_actions', [])):
                 if i < else_header.childCount():
                     map_item(tree, else_header.child(i), action, prefix + ('else_actions', i))
+        if transition_header is not None:
+            for i, action in enumerate(data.get('transition_actions', [])):
+                if i < transition_header.childCount():
+                    map_item(tree, transition_header.child(i), action, prefix + ('transition_actions', i))
         for i, (header, block) in enumerate(zip(elif_headers, data.get('elif_blocks', []))):
             block_path = prefix + ('elif_blocks', i)
             targets.append((block_path, tree, header))
