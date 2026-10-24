@@ -32,6 +32,19 @@ def brief(data):
     return f"{data.get('type')} · {data.get('key') or data.get('var_name') or ''}"
 
 
+def runtime_variable_names(data):
+    names = set()
+    if isinstance(data, dict):
+        if data.get('type') == 'set_var' and data.get('var_name'):
+            names.add(str(data['var_name']).strip())
+        for value in data.values():
+            names.update(runtime_variable_names(value))
+    elif isinstance(data, list):
+        for value in data:
+            names.update(runtime_variable_names(value))
+    return names
+
+
 class SharedTable(QtWidgets.QTableWidget):
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.MouseButton.LeftButton and event.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier:
@@ -466,6 +479,7 @@ class SharedController(QtCore.QObject):
                 if not any(use['macro'] == current for use in self.uses.get(ref, [])):
                     self.uses.setdefault(ref, []).append({'macro': current, 'path': (), 'label': (name or self.entries.get(reference, {}).get('name', '공용 조건')) + ' · 조건 편집 중', 'draft': True})
         self.var_uses = variable_usages(macros, self.entries)
+        self.runtime_variables = runtime_variable_names(macros)
         # Include values referenced by other values, with the original usage path.
         from engine import VariableResolver
         values = {(kind, item['name']): item['value'] for kind, items in self.owner._variable_items.items() for item in items}
@@ -504,6 +518,8 @@ class SharedController(QtCore.QObject):
                 self.rows[key] = (item['name'], KINDS.get(category, category), error or item['value'], self.var_uses.get(key, []), bool(error))
         for key, uses in self.var_uses.items():
             if key not in self.rows:
+                if key[0] == 'var' and key[1] in self.runtime_variables:
+                    continue
                 self.rows[key] = (key[1], KINDS.get(key[0], key[0]), '연결된 값 없음', uses, True)
         mode = self.scope.currentIndex()
         self.deleted_keys = set()
@@ -902,14 +918,16 @@ class SharedController(QtCore.QObject):
 
     def clean_unused_values(self):
         self.refresh(True)
-        keys = [(kind, item['name']) for kind, items in self.owner._variable_items.items() for item in items]
+        keys = [(kind, item['name']) for kind, items in self.owner._variable_items.items()
+                for item in items if not self.rows.get((kind, item['name']), (None, None, None, []))[3]]
         self.delete_keys(keys)
 
     def delete_keys(self, keys):
         from engine import VariableResolver
         self.refresh(True)
         requested = set(keys)
-        candidates = {key for key in requested if key in self.rows and not self.rows[key][3]}
+        candidates = {key for key in requested if key in self.rows and (
+            not self.rows[key][3] or (key[0] == 'var' and key[1] in self.runtime_variables))}
         # Recheck references from survivors, including unused definitions and values.
         # If a retained item depends on another candidate, that dependency stays too.
         while True:

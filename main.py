@@ -8795,12 +8795,6 @@ class ActionEditDialog(QtWidgets.QDialog):
                         float(resolved_delta_text)
                     except Exception as exc:
                         raise ValueError("변수 더하기/빼기 값은 숫자 또는 `1~10` 같은 랜덤 범위여야 합니다.") from exc
-            if self._add_variable:
-                try:
-                    default_value = "0" if act.var_update_mode in ("add", "sub") else (act.var_value_raw or "")
-                    self._add_variable("var", var_name, default_value)
-                except Exception:
-                    pass
         elif typ == "telegram_message":
             bot_token = self.telegram_token_edit.text().strip()
             chat_id = self.telegram_chat_id_edit.text().strip()
