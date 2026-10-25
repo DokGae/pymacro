@@ -30,7 +30,10 @@ class BlockWorkspace(QtCore.QObject):
         row = QtWidgets.QGridLayout()
         for index, (label, callback) in enumerate([('새 블록', self.new), ('복제', self.duplicate), ('삭제', self.delete),
                                 ('사용 위치', self.show_usages), ('동일한 묶음 찾기', self.find_matches),
-                                ('공용 조건 관리', self.conditions)]):
+                                ('공용 조건 관리', self.conditions),
+                                ('공용 블록 미리보기', self.preview_selected),
+                                ('공용 원본 편집', lambda: self.open(self.active, True)),
+                                ('미리보기 닫기', lambda: self.panel.hide())]):
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(callback)
             row.addWidget(button, index // 3, index % 3)
@@ -194,16 +197,24 @@ class BlockWorkspace(QtCore.QObject):
 
     def select_entry(self, item, _previous):
         if item:
-            self.open(item.data(ROLE), True)
+            if not self.panel.isHidden():
+                self.open(item.data(ROLE), False)
+            else:
+                self.save_definition()
+                if self.editing and self.active in self.entries and self.name.text().strip() != self.entries[self.active]['name']:
+                    self.error('비어 있지 않은 고유한 이름을 입력한 뒤 블록을 전환하세요.')
+                    return
+                self.editing = False
+                self.active = item.data(ROLE)
+
+    def preview_selected(self):
+        if self.active in self.entries:
+            self.open(self.active, False)
 
     def selection_changed(self, tree):
         if self.loading:
             return
         self.return_tree = tree
-        item = tree.currentItem()
-        action = item.data(0, ROLE) if item else None
-        if isinstance(action, Action) and action.type == 'shared_block':
-            self.open(action.block_ref, False)
 
     def open(self, ref, edit=False):
         if any(child.isVisible() and child.__class__.__name__ in ('ActionEditDialog', 'ConditionDialog', 'ConditionNodeDialog')
@@ -362,7 +373,12 @@ class BlockWorkspace(QtCore.QObject):
             ref = register(self.entries, name, source)
             self.replace(tree, items, [Action(type='shared_block', name=name, block_ref=ref)])
             self.flush()
-            self.open(ref, False)
+            self.save_definition()
+            self.editing = False
+            self.active = ref
+            self.panel.hide()
+            self.refresh_links()
+            self.find_matches(automatic=True)
         self.prompt('선택을 공용 블록으로', items[0].data(0, ROLE).name or '', create)
 
     def choose_insert(self, _checked=False, tree=None):
@@ -483,7 +499,7 @@ class BlockWorkspace(QtCore.QObject):
         dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.show()
 
-    def find_matches(self):
+    def find_matches(self, _checked=False, *, automatic=False):
         if self.active not in self.entries:
             self.error('기준이 될 공용 블록을 먼저 선택하세요.')
             return
@@ -499,7 +515,9 @@ class BlockWorkspace(QtCore.QObject):
         dialog.setModal(False)
         dialog.resize(680, 420)
         layout = QtWidgets.QVBoxLayout(dialog)
-        layout.addWidget(QtWidgets.QLabel('이름뿐 아니라 조건·시간·분기까지 완전히 같은 묶음만 교체합니다.'))
+        summary = QtWidgets.QLabel('이름뿐 아니라 조건·시간·분기까지 완전히 같은 묶음만 교체합니다.')
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
         listing = QtWidgets.QListWidget()
         layout.addWidget(listing)
         candidates = []
@@ -513,7 +531,15 @@ class BlockWorkspace(QtCore.QObject):
                     actions = [tree._action_from_item(i) for i in items]
                     if not priority and len(actions) == len(source) and all(actions) and fingerprint([a.to_dict() for a in actions]) == signature:
                         candidates.append((tree, items, [tree._item_path_key(i) for i in items]))
-                        item = QtWidgets.QListWidgetItem(' → '.join(str(n + 1) for n in tree._item_path_key(items[0])))
+                        section = ('일반 액션', '병렬 작업', '중단 시 실행')[self.source_trees.index(tree)]
+                        ancestry = []
+                        node = items[0]
+                        while node is not None:
+                            data = node.data(0, ROLE)
+                            ancestry.append(getattr(data, 'name', None) or getattr(data, 'type', None) or node.text(1))
+                            node = node.parent()
+                        location = ' → '.join(str(n + 1) for n in tree._item_path_key(items[0]))
+                        item = QtWidgets.QListWidgetItem(f'{self.editor.name_edit.text() or "현재 매크로"} / {section} / {location}\n' + ' → '.join(reversed(ancestry)))
                         item.setCheckState(QtCore.Qt.CheckState.Unchecked)
                         listing.addItem(item)
                         index += len(source)
@@ -521,6 +547,18 @@ class BlockWorkspace(QtCore.QObject):
                         scan(parent.child(index))
                         index += 1
             scan(tree.invisibleRootItem())
+        if automatic and not candidates:
+            dialog.deleteLater()
+            return
+        summary.setText(f'현재 매크로에서 동일한 묶음 {len(candidates)}곳을 찾았습니다.\n'
+                        '아래 위치도 같은 공용 블록으로 변경할까요? 변경할 위치를 체크하세요.\n'
+                        '조건·시간·분기가 다른 묶음은 제외됩니다.')
+        selection = QtWidgets.QHBoxLayout()
+        for label, state in [('전체 선택', QtCore.Qt.CheckState.Checked), ('전체 해제', QtCore.Qt.CheckState.Unchecked)]:
+            select = QtWidgets.QPushButton(label)
+            select.clicked.connect(lambda checked=False, value=state: [listing.item(i).setCheckState(value) for i in range(listing.count())])
+            selection.addWidget(select)
+        layout.addLayout(selection)
         button = QtWidgets.QPushButton(f'선택한 위치를 연결로 교체 · 후보 {len(candidates)}곳')
         layout.addWidget(button)
         def apply():
@@ -542,6 +580,9 @@ class BlockWorkspace(QtCore.QObject):
             self.flush()
             dialog.close()
         button.clicked.connect(apply)
+        cancel = QtWidgets.QPushButton('나중에 / 닫기')
+        cancel.clicked.connect(dialog.reject)
+        layout.addWidget(cancel)
         dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.show()
 
@@ -551,13 +592,14 @@ class BlockWorkspace(QtCore.QObject):
             controller.show()
 
     def restore(self, entries):
+        visible = not self.panel.isHidden()
         self.timer.stop()
         self.loading = True
         self.editing = False
         self.entries = copy.deepcopy(entries)
         self.loading = False
         self.refresh_links()
-        if self.active in self.entries:
+        if visible and self.active in self.entries:
             self.open(self.active, True)
         else:
             self.panel.hide()

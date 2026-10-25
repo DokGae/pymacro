@@ -50,19 +50,22 @@ class ActionWorkspaceMixin:
             delegate = ScopeDelegate(self, original)
             self._scope_delegates.append(delegate)
             self.setItemDelegateForColumn(column, delegate)
-        self.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        self.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Fixed)
+        self.header().setStretchLastSection(False)
+        self.header().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
+        self.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        self.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Interactive)
         self.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Interactive)
         self.setColumnWidth(0, 44)
         self.setColumnWidth(1, 142)
         self.setColumnWidth(2, 310)
-        self.header().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.Fixed)
+        self.header().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.Interactive)
         self.header().setMinimumSectionSize(28)
         self.setColumnWidth(5, 28)
         self.headerItem().setText(5, '')
         self.headerItem().setToolTip(5, '활성')
         self.setColumnHidden(4, True)
-        self.header().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.header().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        self.setColumnWidth(3, 360)
         self.setStyleSheet(self.styleSheet() +
             'QTreeWidget {border:1px solid #cbd5e2;background:white;color:#24364e;}'
             'QHeaderView::section {background:#f6f8fb;color:#4e5e74;border:0;'
@@ -925,6 +928,9 @@ class ActionWorkspaceMixin:
             menu.addAction('선택을 공용 블록으로 묶기', lambda: blocks.make_shared(tree=self))
             menu.addAction('공용 블록 넣기…', lambda: blocks.choose_insert(tree=self))
             if isinstance(action, Action) and action.type == 'shared_block':
+                menu.addAction('공용 블록 미리보기', lambda: blocks.open(action.block_ref, False))
+                if not blocks.panel.isHidden():
+                    menu.addAction('공용 블록 미리보기 닫기', blocks.panel.hide)
                 menu.addAction('공용 원본 편집', lambda: blocks.open(action.block_ref, True))
                 menu.addAction('이곳만 연결 해제', lambda: blocks.detach(tree=self))
             menu.addSeparator()

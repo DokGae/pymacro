@@ -191,12 +191,13 @@ class SharedBlockEditorTests(unittest.TestCase):
         variant.condition.key = 'b'
         self.tree.load_actions([original, copy.deepcopy(original), variant])
         ref = self.make_block()
-        self.blocks.find_matches()
         review = next(d for d in self.dialog.findChildren(QtWidgets.QDialog) if d.windowTitle().startswith('동일한 묶음 검토'))
+        self.assertTrue(review.isVisible())
         listing = review.findChild(QtWidgets.QListWidget)
         self.assertEqual(listing.count(), 1)
+        self.assertIn('new / 일반 액션', listing.item(0).text())
         listing.item(0).setCheckState(QtCore.Qt.CheckState.Checked)
-        review.findChild(QtWidgets.QPushButton).click()
+        next(b for b in review.findChildren(QtWidgets.QPushButton) if b.text().startswith('선택한 위치를')).click()
         actions = self.tree.collect_actions()
         self.assertEqual([a.block_ref for a in actions[:2]], [ref, ref])
         self.assertEqual(actions[2].condition.key, 'b')
@@ -211,6 +212,34 @@ class SharedBlockEditorTests(unittest.TestCase):
         original = self.blocks.tree.collect_actions()
         self.dialog._paste_action(self.blocks.tree)
         self.assertEqual(original, self.blocks.tree.collect_actions())
+
+    def test_preview_is_explicit_and_stays_closed_after_selection_and_undo(self):
+        ref = self.make_block()
+        self.assertTrue(self.blocks.panel.isHidden())
+        self.tree.setCurrentItem(self.tree.topLevelItem(1))
+        self.tree.setCurrentItem(self.tree.topLevelItem(0))
+        pump()
+        self.assertTrue(self.blocks.panel.isHidden())
+        self.blocks.preview_selected()
+        self.assertFalse(self.blocks.panel.isHidden())
+        self.assertFalse(self.blocks.editing)
+        self.blocks.panel.hide()
+        self.blocks.list.setCurrentRow(0)
+        self.assertTrue(self.blocks.panel.isHidden())
+        self.dialog.action_history.undo()
+        self.dialog.action_history.redo()
+        self.assertTrue(self.blocks.panel.isHidden())
+        self.assertIn(ref, self.blocks.entries)
+
+    def test_action_columns_are_manually_resizable_and_survive_refresh(self):
+        for tree in (*self.blocks.source_trees, self.blocks.tree):
+            for column in range(tree.columnCount()):
+                self.assertEqual(tree.header().sectionResizeMode(column), QtWidgets.QHeaderView.ResizeMode.Interactive)
+            tree.header().resizeSection(0, 90)
+            tree.header().resizeSection(1, 220)
+            tree.header().resizeSection(3, 480)
+            tree.refresh_workspace()
+            self.assertEqual([tree.columnWidth(i) for i in (0, 1, 3)], [90, 220, 480])
 
 
 if __name__ == '__main__':
