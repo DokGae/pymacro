@@ -229,6 +229,7 @@ def arrange_compact_action(dialog):
     add_row(primary, ('sound_duration_spin', '재생 시간', 105), ('sound_repeat_spin', '반복', 90))
     add_row(primary, ('label_edit', '라벨 이름', None), ('goto_combo', '이동할 라벨', None), full=True)
     add_row(primary, ('macro_target_combo', '실행할 매크로', None), full=True)
+    add_row(primary, ('block_target_combo', '공용 블록', None), full=True)
     add_row(primary, ('process_control_action_combo', '동작', 170), ('window_pick_btn', None, None))
     add_row(primary, ('process_path_wrap', '실행 파일', None), full=True)
     add_row(primary, ('process_args_edit', '실행 인자', None), full=True)
@@ -401,7 +402,7 @@ def refresh_compact_action(dialog):
         'process_control': '프로그램 제어', 'window_focus': '프로그램 제어',
         'set_var': '변수 설정', 'timer': '타이머', 'pixel_get': '픽셀 저장',
         'telegram_message': '텔레그램 메시지', 'label': '라벨', 'goto': '이동할 라벨',
-        'macro_cycle': '매크로 실행'}
+        'macro_cycle': '매크로 실행', 'shared_block': '공용 블록 실행'}
     dialog.primary_section.heading.setText(titles.get(typ, dialog.type_combo.currentText().strip()))
     dialog.empty_action_hint.hide()
     dialog.primary_section.setVisible(typ in titles)

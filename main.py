@@ -7485,6 +7485,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             ("대기 (sleep)", "sleep"),
             ("소리 알림", "sound_alert"),
             ("다른 매크로 1사이클 실행", "macro_cycle"),
+            ("공용 블록", "shared_block"),
             ("프로그램 제어", "process_control"),
             ("화상 키보드 열기", "touch_keyboard_open"),
             ("화상 키보드 닫기", "touch_keyboard_close"),
@@ -7661,6 +7662,18 @@ class ActionEditDialog(QtWidgets.QDialog):
             _orig_show_popup()
         self.goto_combo.showPopup = _show_popup
         self.macro_target_combo = QtWidgets.QComboBox()
+        self.block_target_combo = QtWidgets.QComboBox()
+        self.block_target_combo.setEditable(True)
+        self.block_target_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.block_target_combo.addItem('공용 블록을 선택하세요', '')
+        block_owner = self.parentWidget()
+        while block_owner is not None and not hasattr(block_owner, 'block_workspace'):
+            block_owner = block_owner.parentWidget()
+        self._block_workspace = getattr(block_owner, 'block_workspace', None)
+        for ref, entry in getattr(self._block_workspace, 'entries', {}).items():
+            self.block_target_combo.addItem(entry['name'], ref)
+        self.block_target_combo.completer().setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
+        self.block_target_combo.setToolTip('이름으로 검색하여 공용 원본을 선택합니다. 원본은 공용 블록 탭에서 만듭니다.')
         self.macro_target_combo.setEditable(False)
         self.macro_target_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
         self.macro_target_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
@@ -7908,6 +7921,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("라벨 이름", self.label_edit)
         form.addRow("점프 대상 라벨", self.goto_combo)
         form.addRow("실행할 매크로", self.macro_target_combo)
+        form.addRow("공용 블록", self.block_target_combo)
         form.addRow("프로그램 동작", self.process_control_action_combo)
         form.addRow("창 선택", self.window_pick_btn)
         form.addRow("실행 파일", self.process_path_wrap)
@@ -8486,6 +8500,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         if show_macro_target:
             self._refresh_macro_targets()
         self._set_field_visible(self.macro_target_combo, show_macro_target)
+        self._set_field_visible(self.block_target_combo, typ == 'shared_block')
         self.macro_target_combo.setEnabled(show_macro_target)
         self._set_field_visible(self.process_control_action_combo, show_process_control)
         self.process_control_action_combo.setEnabled(show_process_control)
@@ -8661,6 +8676,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             selected = self.transition_target_combo.count() - 1
         self.transition_target_combo.setCurrentIndex(selected)
     def _load(self, act: Action):
+        self.block_target_combo.setCurrentIndex(max(0, self.block_target_combo.findData(act.block_ref)))
         load_type = "process_control" if act.type == "window_focus" else act.type
         self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(load_type)))
         self.name_edit.setText(act.name or "")
@@ -9006,6 +9022,18 @@ class ActionEditDialog(QtWidgets.QDialog):
             if not goto_val:
                 raise ValueError("점프할 라벨을 선택하세요.")
             act.goto_label = str(goto_val).strip()
+        elif typ == 'shared_block':
+            ref = self.block_target_combo.currentData()
+            entries = getattr(self._block_workspace, 'entries', {})
+            if ref not in entries or self.block_target_combo.currentText() != entries[ref]['name']:
+                raise ValueError('목록에서 사용할 공용 블록을 선택하세요. 원본은 공용 블록 탭에서 만들 수 있습니다.')
+            act.block_ref = ref
+            act.name = entries[ref]['name']
+            if self._block_workspace.editor.action_tree is self._block_workspace.tree and self._block_workspace.active:
+                from lib.shared_blocks import validate as validate_blocks
+                candidate = copy.deepcopy(entries)
+                candidate[self._block_workspace.active]['actions'].append(act.to_dict())
+                validate_blocks(candidate, resolver=self._resolver)
         elif typ == "macro_cycle":
             macro_target = str(self.macro_target_combo.currentData() or "").strip()
             if not macro_target:

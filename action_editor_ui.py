@@ -63,7 +63,7 @@ def group_action_types(combo):
         ('키보드', ('press', 'down', 'up', 'touch_keyboard_open', 'touch_keyboard_close')),
         ('마우스', ('mouse_click', 'mouse_down', 'mouse_up', 'mouse_move', 'mouse_wheel')),
         ('조건·반복·흐름 제어', ('if', 'elif', 'group', 'sleep', 'label', 'goto',
-                              'continue', 'break', 'return', 'macro_cycle', 'macro_stop', 'noop')),
+                              'continue', 'break', 'return', 'shared_block', 'macro_cycle', 'macro_stop', 'noop')),
         ('변수·타이머·픽셀', ('set_var', 'timer', 'pixel_get')),
         ('알림', ('sound_alert', 'telegram_message')),
         ('프로그램·시스템', ('process_control', 'computer_shutdown')),

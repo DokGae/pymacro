@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from PyQt6 import QtCore, QtWidgets
 from engine import Action, Condition, Macro, MacroProfile, MacroRunner
-from main import MacroDialog
+from main import MacroDialog, ActionEditDialog
 from lib.shared_blocks import expand_actions, register, validate, usages
 from test_execution_analysis import APP, make_runner
 
@@ -191,7 +191,7 @@ class SharedBlockEditorTests(unittest.TestCase):
         variant.condition.key = 'b'
         self.tree.load_actions([original, copy.deepcopy(original), variant])
         ref = self.make_block()
-        review = next(d for d in self.dialog.findChildren(QtWidgets.QDialog) if d.windowTitle().startswith('동일한 묶음 검토'))
+        review = next(d for d in self.dialog.findChildren(QtWidgets.QDialog) if d.isVisible() and d.windowTitle().startswith('동일한 묶음 검토'))
         self.assertTrue(review.isVisible())
         listing = review.findChild(QtWidgets.QListWidget)
         self.assertEqual(listing.count(), 1)
@@ -240,6 +240,40 @@ class SharedBlockEditorTests(unittest.TestCase):
             tree.header().resizeSection(3, 480)
             tree.refresh_workspace()
             self.assertEqual([tree.columnWidth(i) for i in (0, 1, 3)], [90, 220, 480])
+
+    def test_shared_block_is_added_through_normal_action_kind(self):
+        ref = self.make_block()
+        def configure(dialog):
+            dialog.type_combo.setCurrentIndex(dialog.type_combo.findData('shared_block'))
+            dialog.show()
+            pump()
+            self.assertTrue(dialog.block_target_combo.isVisible())
+            self.assertTrue(dialog.primary_section.isVisible())
+            with self.assertRaises(ValueError):
+                dialog.get_action()
+            dialog.block_target_combo.setCurrentIndex(dialog.block_target_combo.findData(ref))
+            self.assertEqual(dialog.get_action().block_ref, ref)
+            dialog.hide()
+            return 1
+        self.tree.setCurrentItem(self.tree.topLevelItem(1))
+        with patch('main._run_dialog_non_modal', side_effect=configure):
+            self.dialog._add_action()
+        self.assertEqual(self.tree.collect_actions()[-1].block_ref, ref)
+
+    def test_repeat_search_uses_clicked_block_and_named_location(self):
+        original = copy.deepcopy(self.tree.collect_actions()[0])
+        ref = self.make_block()
+        self.tree._append_action_item(original)
+        self.blocks.active = None
+        self.blocks.find_matches(reference=ref)
+        review = next(d for d in self.dialog.findChildren(QtWidgets.QDialog) if d.isVisible() and d.windowTitle().startswith('동일한 묶음 검토'))
+        listing = review.findChild(QtWidgets.QListWidget)
+        self.assertEqual(listing.count(), 1)
+        self.assertIn('침투', listing.item(0).text())
+        self.assertNotIn('→', listing.item(0).text())
+        listing.setCurrentRow(0)
+        next(b for b in review.findChildren(QtWidgets.QPushButton) if b.text() == '선택한 위치 보기').click()
+        self.assertIs(self.tree.currentItem(), self.tree.topLevelItem(2))
 
 
 if __name__ == '__main__':

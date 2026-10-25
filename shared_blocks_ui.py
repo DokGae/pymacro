@@ -29,7 +29,7 @@ class BlockWorkspace(QtCore.QObject):
         layout.addWidget(self.list, 1)
         row = QtWidgets.QGridLayout()
         for index, (label, callback) in enumerate([('새 블록', self.new), ('복제', self.duplicate), ('삭제', self.delete),
-                                ('사용 위치', self.show_usages), ('동일한 묶음 찾기', self.find_matches),
+                                ('사용 위치', self.show_usages), ('같은 내용 찾기', self.find_matches),
                                 ('공용 조건 관리', self.conditions),
                                 ('공용 블록 미리보기', self.preview_selected),
                                 ('공용 원본 편집', lambda: self.open(self.active, True)),
@@ -104,7 +104,6 @@ class BlockWorkspace(QtCore.QObject):
             tree.itemSelectionChanged.connect(lambda t=tree: self.selection_changed(t))
         toolbar = QtWidgets.QHBoxLayout()
         for label, callback in [('선택을 공용 블록으로', self.make_shared),
-                                ('공용 블록 넣기', self.choose_insert),
                                 ('이곳만 연결 해제', self.detach)]:
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(callback)
@@ -381,53 +380,6 @@ class BlockWorkspace(QtCore.QObject):
             self.find_matches(automatic=True)
         self.prompt('선택을 공용 블록으로', items[0].data(0, ROLE).name or '', create)
 
-    def choose_insert(self, _checked=False, tree=None):
-        tree = tree or self.editor.action_tree
-        dialog = QtWidgets.QDialog(self.editor)
-        dialog.setWindowTitle('공용 블록 넣기 · 선택한 줄 다음에 삽입')
-        dialog.setModal(False)
-        dialog.resize(460, 420)
-        layout = QtWidgets.QVBoxLayout(dialog)
-        search = QtWidgets.QLineEdit()
-        search.setPlaceholderText('블록 이름 검색')
-        listing = QtWidgets.QListWidget()
-        layout.addWidget(search)
-        layout.addWidget(listing)
-        def refresh():
-            listing.clear()
-            for ref, entry in self.entries.items():
-                if search.text().casefold() in entry['name'].casefold():
-                    item = QtWidgets.QListWidgetItem(entry['name'])
-                    item.setData(ROLE, ref)
-                    listing.addItem(item)
-        def insert():
-            item = listing.currentItem()
-            if item:
-                self.insert(tree, item.data(ROLE))
-                dialog.accept()
-        search.textChanged.connect(refresh)
-        listing.itemDoubleClicked.connect(lambda *_: insert())
-        button = QtWidgets.QPushButton('넣기')
-        button.clicked.connect(insert)
-        layout.addWidget(button)
-        refresh()
-        dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-        dialog.show()
-
-    def insert(self, tree, ref):
-        if ref not in self.entries:
-            self.error('공용 블록을 찾을 수 없습니다.')
-            return
-        self.flush()
-        clipboard = type(self.editor)._action_clipboard
-        try:
-            type(self.editor)._action_clipboard = [Action(type='shared_block', block_ref=ref, name=self.entries[ref]['name'])]
-            self.editor._paste_action(tree)
-        finally:
-            type(self.editor)._action_clipboard = clipboard
-        self.refresh_links()
-        self.flush()
-
     def detach(self, _checked=False, tree=None):
         try:
             tree, items = self.selected(tree)
@@ -499,12 +451,12 @@ class BlockWorkspace(QtCore.QObject):
         dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.show()
 
-    def find_matches(self, _checked=False, *, automatic=False):
-        if self.active not in self.entries:
+    def find_matches(self, _checked=False, *, automatic=False, reference=None):
+        ref = reference or self.active
+        if ref not in self.entries:
             self.error('기준이 될 공용 블록을 먼저 선택하세요.')
             return
         self.save_definition()
-        ref = self.active
         source = self.entries[ref]['actions']
         if not source:
             self.error('비어 있는 블록은 중복 검색에서 제외됩니다.')
@@ -538,8 +490,7 @@ class BlockWorkspace(QtCore.QObject):
                             data = node.data(0, ROLE)
                             ancestry.append(getattr(data, 'name', None) or getattr(data, 'type', None) or node.text(1))
                             node = node.parent()
-                        location = ' → '.join(str(n + 1) for n in tree._item_path_key(items[0]))
-                        item = QtWidgets.QListWidgetItem(f'{self.editor.name_edit.text() or "현재 매크로"} / {section} / {location}\n' + ' → '.join(reversed(ancestry)))
+                        item = QtWidgets.QListWidgetItem(f'{self.editor.name_edit.text() or "현재 매크로"} / {section}\n' + '  ›  '.join(reversed(ancestry)))
                         item.setCheckState(QtCore.Qt.CheckState.Unchecked)
                         listing.addItem(item)
                         index += len(source)
@@ -559,6 +510,33 @@ class BlockWorkspace(QtCore.QObject):
             select.clicked.connect(lambda checked=False, value=state: [listing.item(i).setCheckState(value) for i in range(listing.count())])
             selection.addWidget(select)
         layout.addLayout(selection)
+        def reveal():
+            row = listing.currentRow()
+            if row < 0:
+                return
+            tree, items, positions = candidates[row]
+            live = list(tree.items())
+            if not any(items[0] is node for node in live):
+                summary.setText('이 위치가 변경되었습니다. 다시 검색하세요.')
+                return
+            page = (self.editor.main_action_page if tree is self.editor.main_action_tree else
+                    self.editor.parallel_action_page if tree is self.editor.parallel_action_tree else self.editor.stop_group)
+            self.editor.action_tabs.setCurrentWidget(page)
+            if tree._focus_item is not None:
+                tree.toggle_focus()
+            if tree._hide_disabled:
+                tree.hide_disabled_button.setChecked(False)
+            node = items[0].parent()
+            while node is not None:
+                node.setExpanded(True)
+                node = node.parent()
+            tree.clearSelection()
+            tree.setCurrentItem(items[0])
+            tree.scrollToItem(items[0], QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
+        locate = QtWidgets.QPushButton('선택한 위치 보기')
+        locate.clicked.connect(reveal)
+        listing.itemDoubleClicked.connect(lambda *_: reveal())
+        layout.addWidget(locate)
         button = QtWidgets.QPushButton(f'선택한 위치를 연결로 교체 · 후보 {len(candidates)}곳')
         layout.addWidget(button)
         def apply():
