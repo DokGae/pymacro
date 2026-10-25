@@ -6163,6 +6163,8 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
             item.setData(col, key, cached)
         return str(cached)
     def _set_type_text(self, item: QtWidgets.QTreeWidgetItem, text: str):
+        if text == 'shared_block':
+            text = '공용 블록'
         key = QtCore.Qt.ItemDataRole.UserRole + 5
         item.setText(1, text)
         item.setData(1, key, text)
@@ -6767,7 +6769,7 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
         for col in range(item.columnCount()):
             item.setForeground(col, brush)
     def _append_action_item(self, act: Action, parent_item=None, insert_row: int | None = None):
-        label = act.type
+        label = '공용 블록' if act.type == 'shared_block' else act.type
         item = QtWidgets.QTreeWidgetItem(
             ["", label, getattr(act, "name", "") or "", self._format_value(act), self._format_desc(act), ""]
         )
