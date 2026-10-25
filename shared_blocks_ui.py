@@ -418,11 +418,14 @@ class BlockWorkspace(QtCore.QObject):
             if entry is None:
                 raise ValueError('원본이 없어 연결을 해제할 수 없습니다.')
             children = [Action.from_dict(a, self.editor._resolver) for a in entry['actions']]
-            # Preserve call-site disabling and quick toggles in an ordinary group.
-            action.type, action.block_ref, action.group_mode = 'group', '', 'all'
-            action.actions = children
+            # Restore the definition's original siblings; do not add a wrapper.
+            for child in children:
+                if not action.enabled:
+                    child.enabled = False
+                if action.once_per_macro:
+                    child.once_per_macro = True
             self.flush()
-            self.replace(tree, items, [action])
+            self.replace(tree, items, children)
             self.refresh_links()
             self.flush()
         except ValueError as exc:

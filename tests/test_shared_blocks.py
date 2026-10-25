@@ -145,8 +145,8 @@ class SharedBlockEditorTests(unittest.TestCase):
         self.tree.setCurrentItem(self.tree.topLevelItem(0))
         self.blocks.detach(tree=self.tree)
         actions = self.tree.collect_actions()
-        self.assertEqual(actions[0].type, 'group')
-        self.assertEqual(actions[0].actions[0].name, '침투')
+        self.assertEqual(actions[0].type, 'if')
+        self.assertEqual(actions[0].name, '침투')
         self.assertEqual(actions[1].block_ref, ref)
         self.dialog.action_history.undo()
         self.assertEqual(self.tree.collect_actions()[0].block_ref, ref)
@@ -162,6 +162,19 @@ class SharedBlockEditorTests(unittest.TestCase):
         self.assertEqual(self.tree.collect_actions()[0].type, 'shared_block')
         self.dialog.reject()
         self.assertFalse(self.owner.profile.shared_blocks)
+
+    def test_detach_restores_multiple_siblings_exactly_and_undoes(self):
+        original = copy.deepcopy(self.tree.collect_actions())
+        self.tree.selectAll()
+        with patch.object(self.blocks, 'prompt', side_effect=lambda title, initial, callback: callback('여러 액션')):
+            self.blocks.make_shared()
+        self.assertEqual(len(self.tree.collect_actions()), 1)
+        self.blocks.detach(tree=self.tree)
+        self.assertEqual([a.to_dict() for a in self.tree.collect_actions()], [a.to_dict() for a in original])
+        self.dialog.action_history.undo()
+        self.assertEqual(self.tree.collect_actions()[0].type, 'shared_block')
+        self.dialog.action_history.redo()
+        self.assertEqual([a.to_dict() for a in self.tree.collect_actions()], [a.to_dict() for a in original])
 
     def test_edit_definition_uses_existing_editor_and_readonly_preview(self):
         ref = self.make_block()

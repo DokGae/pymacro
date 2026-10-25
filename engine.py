@@ -1860,7 +1860,9 @@ class Action:
                 elif_blocks.append((econd, eacts, desc))
             except Exception:
                 continue
-        sleep_ms_raw = data.get("sleep_raw", data.get("sleep_ms", data.get("sleep", 0)))
+        sleep_ms_raw = data.get("sleep_raw")
+        if sleep_ms_raw is None:
+            sleep_ms_raw = data.get("sleep_ms", data.get("sleep", 0))
         sleep_raw: Optional[str] = None
         sleep_unit = _normalize_time_unit(data.get("sleep_unit"), default="ms")
         if isinstance(sleep_ms_raw, str) and not data.get("sleep_unit"):
