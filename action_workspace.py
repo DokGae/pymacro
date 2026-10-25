@@ -926,6 +926,7 @@ class ActionWorkspaceMixin:
                 self.clearSelection()
                 self.setCurrentItem(item)
             menu.addAction('선택을 공용 블록으로 묶기', lambda: blocks.make_shared(tree=self))
+            menu.addAction('이 부분과 같은 묶음 찾기', lambda: blocks.suggest(tree=self))
             if isinstance(action, Action) and action.type == 'shared_block':
                 menu.addAction('같은 내용 찾기…', lambda: blocks.find_matches(reference=action.block_ref))
                 menu.addAction('공용 블록 미리보기', lambda: blocks.open(action.block_ref, False))

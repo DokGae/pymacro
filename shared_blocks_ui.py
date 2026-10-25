@@ -111,7 +111,7 @@ class BlockWorkspace(QtCore.QObject):
             tree.block_workspace = self
             tree.itemSelectionChanged.connect(lambda t=tree: self.selection_changed(t))
         toolbar = QtWidgets.QHBoxLayout()
-        for label, callback in [('선택을 공용 블록으로', self.make_shared),
+        for label, callback in [('묶음 추천', self.suggest), ('선택을 공용 블록으로', self.make_shared),
                                 ('이곳만 연결 해제', self.detach)]:
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(callback)
@@ -119,6 +119,10 @@ class BlockWorkspace(QtCore.QObject):
         toolbar.addStretch()
         editor.action_controls.layout().insertLayout(0, toolbar)
         self.refresh_list()
+
+    def suggest(self, _checked=False, tree=None):
+        from block_suggestions import show
+        return show(self, tree)
 
     @property
     def source_trees(self):
