@@ -78,9 +78,11 @@ class SharedBlockTests(unittest.TestCase):
             self.skipTest('사용자 프로필이 없는 환경')
         data = json.loads(Path('setting/암극(살성).json').read_text(encoding='utf-8'))
         profile = MacroProfile.from_dict(data)
-        self.assertFalse(profile.shared_blocks)
-        from action_controls import macro_actions
-        self.assertEqual(sum(a.name == '침투' for a, _ in macro_actions(profile.macros[0])), 5)
+        self.assertEqual(profile.shared_blocks, data.get('shared_blocks', {}))
+        from lib.shared_blocks import walk
+        before = [a.get('block_ref') for _, a in walk(data['macros'][0]['actions']) if a['type'] == 'shared_block']
+        after = [a.get('block_ref') for _, a in walk(profile.macros[0].to_dict()['actions']) if a['type'] == 'shared_block']
+        self.assertEqual(before, after)
 
     def test_nested_calls_and_stop_actions_have_independent_expansions(self):
         _, engine = make_runner([])
@@ -274,6 +276,31 @@ class SharedBlockEditorTests(unittest.TestCase):
         listing.setCurrentRow(0)
         next(b for b in review.findChildren(QtWidgets.QPushButton) if b.text() == '선택한 위치 보기').click()
         self.assertIs(self.tree.currentItem(), self.tree.topLevelItem(2))
+
+    def test_library_summary_details_and_double_click_preview(self):
+        self.assertEqual(self.dialog.action_tabs.tabText(2), '공용 블록 (0)')
+        self.assertFalse(self.blocks.entry_buttons[0].isEnabled())
+        ref = self.make_block()
+        self.assertEqual(self.dialog.action_tabs.tabText(2), '공용 블록 (1)')
+        self.assertIn('연결 1곳', self.blocks.overview.text())
+        self.assertIn('IF 1개', self.blocks.detail_description.text())
+        self.assertEqual(self.blocks.detail_tree.topLevelItem(0).text(0), '침투')
+        self.assertIn('new', self.blocks.detail_usages.text())
+        self.assertTrue(self.blocks.panel.isHidden())
+        self.blocks.list.itemDoubleClicked.emit(self.blocks.list.item(0))
+        self.assertFalse(self.blocks.panel.isHidden())
+        self.assertFalse(self.blocks.editing)
+        self.assertEqual(self.blocks.active, ref)
+        self.blocks.search.setText('검색결과없음')
+        self.assertEqual(self.dialog.action_tabs.tabText(2), '공용 블록 (1)')
+        self.assertFalse(self.blocks.empty_hint.isHidden())
+
+    def test_additional_timer_condition_is_not_an_identical_block(self):
+        from lib.shared_blocks import fingerprint
+        source = Action(type='if', name='침투', condition=Condition(type='all', conditions=[Condition(type='key', key='a')]))
+        variant = copy.deepcopy(source)
+        variant.condition.conditions.append(Condition(type='timer', timer_index=1, timer_value=1, timer_operator='ge'))
+        self.assertNotEqual(fingerprint([source.to_dict()]), fingerprint([variant.to_dict()]))
 
 
 if __name__ == '__main__':

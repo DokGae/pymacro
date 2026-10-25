@@ -582,7 +582,7 @@ class HistoryTests(unittest.TestCase):
     def test_tab_layout_gives_actions_the_window_height(self):
         d = self.dialog
         self.assertEqual(d.action_tabs.count(), 6)
-        self.assertEqual(d.action_tabs.tabText(2), '공용 블록')
+        self.assertEqual(d.action_tabs.tabText(2), '공용 블록 (0)')
         self.assertEqual(d.action_tabs.currentIndex(), 0)
         self.assertFalse(d.trigger_table.isVisible())
         self.assertFalse(d.name_edit.isVisible())

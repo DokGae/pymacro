@@ -21,12 +21,45 @@ class BlockWorkspace(QtCore.QObject):
         self.editing = False
         self.page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.page)
-        layout.addWidget(QtWidgets.QLabel('현재 파일 전체에서 공유 · 확인 후 적용 · 프로필 저장 시 함께 저장됩니다.'))
+        self.overview = QtWidgets.QLabel()
+        self.overview.setWordWrap(True)
+        self.overview.setStyleSheet('background:#edf3fb;color:#294563;padding:10px;border:1px solid #d2dce9;border-radius:5px;')
+        layout.addWidget(self.overview)
+        layout.addWidget(QtWidgets.QLabel('선택하여 내용 확인 · 더블클릭하여 전체 미리보기 · 원본 수정은 연결된 모든 위치에 반영'))
         self.search = QtWidgets.QLineEdit()
         self.search.setPlaceholderText('공용 블록 이름·설명 검색')
         layout.addWidget(self.search)
         self.list = QtWidgets.QListWidget()
-        layout.addWidget(self.list, 1)
+        browser = QtWidgets.QSplitter()
+        browser.addWidget(self.list)
+        details = QtWidgets.QWidget()
+        detail_layout = QtWidgets.QVBoxLayout(details)
+        self.detail_title = QtWidgets.QLabel('공용 블록을 선택하세요')
+        self.detail_title.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.detail_title.setWordWrap(True)
+        self.detail_title.setStyleSheet('font-size:15px;font-weight:600;padding:6px;')
+        detail_layout.addWidget(self.detail_title)
+        self.detail_description = QtWidgets.QLabel()
+        self.detail_description.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.detail_description.setWordWrap(True)
+        detail_layout.addWidget(self.detail_description)
+        self.detail_tree = QtWidgets.QTreeWidget()
+        self.detail_tree.setHeaderLabels(['블록 내용', '설정'])
+        self.detail_tree.setColumnWidth(0, 210)
+        self.detail_tree.header().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
+        detail_layout.addWidget(self.detail_tree, 1)
+        self.detail_usages = QtWidgets.QLabel()
+        self.detail_usages.setWordWrap(True)
+        self.detail_usages.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        detail_layout.addWidget(self.detail_usages)
+        browser.addWidget(details)
+        browser.setStretchFactor(0, 1)
+        browser.setStretchFactor(1, 2)
+        layout.addWidget(browser, 1)
+        self.empty_hint = QtWidgets.QLabel('아직 공용 블록이 없습니다. 일반 액션에서 IF 또는 여러 줄을 선택한 뒤\n‘선택을 공용 블록으로’를 누르거나, 아래 ‘새 블록’으로 시작하세요.')
+        self.empty_hint.setWordWrap(True)
+        layout.addWidget(self.empty_hint)
+        self.entry_buttons = []
         row = QtWidgets.QGridLayout()
         for index, (label, callback) in enumerate([('새 블록', self.new), ('복제', self.duplicate), ('삭제', self.delete),
                                 ('사용 위치', self.show_usages), ('같은 내용 찾기', self.find_matches),
@@ -37,10 +70,14 @@ class BlockWorkspace(QtCore.QObject):
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(callback)
             row.addWidget(button, index // 3, index % 3)
+            if label not in ('새 블록', '공용 조건 관리', '미리보기 닫기'):
+                self.entry_buttons.append(button)
         layout.addLayout(row)
         self.search.textChanged.connect(self.refresh_list)
         self.list.currentItemChanged.connect(self.select_entry)
+        self.list.itemDoubleClicked.connect(lambda item: self.open(item.data(ROLE), False))
         editor.action_tabs.insertTab(2, self.page, '공용 블록')
+        editor.action_tabs.currentChanged.connect(lambda _: self.refresh_list() if editor.action_tabs.currentWidget() is self.page else None)
 
         self.panel = QtWidgets.QWidget()
         self.panel.setMinimumWidth(440)
@@ -171,16 +208,69 @@ class BlockWorkspace(QtCore.QObject):
         self.list.clear()
         query = self.search.text().strip().casefold()
         macros = self.macros()
+        total_uses = 0
+        unused = 0
         for ref, entry in self.entries.items():
+            count = len(usages(macros, self.entries, ref))
+            total_uses += count
+            unused += not count
             if query and query not in (entry['name'] + ' ' + entry.get('description', '')).casefold():
                 continue
-            count = len(usages(macros, self.entries, ref))
-            item = QtWidgets.QListWidgetItem(f"{entry['name']}    · 사용 {count}곳" if count else f"{entry['name']}    · 미사용")
+            action_count = sum(1 for _ in walk(entry['actions']))
+            item = QtWidgets.QListWidgetItem(f"{entry['name']}\n액션 {action_count}개 · " + (f'사용 {count}곳' if count else '미사용'))
+            item.setToolTip(entry.get('description') or '더블클릭하여 전체 미리보기')
             item.setData(ROLE, ref)
             self.list.addItem(item)
             if ref == selected:
                 self.list.setCurrentItem(item)
+        if self.active not in self.entries and self.list.count():
+            self.active = self.list.item(0).data(ROLE)
+            self.list.setCurrentRow(0)
         del blocker
+        self.editor.action_tabs.setTabText(self.editor.action_tabs.indexOf(self.page), f'공용 블록 ({len(self.entries)})')
+        self.overview.setText(f'블록 {len(self.entries)}개 · 연결 {total_uses}곳 · 미사용 {unused}개\n현재 파일 전체에서 공유 · 매크로 편집 확인 후 적용 / 프로필 저장 시 파일에 저장')
+        self.empty_hint.setVisible(not self.entries or self.list.count() == 0)
+        if self.entries:
+            self.empty_hint.setText('검색 결과가 없습니다. 검색어를 바꾸거나 지워주세요.')
+        else:
+            self.empty_hint.setText('아직 공용 블록이 없습니다. 액션을 선택한 뒤 ‘선택을 공용 블록으로’를 누르거나 ‘새 블록’으로 시작하세요.')
+        self.refresh_details()
+
+    def refresh_details(self):
+        entry = self.entries.get(self.active)
+        for button in self.entry_buttons:
+            button.setEnabled(entry is not None)
+        self.detail_tree.clear()
+        if entry is None:
+            self.detail_title.setText('공용 블록을 선택하세요')
+            self.detail_description.setText('목록에서 선택하면 내부 액션과 사용 현황을 확인할 수 있습니다.')
+            self.detail_usages.clear()
+            return
+        nodes = list(walk(entry['actions']))
+        self.detail_title.setText(entry['name'])
+        self.detail_description.setText((entry.get('description') or '설명 없음 · 원본 편집에서 메모를 추가할 수 있습니다.') +
+                                        f'\n내부 액션 {len(nodes)}개 · IF {sum(a.get("type") == "if" for _, a in nodes)}개')
+        def add(actions, parent):
+            for data in actions:
+                action = Action.from_dict(data, self.editor._resolver)
+                item = QtWidgets.QTreeWidgetItem([action.name or action.type, self.editor.main_action_tree._format_value(action)])
+                parent.addChild(item)
+                add(data.get('actions', []), item)
+                for branch in data.get('elif_blocks', []):
+                    child = QtWidgets.QTreeWidgetItem(['ELIF', ''])
+                    item.addChild(child)
+                    add(branch.get('actions', []), child)
+                for key, label in [('else_actions', 'IF NOT'), ('transition_actions', '참 → 거짓')]:
+                    if data.get(key):
+                        child = QtWidgets.QTreeWidgetItem([label, ''])
+                        item.addChild(child)
+                        add(data[key], child)
+        add(entry['actions'], self.detail_tree.invisibleRootItem())
+        self.detail_tree.expandToDepth(1)
+        locations = usages(self.macros(), self.entries, self.active)
+        names = list(dict.fromkeys(name for _, _, name in locations))
+        self.detail_usages.setText(f'사용 {len(locations)}곳 · ' + (' / '.join(names) if names else '아직 연결된 위치가 없습니다.') +
+                                  '\n‘사용 위치’에서 각 호출로 이동 · ‘같은 내용 찾기’에서 기존 액션을 추가로 연결')
 
     def refresh_links(self):
         for tree in self.source_trees:
@@ -205,6 +295,7 @@ class BlockWorkspace(QtCore.QObject):
                     return
                 self.editing = False
                 self.active = item.data(ROLE)
+                self.refresh_details()
 
     def preview_selected(self):
         if self.active in self.entries:
