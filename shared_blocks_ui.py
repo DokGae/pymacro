@@ -121,6 +121,19 @@ class BlockWorkspace(QtCore.QObject):
         self.refresh_list()
 
     def suggest(self, _checked=False, tree=None):
+        if tree is not None:
+            try:
+                _, items = self.selected(tree)
+            except ValueError as exc:
+                self.error(exc)
+                return
+            source = [tree._action_from_item(item).to_dict() for item in items]
+            if len(source) == 1 and source[0]['type'] == 'shared_block':
+                return self.find_matches(reference=source[0]['block_ref'])
+            self.save_definition()
+            for ref, entry in self.entries.items():
+                if fingerprint(source) == fingerprint(entry['actions']):
+                    return self.find_matches(reference=ref)
         from block_suggestions import show
         return show(self, tree)
 

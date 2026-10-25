@@ -317,6 +317,32 @@ class SharedBlockEditorTests(unittest.TestCase):
         variant.condition.conditions.append(Condition(type='timer', timer_index=1, timer_value=1, timer_operator='ge'))
         self.assertNotEqual(fingerprint([source.to_dict()]), fingerprint([variant.to_dict()]))
 
+    def test_search_shared_call_and_matching_local_action_use_existing_definition(self):
+        ref = self.make_block()
+        with patch.object(self.blocks, 'find_matches') as search:
+            self.blocks.suggest(tree=self.tree)
+            search.assert_called_once_with(reference=ref)
+        original = Action.from_dict(self.blocks.entries[ref]['actions'][0])
+        original.condition = Condition(type='all', conditions=[original.condition,
+            Condition(type='timer', timer_index=1, timer_value=1)])
+        item = self.tree._append_action_item(original)
+        # Removing the extra timer restores exactly the common condition.
+        item.data(0, QtCore.Qt.ItemDataRole.UserRole).condition = Action.from_dict(
+            self.blocks.entries[ref]['actions'][0]).condition
+        self.tree.setCurrentItem(item)
+        with patch.object(self.blocks, 'find_matches') as search:
+            self.blocks.suggest(tree=self.tree)
+            search.assert_called_once_with(reference=ref)
+        self.blocks.suggest(tree=self.tree)
+        review = next(d for d in self.dialog.findChildren(QtWidgets.QDialog)
+                      if d.isVisible() and d.windowTitle().startswith('동일한 묶음 검토'))
+        listing = review.findChild(QtWidgets.QListWidget)
+        self.assertEqual(listing.count(), 1)
+        listing.item(0).setCheckState(QtCore.Qt.CheckState.Checked)
+        next(b for b in review.findChildren(QtWidgets.QPushButton) if b.text().startswith('선택한 위치를')).click()
+        self.assertEqual(self.tree.collect_actions()[-1].block_ref, ref)
+        self.assertEqual(len(self.blocks.entries), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
