@@ -6618,6 +6618,8 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
                     return
         super().mousePressEvent(event)
     def _format_value(self, act: Action) -> str:
+        if act.type == 'shared_block':
+            return '공용 블록 · 더블클릭하여 원본 편집'
         suffix_bits = []
         if getattr(act, "parallel_enabled", False):
             suffix_bits.append("병렬 · 기본 속도" if act.parallel_interval_sec == 0 else f"병렬 · {act.parallel_interval_sec:g}초마다")
@@ -7184,6 +7186,9 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
             return None
         act = copy.deepcopy(data)
         act.enabled = item.checkState(5) == QtCore.Qt.CheckState.Checked
+        if act.type == 'shared_block':
+            act.actions = []
+            return act
         if act.type == "if" and isinstance(act.condition, Condition):
             try:
                 act.condition.enabled = act.enabled
@@ -9719,10 +9724,13 @@ class MacroDialog(QtWidgets.QDialog):
             self.trigger_hold_spin.setValue(0.0)
             self._sync_trigger_hold_visibility()
         self._action_tab_changed(self.action_tabs.currentIndex())
+        from shared_blocks_ui import attach as attach_blocks
+        attach_blocks(self)
         install_editor_history(self)
+        self.block_workspace.mount()
 
     def _action_tab_changed(self, index: int):
-        self.action_tree = self.parallel_action_tree if index == 1 else self.stop_action_tree if index == 2 else self.main_action_tree
+        self.action_tree = self.parallel_action_tree if index == 1 else self.stop_action_tree if self.action_tabs.widget(index) is self.stop_group else self.main_action_tree
         self.action_controls.setVisible(index in (0, 1))
         self._refresh_action_workspace()
 
@@ -10176,7 +10184,7 @@ class MacroDialog(QtWidgets.QDialog):
             fn()
         finally:
             index = self.action_tabs.currentIndex()
-            self.action_tree = self.parallel_action_tree if index == 1 else self.stop_action_tree if index == 2 else self.main_action_tree
+            self.action_tree = self.parallel_action_tree if index == 1 else self.stop_action_tree if self.action_tabs.widget(index) is self.stop_group else self.main_action_tree
     def _set_stop_group_enabled(self, enabled: bool):
         widgets = [
             self.stop_action_tree,
@@ -10326,7 +10334,7 @@ class MacroDialog(QtWidgets.QDialog):
         if target_tree is self.parallel_action_tree and as_child and selected is None:
             QtWidgets.QMessageBox.information(self, "작업 선택", "하위 액션을 추가할 병렬 그룹 또는 IF를 선택하세요.")
             return
-        parallel_allowed = (target_tree is not self.stop_action_tree and not as_child and not branch
+        parallel_allowed = (target_tree in (self.main_action_tree, self.parallel_action_tree) and not as_child and not branch
                             and (selected is None or selected.parent() is None))
         initial_action = Action(type=parallel_type or "group", name=self._parallel_task_name("병렬 IF" if parallel_type == "if" else "병렬 그룹"), group_mode="all", parallel_enabled=True) if parallel_root else None
         dlg = ActionEditDialog(
@@ -10586,6 +10594,9 @@ class MacroDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "선택 없음", "편집할 액션을 선택하세요.")
             return
         act_data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if isinstance(act_data, Action) and act_data.type == 'shared_block':
+            self.block_workspace.open(act_data.block_ref, True)
+            return
         if act_data == '__transition__':
             self.action_tree.setCurrentItem(item.parent())
             self._edit_action()
@@ -10729,7 +10740,7 @@ class MacroDialog(QtWidgets.QDialog):
         dlg = ActionEditDialog(
             self,
             action=act,
-            parallel_allowed=self.action_tree is not self.stop_action_tree and item.parent() is None,
+            parallel_allowed=self.action_tree in (self.main_action_tree, self.parallel_action_tree) and item.parent() is None,
             parallel_required=self.action_tree is self.parallel_action_tree and item.parent() is None,
             variable_provider=self._variable_provider,
             add_variable=self._add_variable,
@@ -10878,6 +10889,18 @@ class MacroDialog(QtWidgets.QDialog):
             actions_to_paste = [copy.deepcopy(act) for act in clipboard]
         else:
             actions_to_paste = [copy.deepcopy(clipboard)]
+        if hasattr(self, 'block_workspace'):
+            from lib.shared_blocks import expand_actions, validate as validate_blocks
+            try:
+                payload = [a.to_dict() for a in actions_to_paste]
+                expand_actions(payload, self.block_workspace.entries)
+                if target_tree is self.block_workspace.tree and self.block_workspace.active:
+                    candidate = copy.deepcopy(self.block_workspace.entries)
+                    candidate[self.block_workspace.active]['actions'].extend(payload)
+                    validate_blocks(candidate, resolver=self._resolver)
+            except ValueError as exc:
+                self.block_workspace.error(exc)
+                return
         new_items: list[QtWidgets.QTreeWidgetItem] = []
         expand_item = None
         parent = None
@@ -11001,7 +11024,17 @@ class MacroDialog(QtWidgets.QDialog):
             self._stop_others_on_trigger = self._interaction_mode == "stop"
             self._suspend_others_while_running = self._interaction_mode == "suspend"
         self._update_interaction_summary()
+    def accept(self):
+        try:
+            self.get_macro()
+        except ValueError as exc:
+            self.block_workspace.error(exc)
+            return
+        super().accept()
+
     def get_macro(self) -> Macro:
+        if hasattr(self, 'block_workspace'):
+            self.block_workspace.validate()
         # 빌더 체크박스/입력값을 우선 반영해 텍스트를 최신 상태로 맞춘다.
         self._sync_trigger_from_builder()
         triggers = self._collect_triggers()
@@ -19126,6 +19159,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         return MacroProfile(
             macros=macros,
             shared_settings=copy.deepcopy(self.profile.shared_settings),
+            shared_blocks=copy.deepcopy(self.profile.shared_blocks),
             pixel_region=pixel_region,
             pixel_region_raw=region_raw,
             pixel_color=pixel_color,
@@ -19939,6 +19973,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         if hasattr(self, '_shared_controller'):
             self._shared_controller.mark_applied()
     def _run_macro_dialog(self, dlg: MacroDialog, *, row: int = -1) -> int:
+        dlg._block_macro_row = row
+        dlg.block_workspace.refresh_list()
         state = self._state.get("macro_editor", {}) if isinstance(self._state, dict) else {}
         view_key = json.dumps([self.current_profile_path or '', row], ensure_ascii=False)
         saved_views = dict(state.get('views', {}))
@@ -20003,8 +20039,10 @@ class MacroWindow(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.warning(self, "입력 오류", str(exc))
                 return
             self._append_macro_row(macro)
+            self.profile.shared_blocks = copy.deepcopy(dlg.block_workspace.entries)
             self._renumber_macro_rows()
             self._sync_runtime_profile_from_macro_table()
+            self._navigate_block_usage(dlg)
     def _edit_macro(self, *, usage_path=None):
         row = self._get_selected_row()
         if row < 0:
@@ -20044,10 +20082,19 @@ class MacroWindow(QtWidgets.QMainWindow):
                 return
             old_snapshot = macro.to_dict() if macro else None
             new_snapshot = new_macro.to_dict()
+            blocks_changed = self.profile.shared_blocks != dlg.block_workspace.entries
+            self.profile.shared_blocks = copy.deepcopy(dlg.block_workspace.entries)
             self._set_macro_row(row, new_macro)
-            if not self._loading_profile and old_snapshot != new_snapshot:
+            if not self._loading_profile and (old_snapshot != new_snapshot or blocks_changed):
                 self._mark_dirty()
                 self._sync_runtime_profile_from_macro_table()
+            self._navigate_block_usage(dlg)
+    def _navigate_block_usage(self, dlg):
+        target = getattr(dlg, '_block_navigation', None)
+        if target is not None:
+            row, path = target
+            self.macro_table.selectRow(row)
+            QtCore.QTimer.singleShot(0, lambda: self._edit_macro(usage_path=path))
     def _clone_macro(self):
         row = self._get_selected_row()
         if row < 0:

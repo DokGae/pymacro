@@ -917,6 +917,17 @@ class ActionWorkspaceMixin:
         menu = QtWidgets.QMenu(self)
         item = self.itemAt(point)
         action = item.data(0, ROLE) if item is not None else None
+        blocks = getattr(self, 'block_workspace', None)
+        if blocks:
+            if item is not None and not item.isSelected():
+                self.clearSelection()
+                self.setCurrentItem(item)
+            menu.addAction('선택을 공용 블록으로 묶기', lambda: blocks.make_shared(tree=self))
+            menu.addAction('공용 블록 넣기…', lambda: blocks.choose_insert(tree=self))
+            if isinstance(action, Action) and action.type == 'shared_block':
+                menu.addAction('공용 원본 편집', lambda: blocks.open(action.block_ref, True))
+                menu.addAction('이곳만 연결 해제', lambda: blocks.detach(tree=self))
+            menu.addSeparator()
         if isinstance(action, Action):
             toggle = menu.addAction('빠른 토글에 표시')
             toggle.setCheckable(True)
@@ -1087,7 +1098,8 @@ class EditorHistory(QtCore.QObject):
 
     def snapshot(self):
         return dict(actions=[tree.collect_actions() for tree in self.trees],
-                    stop=self.dialog.stop_group.isChecked(), views=[tree.view_state() for tree in self.trees])
+                    stop=self.dialog.stop_group.isChecked(), views=[tree.view_state() for tree in self.trees],
+                    blocks=copy.deepcopy(getattr(getattr(self.dialog, 'block_workspace', None), 'entries', {})))
 
     def schedule(self, *_):
         if not self.restoring:
@@ -1097,9 +1109,12 @@ class EditorHistory(QtCore.QObject):
         self.timer.stop()
         if self.restoring:
             return
+        blocks = getattr(self.dialog, 'block_workspace', None)
+        if blocks and blocks.timer.isActive():
+            blocks.save_definition()
         state = self.snapshot()
         last = self.states[self.position]
-        if state['actions'] == last['actions'] and state['stop'] == last['stop']:
+        if state['actions'] == last['actions'] and state['stop'] == last['stop'] and state['blocks'] == last['blocks']:
             last['views'] = state['views']
             return
         del self.states[self.position+1:]
@@ -1134,12 +1149,16 @@ class EditorHistory(QtCore.QObject):
         try:
             self.position = position
             state = self.states[position]
+            if hasattr(self.dialog, 'block_workspace'):
+                self.dialog.block_workspace.loading = True
             for tree, actions, view in zip(self.trees, state['actions'], state['views']):
                 tree.cancel_destination()
                 tree.load_actions(copy.deepcopy(actions))
                 tree.restore_view(view)
                 tree.refresh_workspace()
             self.dialog.stop_group.setChecked(state['stop'])
+            if hasattr(self.dialog, 'block_workspace'):
+                self.dialog.block_workspace.restore(state['blocks'])
             self.dialog._refresh_action_workspace()
         finally:
             self.restoring = False

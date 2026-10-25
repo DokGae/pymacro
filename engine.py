@@ -52,6 +52,7 @@ from external_state import state_hub, DEFAULT_PORT, external_result, external_co
 ConditionType = Literal["key", "pixel", "all", "any", "var", "timer", "schedule", "external", "aion2"]
 KeyMode = Literal["press", "down", "up", "hold", "released"]
 ActionType = Literal[
+    "shared_block",
     "press",
     "down",
     "up",
@@ -1594,6 +1595,7 @@ def _iter_elif_blocks(blocks):
 @dataclass
 class Action:
     type: ActionType
+    block_ref: str = ""
     name: Optional[str] = None
     description: Optional[str] = None
     enabled: bool = True
@@ -2031,6 +2033,7 @@ class Action:
             process_control_action = "focus"
         return cls(
             type=typ,
+            block_ref=str(data.get("block_ref") or ""),
             name=data.get("name"),
             description=data.get("description"),
             enabled=bool(data.get("enabled", True)),
@@ -2123,6 +2126,7 @@ class Action:
     def to_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "type": self.type,
+            "block_ref": self.block_ref,
             "name": self.name,
             "description": self.description,
             "enabled": self.enabled,
@@ -2697,6 +2701,7 @@ class Macro:
 @dataclass
 class MacroProfile:
     shared_settings: Dict[str, Any] = field(default_factory=dict)
+    shared_blocks: Dict[str, Any] = field(default_factory=dict)
     macros: List[Macro] = field(default_factory=list)
     pixel_region: Region = (0, 0, 100, 100)
     pixel_region_raw: Optional[str] = None
@@ -2864,6 +2869,7 @@ class MacroProfile:
         return cls(
             macros=macros,
             shared_settings=shared_settings,
+            shared_blocks=copy.deepcopy(data.get('shared_blocks') or {}),
             pixel_region=region,  # type: ignore[arg-type]
             pixel_region_raw=region_raw if isinstance(region_raw, str) else None,
             pixel_color=color,  # type: ignore[arg-type]
@@ -2899,6 +2905,7 @@ class MacroProfile:
         data: Dict[str, Any] = {
             "macros": [m.to_dict() for m in self.macros],
             "shared_settings": copy.deepcopy(self.shared_settings),
+            "shared_blocks": copy.deepcopy(self.shared_blocks),
             "pixel_region": self.pixel_region_raw if self.pixel_region_raw is not None else list(self.pixel_region),
             "pixel_color": self.pixel_color_raw if self.pixel_color_raw is not None else list(self.pixel_color),
             "pixel_tolerance": self.pixel_tolerance,
@@ -3256,7 +3263,11 @@ class MacroRunner:
         *,
         inherit_held_keys: Optional[Iterable[str]] = None,
         inherit_held_mouse: Optional[Iterable[str]] = None,
+        shared_blocks: Optional[dict] = None,
     ):
+        from lib.shared_blocks import expand_macro
+        self._block_definitions = copy.deepcopy(shared_blocks if shared_blocks is not None else getattr(engine._profile, 'shared_blocks', {}))
+        macro = expand_macro(macro, self._block_definitions, VariableResolver(engine._profile.variables))
         self._analysis_id = None
         self._analysis_generation = -1
         self._analysis_catalogs = set()
@@ -3317,7 +3328,7 @@ class MacroRunner:
                     children.extend(eacts)
                 children.extend(getattr(act, "else_actions", []))
                 children.extend(act.transition_actions)
-            elif act.type == "group":
+            elif act.type in ("group", "shared_block"):
                 children.extend(act.actions)
             if children and self._has_force_first_action(children):
                 return True
@@ -3330,7 +3341,7 @@ class MacroRunner:
         for position, action in enumerate(macro.actions):
             if (not action.enabled and not action.quick_toggle_id) or not action.parallel_enabled:
                 continue
-            worker = MacroRunner(macro, self.engine, index)
+            worker = MacroRunner(macro, self.engine, index, shared_blocks=self._block_definitions)
             worker._parallel_owner = self
             worker._analysis_id = self._analysis_id
             worker._parallel_entry = action
@@ -3490,7 +3501,7 @@ class MacroRunner:
                     children.extend(eacts)
                 children.extend(getattr(act, "else_actions", []))
                 children.extend(act.transition_actions)
-            elif act.type == "group":
+            elif act.type in ("group", "shared_block"):
                 children.extend(act.actions)
             if children:
                 child_prefix = prefix + [idx]
@@ -4063,8 +4074,10 @@ class MacroRunner:
         path: Optional[List[str]] = None,
         idx_path: Optional[List[int]] = None,
         base_offset: int = 0,
+        collect_hits: bool = False,
     ) -> "MacroRunner._Result":
         idx = 0
+        any_hit = False
         base_path = list(path or [])
         base_idx_path = list(idx_path or [])
         while idx < len(actions) and (self._running_stop_actions or not self._stop_event.is_set()):
@@ -4079,6 +4092,7 @@ class MacroRunner:
                 idx += 1
                 continue
             res = self._exec_action(act, labels, act_path, act_idx_path)
+            any_hit = any_hit or res.condition_hit
             if self._stop_event.is_set() and not self._running_stop_actions:
                 return self._Result(signal="break")
             if getattr(res, "repeat", False):
@@ -4103,7 +4117,7 @@ class MacroRunner:
             if res.signal in ("return", "continue", "break"):
                 return res
             idx += 1
-        return self._Result()
+        return self._Result(condition_hit=any_hit if collect_hits else False)
 
     def _sleep_with_condition_poll(self, sleep_ms: int, *, allow_condition: bool):
         """sleep 동안에도 조건 평가가 돌도록 짧게 쪼개 대기."""
@@ -4217,6 +4231,12 @@ class MacroRunner:
 
         if action.type == "noop":
             return end_result(status="noop")
+
+        if action.type == "shared_block":
+            result = self._run_actions(action.actions, labels, path=path + ["공용 블록"], idx_path=idx_path, collect_hits=True)
+            self._emit_action_event("action_end", action, path, idx_path, status=result.signal,
+                                    condition_hit=result.condition_hit)
+            return result
 
         if action.type == "sleep":
             sleep_ms = action.resolve_sleep_ms()
@@ -4672,6 +4692,8 @@ class MacroRunner:
                 self.engine._emit_log(f"실행 대상 매크로를 찾을 수 없습니다: {target_ref}")
                 return end_result(status="error", error="macro_target_not_found", macro_target=target_ref)
             target_idx, target_macro = resolved
+            from lib.shared_blocks import expand_macro
+            target_macro = expand_macro(target_macro, self._block_definitions, self._resolver)
             target_label = self.engine._macro_display_name(target_macro, target_idx)
             target_id = self.engine._macro_identifier(target_macro, target_idx)
             target_stack_key = f"{target_idx}:{target_id}" if target_idx is not None else target_id
@@ -5547,6 +5569,8 @@ class MacroEngine:
             self._quick_toggle_states = states
 
     def update_profile(self, profile: MacroProfile):
+        from lib.shared_blocks import validate
+        validate(profile.shared_blocks, [m.to_dict() for m in profile.macros], VariableResolver(profile.variables))
         state_hub.connect_profile(profile)
         app_ctx = self._get_app_context(force=True)
         with self._lock:

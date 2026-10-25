@@ -90,7 +90,7 @@ def action_catalog(actions, *, enabled_override=None):
                     rows.append(dict(path=branch, parent=path, label=f'참→거짓 · {label} · {target}', kind='transition', target=target,
                                      number='↳', disabled=transition_off, gate=path, parallel=False))
                     walk(action.transition_actions, path, branch, transition_off, child_offset, parallel=section)
-            elif action.type == 'group':
+            elif action.type in ('group', 'shared_block'):
                 walk(action.actions, path, path, off, parallel=section)
 
     walk(actions)
