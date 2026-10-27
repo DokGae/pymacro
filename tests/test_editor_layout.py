@@ -12,6 +12,88 @@ from engine import Action, Condition, MacroCondition
 APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 class EditorLayoutTests(unittest.TestCase):
+    def test_preview_test_button_starts_stops_and_cleans_up(self):
+        from unittest.mock import Mock
+        stop = Mock()
+        start = Mock(return_value=stop)
+        dialog = ActionEditDialog(action=Action(type='if', condition=Condition(
+            type='var', var_name='count', var_value_raw='1')), start_condition_debug=start)
+        self.addCleanup(dialog.close)
+        dialog.show()
+        APP.processEvents()
+        button = dialog.condition_test_btn
+        self.assertTrue(button.isVisible())
+        self.assertTrue(button.isEnabled())
+        self.assertIs(button.parentWidget(), dialog.edit_cond_btn.parentWidget())
+        button.click()
+        self.assertEqual(button.text(), '중지')
+        provider = start.call_args.args[0]
+        self.assertEqual(provider()['condition'].var_name, 'count')
+        dialog._condition.var_value_raw = '2'
+        self.assertEqual(provider()['condition'].var_value_raw, '2')
+        draft = ConditionDialog(cond=MacroCondition(condition=Condition(type='key', key='q')))
+        self.addCleanup(draft.close)
+        dialog._condition_preview_dialog = draft
+        self.assertEqual(provider()['condition'].key, 'q')
+        self.assertEqual(draft.debug_test_btn.text(), '테스트')
+        dialog._condition_preview_dialog = None
+        button.click()
+        stop.assert_called_once()
+        self.assertEqual(button.text(), '테스트')
+        button.click()
+        start.call_args.kwargs['on_stop']()
+        self.assertEqual(button.text(), '테스트')
+        button.click()
+        dialog.reject()
+        self.assertEqual(stop.call_count, 2)
+
+    def test_variable_condition_choices_follow_macro_actions(self):
+        from main import MacroDialog, ConditionNodeDialog
+        from engine import Macro
+        macro = MacroDialog(macro=Macro(name='test', trigger_key='a', actions=[
+            Action(type='group', actions=[Action(type='set_var', var_name='몬스터탐색')])]),
+            variable_provider=lambda category: ['등록변수'] if category == 'var' else [])
+        self.addCleanup(macro.close)
+        dialog = ConditionNodeDialog(cond=Condition(type='var', var_name='몬스터탐색'),
+                                     variable_provider=macro._variable_provider)
+        self.addCleanup(dialog.close)
+        self.assertGreaterEqual(dialog.var_name_edit.findText('등록변수'), 0)
+        self.assertIn('몬스터탐색', macro._variable_provider('var'))
+        macro.main_action_tree.load_actions([Action(type='set_var', var_name='새변수')])
+        dialog._refresh_var_name_combo()
+        self.assertGreaterEqual(dialog.var_name_edit.findText('새변수'), 0)
+        for op in ('ge', 'le', 'gt', 'lt'):
+            dialog.var_op_combo.setCurrentIndex(dialog.var_op_combo.findData(op))
+            self.assertFalse(dialog.var_value_edit.isHidden())
+            dialog.var_value_edit.setText('10.5')
+            condition = Condition.from_dict(dialog.get_condition().to_dict())
+            self.assertEqual(condition.var_operator, op)
+            self.assertEqual(condition.var_value_raw, '10.5')
+
+    def test_variable_mode_and_name_changes_keep_value_clickable(self):
+        dialog = ActionEditDialog(action=Action(type='set_var', var_name='변수1'))
+        self.addCleanup(dialog.close)
+        dialog.show()
+        for mode in ('set', 'add', 'sub'):
+            dialog.var_update_mode_combo.setCurrentIndex(
+                dialog.var_update_mode_combo.findData(mode))
+            dialog.var_name_edit.setEditText('몬스터탐색')
+            for _ in range(4):
+                APP.processEvents()
+            self.assertTrue(dialog.var_help_label.isHidden())
+            self.assertIn('몬스터탐색', dialog.var_value_edit.toolTip())
+            field = dialog.var_value_edit
+            point = field.mapToGlobal(field.rect().center())
+            self.assertIs(APP.widgetAt(point), field)
+            QtTest.QTest.mouseClick(APP.widgetAt(point), QtCore.Qt.MouseButton.LeftButton)
+            self.assertTrue(field.hasFocus())
+            field.selectAll()
+            QtTest.QTest.keyClicks(field, '1')
+            action = dialog.get_action()
+            self.assertEqual(action.var_value_raw, '1')
+            self.assertEqual(action.var_update_mode, mode)
+            self.assertEqual(action.var_name, '몬스터탐색')
+
     def test_linked_group_edits_and_deletion_do_not_restore_shared_pixels(self):
         old = Condition(type='any', shared_ref='distance', conditions=[
             Condition(type='pixel', name='10M앞자리', region=(1, 2, 1, 1),

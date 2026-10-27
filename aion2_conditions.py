@@ -27,7 +27,14 @@ def skill_label(code):
     return next((label for skill,label,_ in ALL_SKILLS if skill==code),'지원하지 않는 스킬')
 
 
+LEVEL_SKILLS=tuple(json.loads((Path(__file__).parent/"assets/aion2_skill_levels.json").read_text(encoding="utf-8")))
+
+
 def condition_summary(cond):
+    if cond.aion2_kind=="skill_level":
+        skill=next((r["label"] for r in LEVEL_SKILLS if r["code"]==cond.aion2_skill),"미지원 스킬")
+        op={"ge":"≥","gt":">","le":"≤","lt":"<","eq":"=","ne":"≠"}.get(cond.aion2_level_operator,"?")
+        return f"스킬 레벨 확인: {skill} / {op} {cond.aion2_level}레벨"
     if cond.aion2_kind == 'consumable_cooldown':
         from aion2_consumables import item_label
         op={'ready':'사용 가능 (= 0초)','cooling':'쿨타임 중 (> 0초)', 'le':'≤','lt':'<','ge':'≥','gt':'>','eq':'=','ne':'≠'}.get(cond.aion2_cooldown_operator,'잘못된 판정')
@@ -43,6 +50,7 @@ def condition_summary(cond):
 
 
 def evaluate_aion2(client,cond):
+    if cond.aion2_kind=="skill_level":return evaluate_skill_level(client,cond)
     if cond.aion2_kind == 'consumable_cooldown':
         from aion2_consumables import evaluate_item_cooldown
         return evaluate_item_cooldown(client,cond)
@@ -85,4 +93,21 @@ def evaluate_use_wait(client,cond):
     # A monitoring baseline without any observed use must allow the first attempt.
     result=elapsed==-1 or elapsed>=wait
     detail['status']='감시 시작 후 사용 미감지 · 대기 완료' if elapsed==-1 else '대기 완료' if result else '사용 후 대기 중 · 다음 IF 계속 처리'
+    return result,detail
+
+
+def evaluate_skill_level(client,cond):
+    skill=next((r for r in LEVEL_SKILLS if r['code']==cond.aion2_skill),None)
+    expected=cond.aion2_level;op=cond.aion2_level_operator
+    if skill is None or type(expected) is not int or not 0<=expected<=100 or op not in ('ge','gt','le','lt','eq','ne'):
+        return False,dict(unavailable=True,status='스킬 레벨 설정 오류',aion2_kind='skill_level')
+    available,value,status=client.lookup(cond.external_source,skill['key'])
+    valid=available and type(value) is int and 0<=value<=100
+    detail=dict(key=skill['key'],source=cond.external_source,actual=value,expected=expected,
+                operator=op,unavailable=not valid,aion2_kind='skill_level',skill=skill['label'])
+    if not valid:
+        detail['status']='레벨 미확인 · 모니터 스킬관리에서 해당 스킬의 레벨 전송 체크와 목록 감지를 확인하세요. '+status
+        return False,detail
+    result={'ge':value>=expected,'gt':value>expected,'le':value<=expected,'lt':value<expected,'eq':value==expected,'ne':value!=expected}[op]
+    detail['status']=f"수신 {value}레벨 · "+('미보유 · ' if value==0 else '')+('조건 충족' if result else '조건 미충족')
     return result,detail

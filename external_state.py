@@ -97,17 +97,22 @@ class StateClient:
                 return None, f"다른 프로그램 연결됨: {data['source']}"
             return data, '연결됨'
 
+    def transport_connected(self):
+        with self._lock:return self._socket is not None
+
     def lookup(self, source, key):
         data, status = self.snapshot(source)
         if data is None: return False, None, status
         if key in data.get('unavailable_keys',[]):
-            return False,None,'통신 전송 해제 또는 효과 감지 대기 중입니다.'
+            from communication_status import missing_item_message
+            return False,None,missing_item_message(key,True)
         if key in data['values']: return True, data['values'][key], status
         if any(key.startswith(p) for p in data.get('unavailable_prefixes', [])):
-            return False, None, '감지 대기 · 이 항목은 아직 확인되지 않았습니다.'
+            return False, None, '게임에서 이 항목을 아직 감지하지 못했습니다. 감지될 때까지 이 조건은 통과하지 않습니다.'
         if any(key.startswith(p) for p in data.get('false_prefixes', [])):
             return True, False, status
-        return False, None, '아직 수신하지 않은 항목'
+        from communication_status import missing_item_message
+        return False, None, missing_item_message(key)
 
     def _run(self):
         while not self._stop.is_set():

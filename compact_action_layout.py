@@ -261,7 +261,16 @@ def arrange_compact_action(dialog):
     dialog.cond_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
     add_row(summary_layout, ('cond_label', None, None), full=True)
     used.add(id(dialog.edit_cond_btn))
-    summary_layout.addWidget(dialog.edit_cond_btn, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+    condition_buttons = QtWidgets.QHBoxLayout()
+    condition_buttons.addStretch()
+    condition_buttons.addWidget(dialog.edit_cond_btn)
+    dialog.condition_test_btn = QtWidgets.QPushButton('테스트')
+    dialog.condition_test_btn.setToolTip('미리보기에 표시된 조건을 바로 테스트합니다.')
+    dialog.condition_test_btn.clicked.connect(dialog._toggle_preview_condition_test)
+    dialog._preview_test_stop = None
+    dialog.finished.connect(dialog._stop_preview_condition_test)
+    condition_buttons.addWidget(dialog.condition_test_btn)
+    summary_layout.addLayout(condition_buttons)
     primary.addWidget(dialog.condition_summary_panel)
     dialog.if_confirm_spin.setSuffix(' 회 연속')
     add_row(primary, ('if_confirm_spin', '거짓 확정', 110))
@@ -332,6 +341,9 @@ def refresh_condition_summary(dialog):
         condition = copy.deepcopy(draft.root_condition)
         if condition is not None:
             condition.name = draft.cond_name_edit.text().strip() or None
+    has_condition = condition is not None and not (
+        condition.type in ('all', 'any') and not condition.shared_ref and not condition.conditions)
+    dialog.condition_test_btn.setEnabled(has_condition)
     from shared_ui import controller_for
     controller = controller_for(dialog)
     if condition is not None and controller is not None:

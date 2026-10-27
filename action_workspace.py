@@ -435,6 +435,18 @@ class ActionWorkspaceMixin:
             painter.setFont(font)
             if self.is_if(item) and self._find_else_header(item):
                 text_rect.setRight(self.jump_rect(item).left()-7)
+        if column == 2 and isinstance(data, Action) and data.quick_toggle_id:
+            # Paint a bolt directly so it remains visible without an emoji font.
+            x, y = text_rect.left(), rect.center().y()
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QColor('#bba66a' if disabled else '#d99100'))
+            painter.drawPolygon(QtGui.QPolygonF([
+                QtCore.QPointF(x+8, y-8), QtCore.QPointF(x+1, y+1),
+                QtCore.QPointF(x+6, y+1), QtCore.QPointF(x+4, y+8),
+                QtCore.QPointF(x+12, y-2), QtCore.QPointF(x+7, y-2),
+            ]))
+            text_rect.setLeft(x+18)
         if item.isSelected() and not disabled:
             color = '#164e47'
         painter.setPen(QtGui.QColor(color))

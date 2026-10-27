@@ -34,6 +34,19 @@ def inspect(runner, engine, path=(0,)):
 
 
 class ConditionEvidenceTests(unittest.TestCase):
+    def test_numeric_variable_comparisons_match_debug_and_runtime(self):
+        for op, outcomes in [('ge', (False, True, True)), ('le', (True, True, False)),
+                             ('gt', (False, False, True)), ('lt', (True, False, False))]:
+            for value, expected in zip(('9.5', '10', '10.5', 'hello', None),
+                                       (*outcomes, False, False)):
+                with self.subTest(op=op, value=value):
+                    condition = Condition.from_dict(Condition(type='var', var_name='hp',
+                        var_operator=op, var_value_raw='10').to_dict())
+                    runner, engine = real_runner(condition, variables={'hp': value})
+                    self.assertEqual(engine._evaluate_condition(condition, vars_ctx=runner._vars), expected)
+                    detail = MacroEngine.debug_condition_tree(engine, condition, vars_ctx=runner._vars)
+                    self.assertEqual(detail['result'], expected)
+
     def test_and_short_circuit_disabled_nodes_and_actual_values(self):
         condition = Condition(type='all', conditions=[
             Condition(type='key', key='x', enabled=False),

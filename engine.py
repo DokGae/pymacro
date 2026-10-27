@@ -1310,6 +1310,8 @@ class Condition:
     aion2_skill: int = 18120000
     aion2_item: int = 530116010
     aion2_wait_seconds: float = 1.0
+    aion2_level: int = 1
+    aion2_level_operator: str = 'ge'
     aion2_kind: str = 'use_wait'
     aion2_role: str = 'own'
     aion2_cooldown_operator: str = 'ready'
@@ -1432,7 +1434,7 @@ class Condition:
             except Exception:
                 var_value = str(var_value_raw)
         var_operator_raw = str(data.get("var_operator", "eq")).lower()
-        var_operator = var_operator_raw if var_operator_raw in ("eq", "ne", "even", "odd") else "eq"
+        var_operator = var_operator_raw if var_operator_raw in ("eq", "ne", "even", "odd", "ge", "le", "gt", "lt") else "eq"
         timer_idx_raw = data.get("timer_index", data.get("timer_slot"))
         timer_index = None
         try:
@@ -1482,6 +1484,8 @@ class Condition:
             aion2_skill=int(data.get('aion2_skill',18120000)),
             aion2_item=int(data.get('aion2_item',530116010)),
             aion2_wait_seconds=float(data.get('aion2_wait_seconds',1.0)),
+            aion2_level=int(data.get('aion2_level',1)),
+            aion2_level_operator=str(data.get('aion2_level_operator','ge')),
             aion2_kind=str(data.get('aion2_kind','use_wait')),
             aion2_role=str(data.get('aion2_role','own')),
             aion2_cooldown_operator=str(data.get('aion2_cooldown_operator','ready')),
@@ -1559,7 +1563,7 @@ class Condition:
                            external_operator=self.external_operator, external_value=self.external_value)
         if self.type == 'aion2':
             payload.update(aion2_skill=self.aion2_skill,aion2_item=self.aion2_item,aion2_wait_seconds=self.aion2_wait_seconds)
-            payload.update(aion2_kind=self.aion2_kind,aion2_role=self.aion2_role,
+            payload.update(aion2_level=self.aion2_level,aion2_level_operator=self.aion2_level_operator,aion2_kind=self.aion2_kind,aion2_role=self.aion2_role,
                            aion2_cooldown_operator=self.aion2_cooldown_operator,aion2_cooldown_seconds=self.aion2_cooldown_seconds)
         if self.on_true:
             payload["on_true"] = [c.to_dict() for c in self.on_true]
@@ -2439,9 +2443,11 @@ class MacroTrigger:
     key: str
     mode: MacroMode = "hold"
     hold_press_seconds: Optional[float] = None
+    excluded_modifiers: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         self.key = normalize_trigger_key(self.key)
+        self.excluded_modifiers = [m for m in _TRIGGER_MOD_ALIASES if m in (self.excluded_modifiers or []) and m not in parse_trigger_keys(self.key)]
         try:
             if self.hold_press_seconds in (None, "", False):
                 self.hold_press_seconds = None
@@ -2457,14 +2463,14 @@ class MacroTrigger:
             return None
         default_mode_norm = _normalize_macro_mode(default_mode, default="hold")
         if isinstance(raw, cls):
-            return cls(key=raw.key, mode=raw.mode, hold_press_seconds=raw.hold_press_seconds)
+            return cls(key=raw.key, mode=raw.mode, hold_press_seconds=raw.hold_press_seconds, excluded_modifiers=list(raw.excluded_modifiers))
         if isinstance(raw, str):
             return cls(key=raw, mode=default_mode_norm, hold_press_seconds=default_hold)
         if isinstance(raw, dict):
             key = raw.get("key") or raw.get("trigger_key") or ""
             mode = _normalize_macro_mode(raw.get("mode", default_mode_norm), default=default_mode_norm)
             hold = raw.get("hold_press_seconds", raw.get("hold_threshold", default_hold))
-            return cls(key=key, mode=mode, hold_press_seconds=hold)
+            return cls(key=key, mode=mode, hold_press_seconds=hold, excluded_modifiers=raw.get("excluded_modifiers", []))
         return None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -2472,6 +2478,7 @@ class MacroTrigger:
             "key": self.key,
             "mode": self.mode,
             "hold_press_seconds": self.hold_press_seconds,
+            "excluded_modifiers": list(self.excluded_modifiers),
         }
 
 
@@ -2951,8 +2958,8 @@ class KeySwallower:
         self._enabled = False
         self._keys: Set[int] = set()
         self._mouse_buttons: Set[str] = set()
-        self._key_modifiers: Dict[int, List[frozenset[int]]] = {}
-        self._mouse_modifiers: Dict[str, List[frozenset[int]]] = {}
+        self._key_modifiers: Dict[int, List[tuple[frozenset[int], frozenset[int]]]] = {}
+        self._mouse_modifiers: Dict[str, List[tuple[frozenset[int], frozenset[int]]]] = {}
         self._modifier_codes: Set[int] = set()
         self._swallowed_keys: Set[int] = set()
         self._swallowed_mouse: Set[str] = set()
@@ -3010,17 +3017,29 @@ class KeySwallower:
         self._swallowed_keys.clear()
         self._swallowed_mouse.clear()
 
-    def set_keys(self, keys: List[str]):
+    def set_keys(self, keys: List[str | Dict[str, Any]]):
         self.set_triggers(keys)
 
-    def set_triggers(self, triggers: List[str]):
+    def set_triggers(self, triggers: List[str | Dict[str, Any]]):
         scs: Set[int] = set()
         mouse_buttons: Set[str] = set()
-        key_modifiers: Dict[int, List[frozenset[int]]] = {}
-        mouse_modifiers: Dict[str, List[frozenset[int]]] = {}
+        key_modifiers: Dict[int, List[tuple[frozenset[int], frozenset[int]]]] = {}
+        mouse_modifiers: Dict[str, List[tuple[frozenset[int], frozenset[int]]]] = {}
         modifier_codes: Set[int] = set()
         for trigger in triggers:
+            excluded = trigger.get("excluded_modifiers", []) if isinstance(trigger, dict) else []
+            trigger = trigger["key"] if isinstance(trigger, dict) else trigger
             parts = parse_trigger_keys(trigger)
+            forbidden = set()
+            for mod in excluded:
+                for alias in _TRIGGER_MOD_ALIASES.get(mod, set()):
+                    try:
+                        code = to_scan_code(alias)
+                        if code > 0:
+                            forbidden.add(code)
+                    except Exception:
+                        pass
+            modifier_codes.update(forbidden)
             modifiers: Set[int] = set()
             for part in parts:
                 if part not in _TRIGGER_MOD_KEYS:
@@ -3032,7 +3051,7 @@ class KeySwallower:
                 if modifier_sc > 0:
                     modifiers.add(modifier_sc)
                     modifier_codes.add(modifier_sc)
-            required = frozenset(modifiers)
+            required = (frozenset(modifiers), frozenset(forbidden))
             for k in (part for part in parts if part not in _TRIGGER_MOD_KEYS):
                 mouse_key = _normalize_mouse_trigger_key(k)
                 if mouse_key:
@@ -3060,6 +3079,18 @@ class KeySwallower:
             self._mouse_modifiers = mouse_modifiers
             self._modifier_codes = modifier_codes
             self._clear_pressed_state()
+
+    def _matches_modifier_rule(self, required, forbidden):
+        if not required.issubset(self._pressed_keys) or forbidden.intersection(self._pressed_keys):
+            return False
+        # A modifier may already have been held when the interception filter started.
+        for mod in _TRIGGER_MOD_ALIASES:
+            try:
+                if to_scan_code(mod) in forbidden and get_keystate(mod, async_=True):
+                    return False
+            except Exception:
+                pass
+        return True
 
     def set_enabled(self, enabled: bool):
         with self._lock:
@@ -3211,7 +3242,7 @@ class KeySwallower:
                             self._pressed_keys.add(stroke.code)
                             self._pressed_key_ts[stroke.code] = now
                             requirements = self._key_modifiers.get(stroke.code, [])
-                            swallow = any(req.issubset(self._pressed_keys) for req in requirements)
+                            swallow = any(self._matches_modifier_rule(req, blocked) for req, blocked in requirements)
                             if swallow:
                                 self._swallowed_keys.add(stroke.code)
                         elif is_up:
@@ -3229,7 +3260,7 @@ class KeySwallower:
                                 self._pressed_mouse.add(mouse_key)
                                 self._pressed_mouse_ts[mouse_key] = now
                                 requirements = self._mouse_modifiers.get(mouse_key, [])
-                                swallow = any(req.issubset(self._pressed_keys) for req in requirements)
+                                swallow = any(self._matches_modifier_rule(req, blocked) for req, blocked in requirements)
                                 if swallow:
                                     self._swallowed_mouse.add(mouse_key)
                             elif is_up:
@@ -5570,7 +5601,7 @@ class MacroEngine:
             states[index, key] = enabled
             self._quick_toggle_states = states
 
-    def update_profile(self, profile: MacroProfile):
+    def update_profile(self, profile: MacroProfile, *, preserve_running: bool = False):
         from lib.shared_blocks import validate
         validate(profile.shared_blocks, [m.to_dict() for m in profile.macros], VariableResolver(profile.variables))
         state_hub.connect_profile(profile)
@@ -5594,9 +5625,10 @@ class MacroEngine:
             self._key_delay = copy.deepcopy(getattr(self._profile, "key_delay", self._key_delay))
             self._mouse_delay = copy.deepcopy(getattr(self._profile, "mouse_delay", getattr(self, "_mouse_delay", KeyDelayConfig())))
             self._keyboard_test_key = getattr(self._profile, "keyboard_test_key", self._keyboard_test_key)
-        self._stop_all_macros()
-        self._reset_condition_states()
-        self._reset_timers()
+        if not preserve_running:
+            self._stop_all_macros()
+            self._reset_condition_states()
+            self._reset_timers()
         self._swallower.set_keys(swallow_keys)
         self._apply_keyboard_device(device_id, hardware_id, log=False)
         self._apply_mouse_device(mouse_device_id, mouse_hardware_id, log=False)
@@ -5921,10 +5953,10 @@ class MacroEngine:
             macro.hold_press_seconds = None
         return triggers
 
-    def _swallow_keys_locked(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str]:
+    def _swallow_keys_locked(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str | Dict[str, Any]]:
         ctx = app_ctx if app_ctx is not None else self._get_app_context()
-        keys: List[str] = []
-        seen: Set[str] = set()
+        keys: List[str | Dict[str, Any]] = []
+        seen: Set[tuple[str, tuple[str, ...]]] = set()
         for m in self._profile.macros:
             if not getattr(m, "enabled", True) or not m.suppress_trigger:
                 continue
@@ -5932,13 +5964,14 @@ class MacroEngine:
                 continue
             for trig in self._macro_triggers(m):
                 normalized = normalize_trigger_key(trig.key)
-                if not normalized or normalized in seen:
+                signature = (normalized, tuple(trig.excluded_modifiers))
+                if not normalized or signature in seen:
                     continue
-                seen.add(normalized)
-                keys.append(normalized)
+                seen.add(signature)
+                keys.append({"key": normalized, "excluded_modifiers": list(trig.excluded_modifiers)} if trig.excluded_modifiers else normalized)
         return keys
 
-    def _swallow_keys(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str]:
+    def _swallow_keys(self, app_ctx: Optional[Dict[str, Any]] = None) -> List[str | Dict[str, Any]]:
         with self._lock:
             return self._swallow_keys_locked(app_ctx)
 
@@ -6984,6 +7017,8 @@ class MacroEngine:
         # 이렇게 해야 modifier 상태 변화나 strict 판정 흔들림으로 인한 홀드 고착을 줄일 수 있다.
         pressed_strict, strict_detail = self._trigger_state(trigger.key, disallow_extra_modifiers=True)
         pressed_raw, state_detail = self._trigger_state(trigger.key, disallow_extra_modifiers=False)
+        if any(self._key_state_detail(mod)[0] for mod in trigger.excluded_modifiers):
+            pressed_strict = pressed_raw = False
         self._hold_raw_state[key] = bool(pressed_raw)
         blocked = strict_detail.get("blocked_by_extra_mods", False)
         state_detail["blocked_by_extra_mods"] = blocked
@@ -7080,6 +7115,9 @@ class MacroEngine:
 
             if pixel_cache is None: pixel_cache = {}
 
+            if cond.type == "key" and cond.key == "@trigger":
+                cond = copy.copy(cond)
+                cond.key = (macro_ctx or {}).get("trigger_key")
             if cond.type == "key":
                 if not cond.key:
                     if evidence is not None:
@@ -7213,7 +7251,7 @@ class MacroEngine:
                 op = str(getattr(cond, "var_operator", "eq") or "eq").lower()
                 actual_value = vars_state.var.get(name) if vars_state else None  # type: ignore[union-attr]
                 expected = ""
-                if op in ("eq", "ne"):
+                if op in ("eq", "ne", "ge", "le", "gt", "lt"):
                     expected_raw = cond.var_value_raw if cond.var_value_raw is not None else cond.var_value
                     expected = str(expected_raw) if expected_raw is not None else ""
                     if resolver:
@@ -7224,6 +7262,15 @@ class MacroEngine:
                     base_result = False if actual_value is None else str(actual_value) == expected
                     if op == "ne":
                         base_result = not base_result
+                    elif op in ("ge", "le", "gt", "lt"):
+                        try:
+                            actual_number, expected_number = float(actual_value), float(expected)
+                            base_result = {"ge": actual_number >= expected_number,
+                                           "le": actual_number <= expected_number,
+                                           "gt": actual_number > expected_number,
+                                           "lt": actual_number < expected_number}[op]
+                        except (TypeError, ValueError, OverflowError):
+                            base_result = False
                 elif op == "even":
                     actual_int = _try_parse_var_integer(actual_value)
                     expected = "짝수"
@@ -7420,6 +7467,9 @@ class MacroEngine:
             }
 
         try:
+            if cond.type == "key" and cond.key == "@trigger":
+                cond = copy.copy(cond)
+                cond.key = (macro_ctx or {}).get("trigger_key")
             if cond.type == "key":
                 if not cond.key:
                     raise ValueError("키가 비어 있습니다.")
@@ -7513,7 +7563,7 @@ class MacroEngine:
                 op = str(getattr(cond, "var_operator", "eq") or "eq").lower()
                 actual_value = vars_state.var.get(name) if vars_state else None  # type: ignore[union-attr]
                 expected = ""
-                if op in ("eq", "ne"):
+                if op in ("eq", "ne", "ge", "le", "gt", "lt"):
                     expected_raw = cond.var_value_raw if cond.var_value_raw is not None else cond.var_value
                     expected = str(expected_raw) if expected_raw is not None else ""
                     if resolver:
@@ -7524,6 +7574,15 @@ class MacroEngine:
                     base_result = False if actual_value is None else str(actual_value) == expected
                     if op == "ne":
                         base_result = not base_result
+                    elif op in ("ge", "le", "gt", "lt"):
+                        try:
+                            actual_number, expected_number = float(actual_value), float(expected)
+                            base_result = {"ge": actual_number >= expected_number,
+                                           "le": actual_number <= expected_number,
+                                           "gt": actual_number > expected_number,
+                                           "lt": actual_number < expected_number}[op]
+                        except (TypeError, ValueError, OverflowError):
+                            base_result = False
                 elif op == "even":
                     actual_int = _try_parse_var_integer(actual_value)
                     expected = "짝수"

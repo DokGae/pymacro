@@ -77,7 +77,7 @@ def finish_condition_evidence(node, base, result, detail):
     elif typ == 'aion2':
         d=detail.get('external',{})
         elapsed=d.get('actual')
-        node['actual']=(f"남은 {text(elapsed)}초" if d.get('aion2_kind')=='cooldown' else
+        node['actual']=(f"{text(elapsed)}레벨" if d.get('aion2_kind')=='skill_level' else f"남은 {text(elapsed)}초" if d.get('aion2_kind')=='cooldown' else
                         '감시 시작 후 사용 미감지' if elapsed==-1 else f'{text(elapsed)}초 경과')
         comparison=d.get('status')
         if d.get('unavailable'):

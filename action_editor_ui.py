@@ -18,6 +18,7 @@ class ActionEditorGeometry(QtCore.QObject):
             self.owner = self.owner.parentWidget()
         self.shown = False
         self.last_saved = None
+        self.saved_position = None
         self.timer = QtCore.QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(300)
@@ -25,6 +26,9 @@ class ActionEditorGeometry(QtCore.QObject):
         if self.owner is not None:
             state = self.owner._state.get(self.KEY, {})
             geometry = state.get('geometry') if isinstance(state, dict) else None
+            position = state.get('position') if isinstance(state, dict) else None
+            if isinstance(position,list) and len(position)==2 and all(type(v) is int for v in position):
+                self.saved_position=QtCore.QPoint(*position)
             if isinstance(geometry, str):
                 try:
                     dialog.restoreGeometry(QtCore.QByteArray(bytes.fromhex(geometry)))
@@ -36,6 +40,8 @@ class ActionEditorGeometry(QtCore.QObject):
     def eventFilter(self, watched, event):
         kind = event.type()
         if kind == QtCore.QEvent.Type.Show:
+            if not self.shown and self.saved_position is not None:
+                self.restore_position()
             self.shown = True
         elif kind in (QtCore.QEvent.Type.Move, QtCore.QEvent.Type.Resize,
                       QtCore.QEvent.Type.WindowStateChange):
@@ -45,6 +51,15 @@ class ActionEditorGeometry(QtCore.QObject):
             self.save()
         return False
 
+    def restore_position(self):
+        if self.dialog.isMaximized():return
+        point=self.saved_position
+        screen=QtWidgets.QApplication.screenAt(point) or self.dialog.screen()
+        bounds=screen.availableGeometry()
+        point=QtCore.QPoint(max(bounds.left(),min(point.x(),bounds.right()-min(self.dialog.width(),bounds.width())+1)),
+                           max(bounds.top(),min(point.y(),bounds.bottom()-min(self.dialog.height(),bounds.height())+1)))
+        self.dialog.move(point)
+
     def save(self, *_):
         self.timer.stop()
         if self.owner is None or not self.shown or self.dialog.isMinimized():
@@ -53,6 +68,8 @@ class ActionEditorGeometry(QtCore.QObject):
         if geometry != self.last_saved:
             state = dict(self.owner._state.get(self.KEY, {}))
             state['geometry'] = geometry
+            position=self.dialog.normalGeometry().topLeft() if self.dialog.isMaximized() else self.dialog.pos()
+            state['position']=[position.x(),position.y()]
             self.owner._update_state(self.KEY, state)
             self.last_saved = geometry
 
