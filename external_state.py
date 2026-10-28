@@ -175,8 +175,24 @@ class StateHub:
                           operator=cond.external_operator, status=status, unavailable=not available,
                           connected=data is not None, connection_status=connection_status,
                           host=cond.external_host, port=cond.external_port)
-            if not available: return False, detail
+            if not available:
+                if hasattr(cond, '_stable_observation'): delattr(cond, '_stable_observation')
+                return False, detail
             op = cond.external_operator
+            if op == 'unchanged_seconds':
+                seconds = parse_value(cond.external_value)
+                now = time.monotonic()
+                identity = (data or {}).get('session'), (data or {}).get('values', {}).get('대상이름'), (data or {}).get('values', {}).get('타겟정보')
+                previous = getattr(cond, '_stable_observation', None)
+                valid = type(actual) in (int, float) and type(seconds) in (int, float) and seconds > 0
+                if not valid:
+                    cond._stable_observation = None
+                    return False, detail
+                if previous is None or previous[0] != actual or previous[1] != identity or now - previous[3] > 1.5:
+                    previous = (actual, identity, now, now)
+                cond._stable_observation = (actual, identity, previous[2], now)
+                detail['unchanged_seconds'] = now - previous[2]
+                return now - previous[2] >= seconds, detail
             if op in ('true', 'false'):
                 result = type(actual) is bool and actual is (op == 'true')
             else:

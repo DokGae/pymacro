@@ -1960,7 +1960,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.external_key.setEditText('내효과.123')
         self.external_key.setToolTip('내용 이름을 직접 입력하거나 수신한 항목 목록에서 선택하세요. 예: 내효과.123 / 대상효과.123')
         self.external_op = QtWidgets.QComboBox()
-        for label, op in [('켜짐 (참)','true'),('꺼짐 (거짓)','false'),('같음 (==)','eq'),('다름 (!=)','ne'),('초과 (>)','gt'),('이상 (>=)','ge'),('미만 (<)','lt'),('이하 (<=)','le')]:
+        for label, op in [('켜짐 (참)','true'),('꺼짐 (거짓)','false'),('같음 (==)','eq'),('다름 (!=)','ne'),('초과 (>)','gt'),('이상 (>=)','ge'),('미만 (<)','lt'),('이하 (<=)','le'),('값 유지 시간 (초)','unchanged_seconds')]:
             self.external_op.addItem(label,op)
         self.external_value = QtWidgets.QLineEdit(); self.external_value.setPlaceholderText('숫자(소수 가능) 또는 문자열 · 예: 1.5 / 작업완료')
         self.external_status = QtWidgets.QLabel('연결 대기 중'); self.external_status.setWordWrap(True)
