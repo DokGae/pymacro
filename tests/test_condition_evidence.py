@@ -34,6 +34,26 @@ def inspect(runner, engine, path=(0,)):
 
 
 class ConditionEvidenceTests(unittest.TestCase):
+    def test_no_active_conditions_pass_without_inspecting_inputs(self):
+        for mode in ('all', 'any'):
+            for children in ([], [Condition(type='key', key='x', enabled=False)]):
+                with self.subTest(mode=mode, children=len(children)):
+                    condition = Condition(type=mode, conditions=children)
+                    runner, engine = real_runner(condition)
+                    engine.debug_condition_tree = MacroEngine.debug_condition_tree.__get__(engine)
+                    self.assertTrue(engine._evaluate_condition(condition))
+                    detail = MacroEngine.debug_condition_tree(engine, condition, vars_ctx=runner._vars)
+                    self.assertTrue(detail['result'])
+                    evidence, counts = inspect(runner, engine)
+                    self.assertEqual(evidence['state'], 'true')
+                    engine._key_pressed.assert_not_called()
+
+    def test_disabled_root_passes_without_inspecting_inputs(self):
+        condition = Condition(type='key', key='x', enabled=False)
+        runner, engine = real_runner(condition)
+        self.assertTrue(engine._evaluate_condition(condition))
+        engine._key_pressed.assert_not_called()
+
     def test_numeric_variable_comparisons_match_debug_and_runtime(self):
         for op, outcomes in [('ge', (False, True, True)), ('le', (True, True, False)),
                              ('gt', (False, False, True)), ('lt', (True, False, False))]:

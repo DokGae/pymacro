@@ -7111,7 +7111,7 @@ class MacroEngine:
             vars_state = vars_ctx if vars_ctx is not None else getattr(self, "_vars", None)
 
             if getattr(cond, "enabled", True) is False:
-                return False
+                return True
 
             if pixel_cache is None: pixel_cache = {}
 
@@ -7204,7 +7204,7 @@ class MacroEngine:
                 }
             elif cond.type == "all":
                 active_children = [(idx, c) for idx, c in enumerate(cond.conditions or []) if getattr(c, "enabled", True)]
-                base_result = bool(active_children) and all(
+                base_result = all(
                     self._evaluate_condition(
                         c,
                         key_states=key_states,
@@ -7224,7 +7224,7 @@ class MacroEngine:
                 }
             elif cond.type == "any":
                 active_children = [(idx, c) for idx, c in enumerate(cond.conditions or []) if getattr(c, "enabled", True)]
-                base_result = bool(active_children) and any(
+                base_result = not active_children or any(
                     self._evaluate_condition(
                         c,
                         key_states=key_states,
@@ -7549,7 +7549,7 @@ class MacroEngine:
                     if getattr(child, "enabled", True):
                         active_children.append(child_res)
                 effective_results = _collect_effective_results(active_children)
-                base_result = _reduce_results(cond.type, effective_results)
+                base_result = _reduce_results(cond.type, effective_results) if active_children else True
                 detail["group"] = {
                     "mode": cond.type,
                     "count": len(active_children),

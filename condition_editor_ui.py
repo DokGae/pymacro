@@ -143,7 +143,7 @@ def arrange_condition_editor(dialog, group, toolbar, organize_row):
     tree.setTreePosition(0)
     from editor_theme import ConditionCheckDelegate
     tree.setItemDelegateForColumn(3, ConditionCheckDelegate(tree))
-    tree.headerItem().setToolTip(3, '체크하면 조건을 사용합니다. 해제하면 건너뜁니다.')
+    tree.headerItem().setToolTip(3, '체크하면 조건을 사용합니다. 해제하면 건너뜁니다. 활성 조건이 없으면 참으로 통과합니다.')
     tree.setAlternatingRowColors(False)
     tree.setIndentation(22)
     tree.setUniformRowHeights(True)
