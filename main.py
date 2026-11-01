@@ -17947,6 +17947,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._legacy_state_path = self._config_dir / "global_state.json"
         self._state_path = self._config_dir / "local" / "global_state.json"
         self._state: dict = self._load_state()
+        from input_device_settings import InputDeviceSettings
+        self._input_device_settings = InputDeviceSettings()
+        self._input_device_settings.initialize(self.profile, self._state.get('last_profile_path'))
         self._debugger_state = self._state.get("debugger", {}) if isinstance(self._state, dict) else {}
         self._image_viewer_state = self._state.get("image_viewer", {}) if isinstance(self._state, dict) else {}
         self._color_calc_state = self._state.get("color_calc", {}) if isinstance(self._state, dict) else {}
@@ -18287,6 +18290,9 @@ class MacroWindow(QtWidgets.QMainWindow):
     ):
         delay_cfg = key_delay if isinstance(key_delay, KeyDelayConfig) else KeyDelayConfig()
         mouse_delay_cfg = mouse_delay if isinstance(mouse_delay, KeyDelayConfig) else KeyDelayConfig()
+        if mode != 'hardware':
+            device_id, hardware_id = self.profile.keyboard_device_id, self.profile.keyboard_hardware_id
+            mouse_device_id, mouse_hardware_id = self.profile.mouse_device_id, self.profile.mouse_hardware_id
         self.profile.input_mode = mode
         self.profile.key_delay = delay_cfg
         self.profile.mouse_delay = mouse_delay_cfg
@@ -18306,10 +18312,9 @@ class MacroWindow(QtWidgets.QMainWindow):
             mouse_delay=mouse_delay_cfg,
             test_key=self.profile.keyboard_test_key,
         )
+        self._input_device_settings.save(self.profile)
         self._last_backend_state = status
         self._update_keyboard_summary(status)
-        if not self._loading_profile:
-            self._mark_dirty()
         return status
     def _run_keyboard_test_main(self):
         key = getattr(self.profile, "keyboard_test_key", "f24") or "f24"
@@ -19352,10 +19357,10 @@ class MacroWindow(QtWidgets.QMainWindow):
             pixel_color_raw=color_raw,
             pixel_tolerance=tolerance,
             pixel_expect_exists=expect_exists,
-            keyboard_device_id=self.profile.keyboard_device_id if input_mode == "hardware" else None,
-            keyboard_hardware_id=self.profile.keyboard_hardware_id if input_mode == "hardware" else None,
-            mouse_device_id=self.profile.mouse_device_id if input_mode == "hardware" else None,
-            mouse_hardware_id=self.profile.mouse_hardware_id if input_mode == "hardware" else None,
+            keyboard_device_id=self.profile.keyboard_device_id,
+            keyboard_hardware_id=self.profile.keyboard_hardware_id,
+            mouse_device_id=self.profile.mouse_device_id,
+            mouse_hardware_id=self.profile.mouse_hardware_id,
             keyboard_test_key=test_key,
             input_mode=input_mode,
             key_delay=key_delay if isinstance(key_delay, KeyDelayConfig) else KeyDelayConfig.from_dict(key_delay),
@@ -20397,6 +20402,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         if not self._confirm_save_if_dirty():
             return
         self.profile = copy.deepcopy(DEFAULT_PROFILE)
+        self._input_device_settings.apply(self.profile)
         self.current_profile_path = None
         self._persist_last_profile_path(None)
         self._loading_profile = True
@@ -20427,6 +20433,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             profile = MacroProfile.from_dict(data)
+            self._input_device_settings.apply(profile)
         except Exception as exc:
             if show_error_dialog:
                 QtWidgets.QMessageBox.warning(self, "불러오기 실패", str(exc))
@@ -20489,7 +20496,8 @@ class MacroWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "입력 오류", str(exc))
             return False
         try:
-            Path(path).write_text(json.dumps(profile.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+            from input_device_settings import portable_profile
+            Path(path).write_text(json.dumps(portable_profile(profile), indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "저장 실패", str(exc))
             return False
@@ -20766,7 +20774,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         if not save_path:
             return
         try:
-            Path(save_path).write_text(json.dumps(scaled_profile.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            from input_device_settings import portable_profile
+            Path(save_path).write_text(json.dumps(portable_profile(scaled_profile), ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "저장 실패", str(exc))
             return
