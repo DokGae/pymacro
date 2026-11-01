@@ -121,6 +121,9 @@ class ActionWorkspaceMixin:
         self._workspace_updating = True
         try:
             items = list(self.items())
+            search = getattr(self, 'editor_search', None)
+            if search:
+                search.prepare(self, items)
             if self._focus_item is not None and not any(i is self._focus_item for i in items):
                 self._focus_item = None
                 self._focus_view = None
@@ -137,6 +140,8 @@ class ActionWorkspaceMixin:
                             or self._is_descendant(item, self._focus_item)
                             or self._is_descendant(self._focus_item, item))
                 hidden = not in_focus or (self._hide_disabled and self._disabled_depth(item) is not None)
+                if search and search.query:
+                    hidden = search.hidden(self, item)
                 item.setHidden(hidden)
                 if hidden and item.isSelected():
                     item.setSelected(False)
@@ -152,6 +157,8 @@ class ActionWorkspaceMixin:
                 description = item.text(4).strip()
                 for column in range(self.columnCount()):
                     item.setToolTip(column, description)
+                    if search and id(item) in search.matches.get(self, {}):
+                        item.setToolTip(column, search.matches[self][id(item)] + '\n' + description)
             # Inner ends precede outer ends when they share the same last visible row.
             def last_visible(item):
                 last = item
@@ -181,6 +188,8 @@ class ActionWorkspaceMixin:
             self.viewport().update()
             self.update_location()
             self._update_controls()
+            if search:
+                search.update_count()
         finally:
             self._workspace_updating = False
 
@@ -449,6 +458,9 @@ class ActionWorkspaceMixin:
             text_rect.setLeft(x+18)
         if item.isSelected() and not disabled:
             color = '#164e47'
+        search = getattr(self, 'editor_search', None)
+        if search and search.query and id(item) in search.matches.get(self, {}) and column == 2 and disabled:
+            text = '[꺼짐] ' + text
         painter.setPen(QtGui.QColor(color))
         align = QtCore.Qt.AlignmentFlag.AlignVCenter | (QtCore.Qt.AlignmentFlag.AlignRight if column == 0 else QtCore.Qt.AlignmentFlag.AlignLeft)
         # No special glyph dependency for the branch marker.
@@ -458,6 +470,14 @@ class ActionWorkspaceMixin:
             painter.drawLine(x-3,y+2,x+4,y+2)
         else:
             text = painter.fontMetrics().elidedText(text, QtCore.Qt.TextElideMode.ElideRight, max(0, text_rect.width()))
+            search = getattr(self, 'editor_search', None)
+            if search and search.query and column != 0:
+                start = text.casefold().find(search.query)
+                if start >= 0:
+                    metrics = painter.fontMetrics()
+                    highlight = QtCore.QRect(text_rect.left() + metrics.horizontalAdvance(text[:start]),
+                                             text_rect.top(), metrics.horizontalAdvance(text[start:start+len(search.query)]), text_rect.height())
+                    painter.fillRect(highlight, QtGui.QColor('#ffd365'))
             painter.drawText(text_rect, align, text)
         painter.restore()
 
@@ -806,6 +826,8 @@ class ActionWorkspaceMixin:
         self.update_alt_labels()
 
     def startDrag(self, supported_actions):
+        if getattr(self, 'editor_search', None) and self.editor_search.query:
+            return
         if not self._grip_pressed:
             return
         self._grip_pressed = False

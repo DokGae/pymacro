@@ -234,6 +234,7 @@ def arrange_compact_action(dialog):
     add_row(primary, ('process_path_wrap', '실행 파일', None), full=True)
     add_row(primary, ('process_args_edit', '실행 인자', None), full=True)
     add_row(primary, ('process_cwd_edit', '작업 폴더', None), full=True)
+    add_row(primary, ('process_admin_check', None, None))
     add_row(primary, ('window_match_mode_combo', '창 찾기', 200))
     add_row(primary, ('window_title_edit', '창 제목', None), full=True)
     add_row(primary, ('window_process_edit', '프로세스', None), full=True)
@@ -272,6 +273,8 @@ def arrange_compact_action(dialog):
     condition_buttons.addWidget(dialog.condition_test_btn)
     summary_layout.addLayout(condition_buttons)
     primary.addWidget(dialog.condition_summary_panel)
+    from if_test_ui import add_test_panel
+    add_test_panel(dialog, primary)
     dialog.if_confirm_spin.setSuffix(' 회 연속')
     add_row(primary, ('if_confirm_spin', '거짓 확정', 110))
     add_row(transition_layout, ('transition_check', None, None))
@@ -407,6 +410,7 @@ def refresh_compact_action(dialog):
     dialog.delay_section.setVisible(not dialog.delay_override_group.isHidden())
     dialog.condition_summary_panel.setVisible(not dialog.cond_label.isHidden())
     typ = dialog._current_type()
+    dialog.if_test_panel.setVisible(typ == 'if')
     titles = {'press': '키 입력', 'down': '키 누르기', 'up': '키 떼기',
         'if': '조건', 'elif': '조건', 'group': '그룹 실행', 'sleep': '대기 시간',
         'mouse_click': '마우스 클릭', 'mouse_down': '마우스 누르기', 'mouse_up': '마우스 떼기',

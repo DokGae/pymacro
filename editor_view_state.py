@@ -12,10 +12,12 @@ def _json_view(view):
 
 def collect_editor_view(dialog):
     trees = []
-    for tree in editor_trees(dialog):
-        view = _json_view(tree.view_state())
+    search = getattr(dialog, 'editor_search', None)
+    for index, tree in enumerate(editor_trees(dialog)):
+        saved = search.saved[index] if search and search.saved else None
+        view = _json_view(saved[0] if saved else tree.view_state())
         view.update(hide_disabled=tree._hide_disabled,
-                    horizontal_scroll=tree.horizontalScrollBar().value(),
+                    horizontal_scroll=saved[3] if saved else tree.horizontalScrollBar().value(),
                     columns=[tree.columnWidth(i) for i in range(tree.columnCount())],
                     focus=list(tree._item_path_key(tree._focus_item)) if tree._focus_item else None,
                     focus_view=_json_view(tree._focus_view) if tree._focus_view else None)
@@ -23,7 +25,7 @@ def collect_editor_view(dialog):
     size = dialog.normalGeometry().size() if dialog.isMaximized() else dialog.size()
     return dict(size=[size.width(), size.height()], maximized=dialog.isMaximized(),
                 geometry=bytes(dialog.saveGeometry().toHex()).decode(),
-                tab=dialog.action_tabs.currentIndex(), trees=trees)
+                tab=search.saved_tab if search and search.saved else dialog.action_tabs.currentIndex(), trees=trees)
 
 
 def _restore_tree(tree, view):

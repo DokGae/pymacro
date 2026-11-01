@@ -6,7 +6,7 @@ dist/
 wheels/
 *.egg-info
 screenshot/
-setting/
+# setting/
 pattern/
 config/global_state.json
 config/local/

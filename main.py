@@ -7729,7 +7729,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.window_pick_btn = QtWidgets.QPushButton("현재 창 목록에서 선택...")
         self.process_path_edit = QtWidgets.QLineEdit()
         self.process_path_edit.setPlaceholderText("예: C:\\Program Files\\Purple\\Purple.exe")
-        self.process_path_browse_btn = QtWidgets.QPushButton("EXE 선택...")
+        self.process_path_browse_btn = QtWidgets.QPushButton("파일 선택...")
         process_path_row = QtWidgets.QHBoxLayout()
         process_path_row.setContentsMargins(0, 0, 0, 0)
         process_path_row.setSpacing(6)
@@ -7739,6 +7739,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.process_path_wrap.setLayout(process_path_row)
         self.process_args_edit = QtWidgets.QLineEdit()
         self.process_args_edit.setPlaceholderText("실행 인자(선택)")
+        self.process_admin_check = QtWidgets.QCheckBox('관리자 권한으로 실행')
+        self.process_admin_check.setToolTip('실행·재실행 시 Windows 관리자 권한 승인(UAC)을 요청합니다. 승인 취소 시 실행 실패로 처리합니다.')
         self.process_cwd_edit = QtWidgets.QLineEdit()
         self.process_cwd_edit.setPlaceholderText("작업 폴더(선택, 비우면 기본값)")
         self.window_match_mode_combo = QtWidgets.QComboBox()
@@ -7965,6 +7967,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("실행 파일", self.process_path_wrap)
         form.addRow("실행 인자", self.process_args_edit)
         form.addRow("작업 폴더", self.process_cwd_edit)
+        form.addRow(self.process_admin_check)
         form.addRow("창 찾기 방식", self.window_match_mode_combo)
         form.addRow("창 제목", self.window_title_edit)
         form.addRow("프로세스명", self.window_process_edit)
@@ -8224,7 +8227,7 @@ class ActionEditDialog(QtWidgets.QDialog):
                 self.process_path_edit.setText(str(info.get("process_path") or ""))
             _set_combo_data(self.window_match_mode_combo, "process_title_contains", fallback="process_title_contains")
     def _browse_process_file(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "실행 파일 선택", "", "Executables (*.exe);;All Files (*.*)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "실행 파일 선택", "", "실행 파일 (*.exe *.com *.cmd *.bat);;모든 파일 (*.*)")
         if path:
             self.process_path_edit.setText(path)
             if not self.window_process_edit.text().strip():
@@ -8561,6 +8564,8 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.process_args_edit.setEnabled(show_process_launch or show_process_restart)
         self._set_field_visible(self.process_cwd_edit, show_process_launch or show_process_restart)
         self.process_cwd_edit.setEnabled(show_process_launch or show_process_restart)
+        self._set_field_visible(self.process_admin_check, show_process_launch or show_process_restart)
+        self.process_admin_check.setEnabled(show_process_launch or show_process_restart)
         self._set_field_visible(self.window_pick_btn, show_process_control)
         self.window_pick_btn.setEnabled(show_process_control)
         self._set_field_visible(self.window_match_mode_combo, show_window_focus)
@@ -8861,6 +8866,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.process_path_edit.setText(str(getattr(act, "process_path", "") or ""))
         self.process_args_edit.setText(str(getattr(act, "process_args", "") or ""))
         self.process_cwd_edit.setText(str(getattr(act, "process_cwd", "") or ""))
+        self.process_admin_check.setChecked(getattr(act, "process_run_as_admin", False))
         self.window_title_edit.setText(str(getattr(act, "window_title", "") or ""))
         self.window_process_edit.setText(str(getattr(act, "window_process", "") or ""))
         self.window_class_edit.setText(str(getattr(act, "window_class", "") or ""))
@@ -9143,6 +9149,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             act.process_path = self.process_path_edit.text().strip() or None
             act.process_args = self.process_args_edit.text().strip() or None
             act.process_cwd = self.process_cwd_edit.text().strip() or None
+            act.process_run_as_admin = self.process_admin_check.isChecked()
             if act.process_control_action == "launch":
                 if not act.process_path:
                     raise ValueError("실행할 프로그램 파일을 선택하세요.")
@@ -9790,6 +9797,9 @@ class MacroDialog(QtWidgets.QDialog):
         stop_content_layout.addLayout(stop_btns)
         stop_layout.addWidget(self.stop_content, stretch=1)
         self.action_tabs.addTab(self.stop_group, "중단 시 실행")
+        from editor_search import EditorSearch
+        self.editor_search = EditorSearch(self)
+        layout.insertWidget(layout.indexOf(self.action_tabs), self.editor_search)
         self.action_tabs.addTab(self.trigger_page, "트리거")
         self.action_tabs.addTab(self.settings_page, "기본·실행 설정")
         btn_row = QtWidgets.QHBoxLayout()
@@ -10481,6 +10491,8 @@ class MacroDialog(QtWidgets.QDialog):
                     f"미지원 마우스 이벤트 {skipped}개는 제외하고 그룹에 추가했습니다.",
                 )
     def _add_action(self, *, as_child: bool = False, tree: ActionTreeWidget | None = None, branch: str | None = None, parallel_type: str | None = None):
+        if self._raise_open_action_editor():
+            return
         target_tree = tree or self.action_tree
         selected = self._selected_item(target_tree)
         parallel_root = target_tree is self.parallel_action_tree and not as_child and not branch
@@ -10741,7 +10753,19 @@ class MacroDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "선택 없음", "ELSE를 제거할 if를 선택하세요.")
             return
         tgt.remove_else_header(target)
+    def _raise_open_action_editor(self):
+        for dialog in self.findChildren(QtWidgets.QDialog, options=QtCore.Qt.FindChildOption.FindDirectChildrenOnly):
+            if dialog.objectName() == 'actionEditor' and dialog.isVisible():
+                if dialog.isMinimized():
+                    dialog.showNormal()
+                dialog.raise_()
+                dialog.activateWindow()
+                return True
+        return False
+
     def _edit_action(self):
+        if self._raise_open_action_editor():
+            return
         item = self._selected_item()
         if not item:
             QtWidgets.QMessageBox.information(self, "선택 없음", "편집할 액션을 선택하세요.")
@@ -10913,6 +10937,8 @@ class MacroDialog(QtWidgets.QDialog):
             macro_list_provider=self._macro_list_provider,
         )
         prepare_usage_action(self, dlg)
+        from if_test_ui import bind_test_panel
+        bind_test_panel(dlg, self, item, self.action_tree)
         if _run_dialog_non_modal(dlg):
             try:
                 new_act = dlg.get_action()
@@ -17686,7 +17712,11 @@ class VariableManagerDialog(QtWidgets.QDialog):
 
 class MacroStatusPopup(QtWidgets.QDialog):
     def __init__(self, parent=None, *, state: dict | None = None, save_state_cb=None):
-        super().__init__(parent)
+        # An owned tool window can raise its owner when activated on Windows.
+        super().__init__(None)
+        self.setModal(False)
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, True)
         self._save_state_cb = save_state_cb
         self._app_closing = False
         self._app_closing_visible: bool | None = None
@@ -21611,6 +21641,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         if self._macro_status_popup:
             try:
                 self._macro_status_popup.prepare_app_close()
+                self._macro_status_popup.close()
             except Exception:
                 pass
         self._fail_capture_hotkey_prev = False

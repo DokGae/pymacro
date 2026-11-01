@@ -2,13 +2,14 @@
 from pathlib import Path
 from PyQt6 import QtCore, QtGui, QtWidgets
 from action_controls import macro_actions
+from quick_toggle_groups import GroupedToggleMixin
 
 
 class ProfileTitle(QtWidgets.QLabel):
     def paintEvent(self, event):
         p = QtGui.QPainter(self)
         p.setFont(self.font())
-        p.setPen(QtGui.QColor('#cbd5e1'))
+        p.setPen(QtGui.QColor('#f3f6fc'))
         text = self.fontMetrics().elidedText(self.text(), QtCore.Qt.TextElideMode.ElideRight, self.width())
         p.drawText(self.rect(), QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter, text)
 
@@ -167,7 +168,8 @@ class ToggleSwitch(QtWidgets.QAbstractButton):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setCheckable(True)
-        self.setFixedSize(66, 30)
+        self.setFixedSize(38, 24)
+        self.mixed = False
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
 
@@ -175,25 +177,22 @@ class ToggleSwitch(QtWidgets.QAbstractButton):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         on = self.isChecked()
+        mixed = self.mixed
         p.setPen(QtCore.Qt.PenStyle.NoPen)
-        p.setBrush(QtGui.QColor('#62dec0' if on else '#343c48'))
-        p.drawRoundedRect(QtCore.QRectF(1, 1, 64, 28), 14, 14)
-        p.setBrush(QtGui.QColor('#112d27' if on else '#a7b0bd'))
-        p.drawEllipse(QtCore.QRectF(42 if on else 5, 5, 20, 20))
-        p.setPen(QtGui.QColor('#112d27' if on else '#d1d7e0'))
-        font = self.font()
-        font.setPixelSize(10)
-        font.setBold(True)
-        p.setFont(font)
-        p.drawText(QtCore.QRect(6 if on else 27, 0, 33, 30),
-                   QtCore.Qt.AlignmentFlag.AlignCenter, 'ON' if on else 'OFF')
+        p.setBrush(QtGui.QColor('#665838' if mixed else '#65dfbd' if on else '#475263'))
+        p.drawRoundedRect(QtCore.QRectF(1, 2, 36, 20), 10, 10)
+        p.setBrush(QtGui.QColor('#f0d49e' if mixed else '#153a30' if on else '#a9b4c4'))
+        if mixed:
+            p.drawRoundedRect(QtCore.QRectF(13, 10, 12, 3), 1.5, 1.5)
+        else:
+            p.drawEllipse(QtCore.QRectF(21 if on else 5, 6, 12, 12))
         if self.hasFocus():
             p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
             p.setPen(QtGui.QPen(QtGui.QColor('#b7f5e5'), 1))
-            p.drawRoundedRect(QtCore.QRectF(1, 1, 64, 28), 14, 14)
+            p.drawRoundedRect(QtCore.QRectF(1, 2, 36, 20), 10, 10)
 
 
-class QuickToggleWindow(QtWidgets.QDialog):
+class QuickToggleWindow(GroupedToggleMixin, QtWidgets.QDialog):
     def __init__(self, owner):
         # A native owned window brings its owner forward when activated on Windows.
         # Keep the controller reference without creating a Qt/native parent link.
@@ -206,19 +205,21 @@ class QuickToggleWindow(QtWidgets.QDialog):
         self.clickthrough_surface = None
         self._ready = False
         self._app_closing = False
-        self.setFont(QtGui.QFont('Malgun Gothic', 9))
+        font = QtGui.QFont('Malgun Gothic', 10)
+        font.setHintingPreference(QtGui.QFont.HintingPreference.PreferFullHinting)
+        self.setFont(font)
         self.setModal(False)
         self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
         self.setWindowTitle('빠른 토글')
-        self.resize(300, 270)
+        self.resize(370, 560)
         self.setMinimumSize(250, 155)
         self.setStyleSheet('''
             QDialog {background:transparent; color:#edf1f7;}
             QLabel {color:#edf1f7; background:transparent; border:0;}
-            QToolButton {color:#9ba7b7; background:transparent; border:0;
+            QToolButton {color:#d0dbe8; font-size:12px; font-weight:600; background:transparent; border:0;
                 border-radius:8px; padding:6px;}
             QToolButton:hover {background:#2a323e; color:#edf1f7;}
-            QToolButton:checked {color:#62dec0; background:#253b38;}
+            QToolButton:checked {color:#a0f3d9; background:#253b38;}
             QScrollArea, QWidget#toggleBody {background:transparent; border:0;}
             QFrame#toggleRow {background:transparent; border:0;}
             QSlider::groove:horizontal {height:3px; background:#344154; border-radius:1px;}
@@ -237,7 +238,7 @@ class QuickToggleWindow(QtWidgets.QDialog):
         header.setSpacing(3)
         title = self.profile_title = ProfileTitle()
         title.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        title.setStyleSheet('font-size:12px; font-weight:600; color:#cbd5e1;')
+        title.setStyleSheet('font-size:14px; font-weight:700; color:#f3f6fc;')
         title.setMinimumWidth(0)
         title.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         header.addWidget(title, 1)
@@ -259,6 +260,7 @@ class QuickToggleWindow(QtWidgets.QDialog):
         self.close_button.clicked.connect(self.close)
         header.addWidget(self.close_button)
         layout.addWidget(self.header)
+        self.init_groups(layout)
         scroll = self.scroll = QtWidgets.QScrollArea()
         scroll.viewport().setAutoFillBackground(False)
         scroll.setWidgetResizable(True)
@@ -273,6 +275,9 @@ class QuickToggleWindow(QtWidgets.QDialog):
         layout.addWidget(scroll)
         footer = QtWidgets.QHBoxLayout()
         footer.setContentsMargins(0, 0, 0, 0)
+        self.status_label = QtWidgets.QLabel()
+        self.status_label.setStyleSheet("font-size:11px; font-weight:600; color:#bcd6c9;")
+        footer.addWidget(self.status_label)
         footer.addStretch()
         self.lock_button = HeaderButton('lock', '잠금')
         self.lock_button.setObjectName('lockButton')
@@ -304,6 +309,9 @@ class QuickToggleWindow(QtWidgets.QDialog):
 
     def set_locked(self, locked):
         self.interaction_locked = locked
+        self.edit_button.setEnabled(not locked)
+        if locked and self.editing:
+            self.set_editing(False)
         self.lock_button.setAccessibleName('잠금 해제' if locked else '잠금')
         self.lock_button.setToolTip('잠금 해제 · 클릭 통과 끄기' if locked
                                     else '잠금 · 버튼 외 영역의 클릭을 게임으로 통과')
@@ -326,7 +334,7 @@ class QuickToggleWindow(QtWidgets.QDialog):
             if not button.isVisibleTo(self) or not button.isEnabled():
                 continue
             rect = QtCore.QRect(button.mapTo(self, QtCore.QPoint()), button.size())
-            if isinstance(button, ToggleSwitch):
+            if self.body.isAncestorOf(button):
                 rect = rect.intersected(viewport_rect)
             region |= QtGui.QRegion(rect)
         return region
@@ -391,14 +399,15 @@ class QuickToggleWindow(QtWidgets.QDialog):
             p.setPen(QtGui.QPen(line, 1))
             p.drawRoundedRect(QtCore.QRectF(rect).adjusted(.5, .5, -.5, -.5), radius, radius)
 
-        rounded(self.rect(), '#10141c', '#303a4a', 10)
+        rounded(self.rect(), '#191e26', '#323b45', 12)
         if hasattr(self, 'scroll'):
             viewport = self.scroll.viewport()
             p.setClipRect(QtCore.QRect(viewport.mapTo(self, QtCore.QPoint()), viewport.size()))
             for card in self.body.findChildren(QtWidgets.QFrame, 'toggleRow'):
                 if card.isVisible():
                     rounded(QtCore.QRect(card.mapTo(self, QtCore.QPoint()), card.size()),
-                            '#1b222e', '#283244', 10)
+                            '#27382f' if card.property('toggleState') == 'on' else '#202731',
+                            '#45695c' if card.property('toggleState') == 'on' else '#202731', 8)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -426,48 +435,7 @@ class QuickToggleWindow(QtWidgets.QDialog):
         return result
 
     def refresh(self):
-        path = getattr(self.owner, 'current_profile_path', None)
-        name = Path(path).stem if path else '새 매크로'
-        if self.profile_title.text() != name:
-            self.profile_title.setText(name)
-            self.profile_title.setToolTip(str(path) if path else name)
-            self.setWindowTitle(name)
-        entries = self.entries()
-        signature = tuple((row, a.quick_toggle_id, a.quick_toggle_name, a.name,
-                           a.enabled, blocked, name) for row, a, blocked, name in entries)
-        if signature == self.signature:
-            self.sync_clickthrough()
-            return
-        self.signature = signature
-        while self.rows.count():
-            widget = self.rows.takeAt(0).widget()
-            widget.hide()
-            widget.deleteLater()
-        if not entries:
-            label = QtWidgets.QLabel('IF · 액션 편집에서\n「빠른 토글에 표시」를 선택하세요.')
-            label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            label.setStyleSheet('color:#8d9aaa; padding:24px 0; font-size:12px;')
-            self.rows.addWidget(label)
-        for row, action, blocked, macro_name in entries:
-            card = QtWidgets.QFrame()
-            card.setObjectName('toggleRow')
-            line = QtWidgets.QHBoxLayout(card)
-            line.setContentsMargins(14, 12, 12, 12)
-            label = QtWidgets.QLabel(action.quick_toggle_name or action.name or action.type)
-            label.setWordWrap(True)
-            label.setStyleSheet('font-size:13px; font-weight:500;')
-            label.setToolTip(f'{macro_name}\n' + ('상위 항목이 꺼져 있어 실행되지 않습니다.' if blocked else ''))
-            line.addWidget(label, 1)
-            switch = ToggleSwitch()
-            switch.setChecked(action.enabled)
-            switch.setAccessibleName(label.text())
-            switch.setToolTip('상위 항목 꺼짐' if blocked else '다음 실행부터 반영')
-            switch.clicked.connect(lambda checked, r=row, key=action.quick_toggle_id:
-                                   self.owner._set_quick_toggle(r, key, checked))
-            line.addWidget(switch)
-            self.rows.addWidget(card)
-        self.update()
-        QtCore.QTimer.singleShot(0, self.sync_clickthrough)
+        self.refresh_groups()
 
     def showEvent(self, event):
         self.refresh()
@@ -482,6 +450,7 @@ class QuickToggleWindow(QtWidgets.QDialog):
 
     def save_state(self, visible=None):
         self.owner._update_state('quick_toggle', {
+            'profiles': self.layouts,
             'geometry': bytes(self.saveGeometry().toHex()).decode(),
             'pinned': self.pin.isChecked(),
             'background_opacity': self.background_opacity,

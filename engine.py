@@ -1680,6 +1680,7 @@ class Action:
     process_path: Optional[str] = None
     process_args: Optional[str] = None
     process_cwd: Optional[str] = None
+    process_run_as_admin: bool = False
     key_delay_override_enabled: bool = False
     key_delay_override: Optional[KeyDelayConfig] = None
     has_else_branch: bool = False
@@ -2122,6 +2123,7 @@ class Action:
             window_wait_ms=window_wait_ms,
             window_fail_stop=bool(data.get("window_fail_stop", True)),
             process_control_action=process_control_action,
+            process_run_as_admin=bool(data.get("process_run_as_admin", False)),
             process_path=str(data.get("process_path", data.get("program_path", "")) or "") or None,
             process_args=str(data.get("process_args", data.get("program_args", "")) or "") or None,
             process_cwd=str(data.get("process_cwd", data.get("program_cwd", "")) or "") or None,
@@ -2198,6 +2200,7 @@ class Action:
             "process_path": self.process_path,
             "process_args": self.process_args,
             "process_cwd": self.process_cwd,
+            "process_run_as_admin": self.process_run_as_admin,
             "key_delay_override_enabled": getattr(self, "key_delay_override_enabled", False),
             "key_delay_override": self.key_delay_override.to_dict() if getattr(self, "key_delay_override", None) else None,
         }
@@ -3625,6 +3628,11 @@ class MacroRunner:
 
     def _emit_action_event(self, stage: str, action: Action, path: List[str], idx_path: List[int], **extra):
         self._analysis_record(stage, idx_path, **extra)
+        test_state = getattr(self.engine, 'if_test_state', None)
+        if test_state is not None and stage in ('action_start', 'action_end'):
+            test_state.record(self.index, self._running_stop_actions, idx_path, stage,
+                              (action.name or action.type) + (f' [{action.key}]' if action.key else ''),
+                              extra.get('status', ''))
         detail: Dict[str, Any] = {}
         if action.type == "pixel_get":
             region = action.pixel_region
@@ -3934,13 +3942,20 @@ class MacroRunner:
             if max_cycles == 0:
                 max_cycles = None
 
-            self._start_parallel_workers(self.macro, self.index)
+            if not getattr(self, '_test_start_path', None):
+                self._start_parallel_workers(self.macro, self.index)
 
             while not self._stop_event.is_set():
                 if max_cycles is not None and cycle >= max_cycles:
                     break
                 self._current_cycle = cycle
-                result = self._run_actions(self.macro.actions, labels, root=True, path=[self._macro_label()])
+                entry = getattr(self, '_test_start_path', None)
+                if entry:
+                    from if_test_runtime import run_from_path
+                    self._test_start_path = None
+                    result = run_from_path(self, self.macro.actions, entry, labels, path=[self._macro_label()])
+                else:
+                    result = self._run_actions(self.macro.actions, labels, root=True, path=[self._macro_label()])
                 if self._stop_event.is_set():
                     break
                 cycle += 1
@@ -3970,6 +3985,9 @@ class MacroRunner:
             self._stop_parallel_workers()
             self._finish_if_transitions()
             self._release_held_keys()
+            test_state = getattr(self.engine, 'if_test_state', None)
+            if test_state is not None:
+                test_state.finish(self._root_index)
 
     def _label_index(self, actions: List[Action]) -> Dict[str, int]:
         labels: Dict[str, int] = {}
@@ -3980,6 +3998,10 @@ class MacroRunner:
 
     def _transition_value(self, action, watch):
         from if_transition import target_condition, reliable_result
+        test_state = getattr(self.engine, 'if_test_state', None)
+        if (not action.transition_target and test_state is not None
+                and test_state.mode(self.index, False, watch['idx_path'], action) == 'always'):
+            return True
         entries = getattr(self.engine._profile, 'shared_settings', {})
         cond = target_condition(action.condition, action.transition_target, entries, self._resolver,
                                 identity=action.transition_target_key)
@@ -4113,6 +4135,10 @@ class MacroRunner:
         any_hit = False
         base_path = list(path or [])
         base_idx_path = list(idx_path or [])
+        from if_test_runtime import entry_index
+        entry_start = entry_index(self, base_idx_path, base_offset)
+        if entry_start is not None:
+            idx = entry_start
         while idx < len(actions) and (self._running_stop_actions or not self._stop_event.is_set()):
             act = actions[idx]
             if act.parallel_enabled and not self._running_stop_actions:
@@ -4120,7 +4146,7 @@ class MacroRunner:
                 continue
             act_path = base_path + [self._action_label(act, idx)]
             act_idx_path = base_idx_path + [base_offset + idx]
-            if not (self.engine.quick_action_enabled(self.index, act) if act.quick_toggle_id else act.enabled):
+            if entry_index(self, act_idx_path) is None and not (self.engine.quick_action_enabled(self.index, act) if act.quick_toggle_id else act.enabled):
                 self._emit_action_event("action_end", act, act_path, act_idx_path, status="disabled")
                 idx += 1
                 continue
@@ -4253,7 +4279,11 @@ class MacroRunner:
 
         if self._stop_event.is_set() and not self._running_stop_actions:
             return self._Result(signal="break")
-        if not (self.engine.quick_action_enabled(self.index, action) if action.quick_toggle_id else action.enabled):
+        from if_test_runtime import entry_index, child_lists
+        entry_child = entry_index(self, idx_path)
+        if tuple(idx_path) == getattr(self, '_if_test_entry', None):
+            self._if_test_entry = None
+        if entry_child is None and not (self.engine.quick_action_enabled(self.index, action) if action.quick_toggle_id else action.enabled):
             return end_result(status="disabled")
 
         # once_per_macro 액션은 첫 사이클 이후에는 바로 스킵 처리하고 로그를 남기지 않는다.
@@ -4349,15 +4379,9 @@ class MacroRunner:
                 if not program_path:
                     return None, "empty_process_path", program_path, args_text, cwd_text
                 try:
-                    cmd = [program_path]
-                    if args_text:
-                        cmd.extend(shlex.split(args_text))
-                    proc = subprocess.Popen(
-                        cmd,
-                        cwd=cwd_text or None,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                    from lib.program_launch import launch_program
+                    proc = launch_program(program_path, args_text, cwd_text,
+                                          elevated=action.process_run_as_admin)
                 except Exception as exc:
                     return None, str(exc), program_path, args_text, cwd_text
                 return proc, None, program_path, args_text, cwd_text
@@ -5002,6 +5026,16 @@ class MacroRunner:
             return end_result(status="computer_shutdown")
 
         if action.type == "if":
+            if entry_child is not None:
+                for offset, children in child_lists(action):
+                    if offset <= entry_child < offset + len(children):
+                        result = self._run_actions(children, labels, path=path + ['test_entry'],
+                                                   idx_path=idx_path, base_offset=offset)
+                        result.condition_hit = True
+                        self._emit_action_event('action_end', action, path, idx_path,
+                                                status='test_entry', condition_hit=True)
+                        return result
+                return end_result(status='error', error='invalid_test_entry')
             cond = action.condition
             if not cond:
                 self.engine._emit_log("if 조건이 없습니다.")
@@ -5015,8 +5049,20 @@ class MacroRunner:
             confirm_fails = max(1, getattr(action, "confirm_fails", 1))
             pixel_cache: Dict[Tuple[int, int, int, int], Any] = {}
             evidence, evidence_generation = self._condition_probe()
-            cond_true = self._evaluate_if_condition(cond, path + ['if'], idx_path, pixel_cache,
-                                                   evidence, evidence_generation)
+            test_state = getattr(self.engine, 'if_test_state', None)
+            test_mode = (test_state.mode(self.index, self._running_stop_actions, idx_path,
+                                        action, consume=True) if test_state is not None else 'actual')
+            if test_mode != 'actual':
+                cond_true = True
+                if evidence is not None:
+                    evidence.update(condition_template(cond))
+                    evidence.update(state='true', result=True, reason='테스트: 강제 참 (' + test_mode + ')')
+            else:
+                cond_true = self._evaluate_if_condition(cond, path + ['if'], idx_path, pixel_cache,
+                                                       evidence, evidence_generation)
+            if test_state is not None:
+                test_state.note(self.index, (action.name or 'IF') + ': ' +
+                                ('강제 참' if test_mode != 'actual' else '실제 참' if cond_true else '실제 거짓'))
             self._analysis_record("condition", idx_path, value=bool(cond_true),
                                   condition_detail=evidence, evidence_generation=evidence_generation)
             if cond_true:
@@ -5133,6 +5179,8 @@ class MacroRunner:
                     self._stop_event.wait(self.engine.tick)
                 return end_result(status="stopped" if self._stop_event.is_set() else "repeat_n_done", branch="repeat_n")
             for child_idx, child in enumerate(action.actions):
+                if entry_child is not None and child_idx < entry_child:
+                    continue
                 res = self._exec_action(
                     child,
                     labels,
@@ -5182,6 +5230,8 @@ class MacroEngine:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.execution_analysis = ExecutionRecorder()
+        from if_test_runtime import IfTestState
+        self.if_test_state = IfTestState()
         self._events: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self._hotkey_states: Dict[str, bool] = {}
         self._cond_key_states: Dict[str, bool] = {}
@@ -5609,6 +5659,8 @@ class MacroEngine:
         with self._lock:
             if self.execution_analysis.enabled and self._profile.to_dict() != profile.to_dict():
                 self.execution_analysis.stop('설정이 변경되어 측정을 멈췄습니다. 다시 시작하세요.')
+            if preserve_running and getattr(self, 'if_test_state', None) is not None:
+                self.if_test_state.reconcile(profile)
             self._profile = copy.deepcopy(profile)
             from action_controls import macro_actions
             self._quick_toggle_states = {
@@ -5756,6 +5808,40 @@ class MacroEngine:
         self._emit_log(f"1회 수동 실행: {self._macro_display_name(macro, macro_idx)}")
         self._emit_state()
         return True, "started"
+
+    def run_macro_from_if_manual(self, idx, macro, path, *, shared_blocks=None, test_mode='actual'):
+        from if_test_runtime import locate
+        if not self.running:
+            return False, 'engine_not_running'
+        if not self.active or self.paused:
+            return False, 'engine_inactive'
+        if not 0 <= idx < len(self._profile.macros):
+            return False, 'not_found'
+        current = self._macro_runners.get(idx)
+        if current is not None and current.is_alive():
+            return False, 'already_running'
+        run_macro = copy.deepcopy(macro)
+        if not run_macro.enabled:
+            return False, 'macro_disabled'
+        actions, position, _ = locate(run_macro.actions, path)
+        if actions[position].type != 'if' or not actions[position].enabled:
+            raise ValueError('사용 중인 IF를 선택해 주세요.')
+        run_macro.cycle_count = 1
+        runner = MacroRunner(run_macro, self, idx, shared_blocks=shared_blocks)
+        expanded, selected, _ = locate(runner.macro.actions, path)
+        if run_macro.actions[path[0]].parallel_enabled:
+            raise ValueError('메인사이클의 IF를 선택해 주세요.')
+        self.if_test_state.set(idx, False, path, expanded[selected], test_mode)
+        runner._test_start_path = tuple(path)
+        self._apply_macro_interaction(idx)
+        self._manual_scope_bypass_indices.add(idx)
+        self._once_latched_indices.add(idx)
+        self._toggle_states[idx] = True
+        self._macro_runners[idx] = runner
+        runner.start()
+        self._emit_log('선택한 IF부터 1회 실행: ' + (actions[position].name or 'IF'))
+        self._emit_state()
+        return True, 'started'
 
     def toggle_macro_repeat_manual(self, idx: int, *, ignore_app_scope: bool = False) -> tuple[bool, str]:
         try:
@@ -6807,6 +6893,8 @@ class MacroEngine:
             if runner.is_alive():
                 self._emit_log(f"매크로 스레드가 아직 종료되지 않음: {runner.macro.trigger_label(include_mode=False) or runner.macro.trigger_key}")
             self._macro_runners.pop(idx, None)
+        if getattr(self, 'if_test_state', None) is not None:
+            self.if_test_state.clear()
         if self._paused_hold_inputs:
             all_keys = set(self._paused_hold_inputs.get("release_keys", set())) | set(
                 self._paused_hold_inputs.get("keep_keys", set())
