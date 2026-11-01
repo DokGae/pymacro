@@ -106,10 +106,19 @@ def apply_main_design(window):
         #darkMain QScrollBar::add-line:vertical,#darkMain QScrollBar::sub-line:vertical {height:0;}
         #darkMain QSplitter::handle {background:#12171e;height:8px;}
     ''')
-    window.menuBar().setStyleSheet('QMenuBar{background:#12171e;color:#afbdce;padding:7px 16px;}QMenuBar::item:selected{background:#253b35;color:#a1eed5;}QMenu{background:#1b222c;color:#edf1f7;border:1px solid #3b4a5c;}QMenu::item:selected{background:#203d36;}')
+    window.menuBar().setStyleSheet('''
+        QMenuBar {background:#12171e;color:#afbdce;padding:7px 16px;font-size:12px;font-weight:400;}
+        QMenuBar::item,QMenuBar::item:selected,QMenuBar::item:pressed {
+            font-size:12px;font-weight:400;padding:6px 12px;margin:0 3px;
+            border:1px solid transparent;border-radius:5px;background:transparent;
+        }
+        QMenuBar::item:selected {background:#253b35;color:#a1eed5;}
+        QMenuBar::item:pressed {background:#203d36;color:#a1eed5;}
+        QMenu {background:#1b222c;color:#edf1f7;border:1px solid #3b4a5c;font-size:12px;font-weight:400;}
+        QMenu::item,QMenu::item:selected {padding:7px 24px;border:0;font-size:12px;font-weight:400;}
+        QMenu::item:selected {background:#203d36;}
+    ''')
     window.statusBar().setStyleSheet('QStatusBar{background:#12171e;color:#93a3b6;border:0;}')
-    for view in (window.favorite_list, window.recent_list):
-        view.setStyleSheet('QListWidget{background:#1b222c;color:#dce7f3;border:0;outline:0;}QListWidget::item{padding:8px 12px;border:0;border-radius:5px;}QListWidget::item:selected{background:#203d36;color:#94e6c9;}QListWidget::item:hover{background:#263542;}')
     table = window.macro_table
     table.setShowGrid(False)
     table.verticalHeader().setDefaultSectionSize(43)

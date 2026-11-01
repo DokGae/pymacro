@@ -18026,6 +18026,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._build_ui()
         attach_workspace(self)
         self._build_menu()
+        from main_window_geometry import MainWindowGeometry
+        self._main_window_geometry = MainWindowGeometry(self)
         self._refresh_profile_header()
         self._refresh_profile_lists()
         self._install_shortcuts()
@@ -18542,112 +18544,8 @@ class MacroWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
     def _build_profile_strip(self):
-        group = QtWidgets.QFrame()
-        group.setObjectName("profileStrip")
-        group.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        group.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
-        group.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
-        layout = QtWidgets.QVBoxLayout(group)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(6)
-        theme = self._theme
-        btn_style = (
-            f"padding: 4px 10px; border: 1px solid {theme['button_border']}; "
-            f"border-radius: 6px; background: {theme['button_bg']}; color: {theme['button_text']};"
-        )
-        def _btn(text: str):
-            b = QtWidgets.QPushButton(text)
-            b.setMinimumHeight(26)
-            b.setStyleSheet(btn_style)
-            return b
-        lists_row = QtWidgets.QHBoxLayout()
-        lists_row.setContentsMargins(0, 0, 0, 0)
-        lists_row.setSpacing(10)
-        fav_col = QtWidgets.QVBoxLayout()
-        fav_col.setContentsMargins(0, 0, 0, 0)
-        fav_col.setSpacing(4)
-        fav_head = QtWidgets.QHBoxLayout()
-        fav_head.setContentsMargins(0, 0, 0, 0)
-        fav_head.setSpacing(4)
-        self.fav_label = QtWidgets.QLabel("즐겨찾기 (0)")
-        self.fav_label.setStyleSheet("font-weight: 600;")
-        self.fav_load_btn = _btn("불러오기")
-        self.fav_load_btn.setMinimumHeight(24)
-        self.fav_remove_btn = _btn("즐겨찾기 해제")
-        self.fav_remove_btn.setMinimumHeight(24)
-        fav_head.addWidget(self.fav_label)
-        fav_head.addStretch()
-        fav_head.addWidget(self.fav_load_btn)
-        fav_head.addWidget(self.fav_remove_btn)
-        fav_col.addLayout(fav_head)
-        self.favorite_list = QtWidgets.QListWidget()
-        self.favorite_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        self.favorite_list.setAlternatingRowColors(False)
-        self.favorite_list.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
-        self.favorite_list.setMaximumHeight(120)
-        self.favorite_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.favorite_list.setDragEnabled(True)
-        self.favorite_list.setAcceptDrops(True)
-        self.favorite_list.setDropIndicatorShown(True)
-        self.favorite_list.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
-        self.favorite_list.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
-        fav_col.addWidget(self.favorite_list)
-        rec_col = QtWidgets.QVBoxLayout()
-        rec_col.setContentsMargins(0, 0, 0, 0)
-        rec_col.setSpacing(4)
-        rec_head = QtWidgets.QHBoxLayout()
-        rec_head.setContentsMargins(0, 0, 0, 0)
-        rec_head.setSpacing(4)
-        self.recent_label = QtWidgets.QLabel("최근 불러온 (0)")
-        self.recent_label.setStyleSheet("font-weight: 600;")
-        self.recent_load_btn = _btn("불러오기")
-        self.recent_load_btn.setMinimumHeight(24)
-        self.recent_to_fav_btn = _btn("즐겨찾기 추가")
-        self.recent_to_fav_btn.setMinimumHeight(24)
-        self.recent_clear_btn = _btn("비우기")
-        self.recent_clear_btn.setMinimumHeight(24)
-        rec_head.addWidget(self.recent_label)
-        rec_head.addStretch()
-        rec_head.addWidget(self.recent_load_btn)
-        rec_head.addWidget(self.recent_to_fav_btn)
-        rec_head.addWidget(self.recent_clear_btn)
-        rec_col.addLayout(rec_head)
-        self.recent_list = QtWidgets.QListWidget()
-        self.recent_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        self.recent_list.setAlternatingRowColors(False)
-        self.recent_list.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
-        self.recent_list.setMaximumHeight(120)
-        self.recent_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        rec_col.addWidget(self.recent_list)
-        self._fav_list_delegate = _ProfileListDelegate(self.favorite_list)
-        self.favorite_list.setItemDelegate(self._fav_list_delegate)
-        self._recent_list_delegate = _ProfileListDelegate(self.recent_list)
-        self.recent_list.setItemDelegate(self._recent_list_delegate)
-        lists_row.addLayout(fav_col, 1)
-        lists_row.addLayout(rec_col, 1)
-        layout.addLayout(lists_row)
-        sel_bg = "#2c4a7a" if theme["is_dark"] else "#dce7ff"
-        sel_fg = "#ffffff" if theme["is_dark"] else "#1f3f73"
-        hover_bg = theme["panel_alt_bg"]
-        base_bg = "#ffffff" if not theme["is_dark"] else "#111318"
-        list_style = (
-            f"QListWidget {{ border: 1px solid {theme['panel_border']}; border-radius: 0px; padding: 0px; background: {base_bg}; }}"
-            f"QListWidget {{ outline: 0; }}"
-            f"QListWidget::item {{ padding: 6px 10px; margin: 0; border: none; border-radius: 0px; }}"
-            f"QListWidget::item:hover {{ background: {hover_bg}; color: {theme['text']}; border: none; border-radius: 0px; }}"
-            f"QListWidget::item:selected {{ background: {sel_bg}; color: {sel_fg}; border: none; outline: 0; border-radius: 0px; }}"
-            f"QListWidget::item:selected:active {{ background: {sel_bg}; color: {sel_fg}; border: none; outline: 0; border-radius: 0px; }}"
-            f"QListWidget::item:selected:!active {{ background: {sel_bg}; color: {sel_fg}; border: none; outline: 0; border-radius: 0px; }}"
-            f"QListWidget::item:selected:hover {{ background: {sel_bg}; color: {sel_fg}; border: none; outline: 0; border-radius: 0px; }}"
-            f"QListWidget::item:focus {{ outline: none; border: none; border-radius: 0px; }}"
-        )
-        self.favorite_list.setStyleSheet(list_style)
-        self.recent_list.setStyleSheet(list_style)
-        group.setStyleSheet(
-            f"#profileStrip {{ border: 1px solid {theme['panel_border']}; border-radius: 8px; "
-            f"background: {theme['panel_bg']}; color: {theme['text']}; }}"
-        )
-        return group
+        from profile_shelf import build_profile_shelves
+        return build_profile_shelves(self)
     def _build_status_row(self):
         from main_window_design import build_status
         return build_status(self)
