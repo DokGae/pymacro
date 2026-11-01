@@ -18153,6 +18153,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         layout.addWidget(splitter, stretch=1)
         layout.setStretch(0, 0)  # header
         layout.setStretch(1, 1)  # splitter with macro/log
+        from main_window_design import apply_main_design
+        apply_main_design(self)
     def _build_menu(self):
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("파일(&F)")
@@ -18647,95 +18649,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         )
         return group
     def _build_status_row(self):
-        container = QtWidgets.QFrame()
-        container.setObjectName("statusStrip")
-        container.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        container.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
-        container.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum)
-        row = QtWidgets.QHBoxLayout(container)
-        row.setContentsMargins(10, 6, 10, 6)
-        row.setSpacing(8)
-        self.running_label = QtWidgets.QLabel("정지")
-        self.active_label = QtWidgets.QLabel("비활성")
-        self.paused_label = QtWidgets.QLabel("정상")
-        self.admin_label = QtWidgets.QLabel("관리자(?)")
-        self.hardware_label = QtWidgets.QLabel("하드웨어(?)")
-        self.capture_label = QtWidgets.QLabel("")
-        self.log_toggle_btn = QtWidgets.QToolButton()
-        self.log_toggle_btn.setCheckable(True)
-        self.log_toggle_btn.setChecked(self._log_enabled)
-        self.log_toggle_btn.setText("로그")
-        self.log_toggle_btn.setAutoRaise(True)
-        self.log_toggle_btn.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.log_toggle_btn.toggled.connect(self._toggle_log_enabled)
-        badge_style = "padding: 3px 6px; border: 1px solid #e3e8f0; border-radius: 6px; background: #f5f7fb;"
-        theme = self._theme
-        badge_style = (
-            f"padding: 3px 6px; border: 1px solid {theme['panel_border']}; "
-            f"border-radius: 6px; background: {theme['badge_bg']}; color: {theme['text']};"
-        )
-        self._status_badge_style = badge_style
-        for lbl in (self.running_label, self.active_label, self.paused_label, self.admin_label, self.hardware_label, self.capture_label):
-            lbl.setMinimumWidth(66)
-            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet(badge_style)
-        self.capture_label.setVisible(False)
-        status_label = QtWidgets.QLabel("상태")
-        status_label.setStyleSheet("font-weight: 600;")
-        badge_grid = QtWidgets.QGridLayout()
-        badge_grid.setContentsMargins(0, 0, 0, 0)
-        badge_grid.setHorizontalSpacing(6)
-        badge_grid.setVerticalSpacing(4)
-        badge_grid.addWidget(self.running_label, 0, 0)
-        badge_grid.addWidget(self.active_label, 0, 1)
-        badge_grid.addWidget(self.paused_label, 0, 2)
-        badge_grid.addWidget(self.admin_label, 1, 0)
-        badge_grid.addWidget(self.hardware_label, 1, 1)
-        badge_grid.addWidget(self.capture_label, 1, 2)
-        badge_grid.addWidget(self.log_toggle_btn, 1, 3)
-        badge_block = QtWidgets.QVBoxLayout()
-        badge_block.setContentsMargins(0, 0, 0, 0)
-        badge_block.setSpacing(2)
-        badge_block.addWidget(status_label)
-        badge_block.addLayout(badge_grid)
-        row.addLayout(badge_block, stretch=2)
-        row.addStretch(1)
-        def _flat_btn(text: str, tooltip: str | None = None):
-            btn = QtWidgets.QPushButton(text)
-            btn.setMinimumSize(68, 26)
-            btn.setStyleSheet(
-                f"padding: 3px 8px; border: 1px solid {theme['button_border']}; "
-                f"border-radius: 6px; background: {theme['button_bg']}; color: {theme['button_text']};"
-            )
-            if tooltip:
-                btn.setToolTip(tooltip)
-            return btn
-        self.active_toggle_btn = QtWidgets.QPushButton("OFF")
-        self.active_toggle_btn.setCheckable(True)
-        self.active_toggle_btn.setMinimumSize(68, 26)
-        self.active_toggle_btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
-        self.active_toggle_btn.setToolTip("매크로 트리거 감지를 켜거나 끕니다.")
-        self.apply_btn = _flat_btn("적용", "프로필 적용")
-        self._apply_btn_default_style = self.apply_btn.styleSheet()
-        self._apply_btn_working_style = (
-            self._apply_btn_default_style
-            + (" background: #2c4a7a; color: #ffffff; border-color: #5b82d7;" if theme["is_dark"] else " background: #dce7ff; color: #1f3f73; border-color: #5b82d7;")
-        )
-        self._apply_flash_timer = QtCore.QTimer(self)
-        self._apply_flash_timer.setSingleShot(True)
-        self._apply_flash_timer.timeout.connect(lambda: self.apply_btn.setStyleSheet(self._apply_btn_default_style))
-        control_grid = QtWidgets.QGridLayout()
-        control_grid.setContentsMargins(0, 0, 0, 0)
-        control_grid.setHorizontalSpacing(4)
-        control_grid.setVerticalSpacing(2)
-        control_grid.addWidget(self.active_toggle_btn, 0, 0)
-        self.apply_btn.hide()
-        row.addLayout(control_grid, stretch=3)
-        container.setStyleSheet(
-            f"#statusStrip {{ border: 1px solid {theme['panel_border']}; border-radius: 8px; background: {theme['panel_bg']}; color: {theme['text']}; }}"
-        )
-        self._set_engine_active_toggle(False)
-        return container
+        from main_window_design import build_status
+        return build_status(self)
     def _build_device_group(self):
         group = QtWidgets.QFrame()
         group.setObjectName("inputStrip")
@@ -19293,21 +19208,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         vars = self._collect_variables()
         return VariableResolver(vars)
     def _compute_theme_colors(self) -> dict:
-        pal = QtWidgets.QApplication.palette()
-        win = pal.color(QtGui.QPalette.ColorRole.Window)
-        text = pal.color(QtGui.QPalette.ColorRole.WindowText)
-        is_dark = _luminance_from_qcolor(win) < 128
-        return {
-            "is_dark": is_dark,
-            "panel_bg": "#1f1f1f" if is_dark else "#f7f9fc",
-            "panel_alt_bg": "#20242a" if is_dark else "#fbfcfe",
-            "panel_border": "#3a3f46" if is_dark else "#e3e8f0",
-            "badge_bg": "#2b2f35" if is_dark else "#f5f7fb",
-            "button_bg": "#2d3036" if is_dark else "#ffffff",
-            "button_border": "#4a5058" if is_dark else "#d5dae3",
-            "button_text": text.name(),
-            "text": text.name(),
-        }
+        from main_window_design import THEME
+        return dict(THEME)
     def _current_base_resolution(self) -> tuple[int, int]:
         default = getattr(self.profile, "base_resolution", DEFAULT_BASE_RESOLUTION) or DEFAULT_BASE_RESOLUTION
         text = ""
@@ -19531,7 +19433,7 @@ class MacroWindow(QtWidgets.QMainWindow):
             widget.setEnabled(bool(paths))
         current_norm = _normalize_profile_path(self.current_profile_path) if self.current_profile_path else None
         # 강조 색상: 밝은 테마는 짙은 주황, 어두운 테마는 선명한 녹색
-        active_bg = "#ffe08a" if not self._theme.get("is_dark") else "#2faa4f"
+        active_bg = "#ffe08a" if not self._theme.get("is_dark") else "#203d36"
         active_fg = "#2d1b00" if not self._theme.get("is_dark") else "#f0fff0"
         in_favorites = current_norm in self._favorite_profiles if current_norm else False
         highlight_recent = bool(current_norm and not in_favorites)
@@ -19545,6 +19447,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         self._update_profile_list_buttons()
     def _refresh_profile_header(self):
         path = self.current_profile_path
+        if hasattr(self, 'main_profile_title'):
+            self.main_profile_title.setText(Path(path).stem if path else '새 프로필')
         self._update_title()
         self._update_macro_status_popup_profile()
         if hasattr(self, "profile_path_label"):
@@ -19758,7 +19662,7 @@ class MacroWindow(QtWidgets.QMainWindow):
         scope_text = self._macro_scope_text(macro)
         trigger_text, mode_text = self._macro_trigger_texts(macro)
         is_enabled = bool(getattr(macro, "enabled", True))
-        disabled_bg = QtGui.QBrush(QtGui.QColor("#ffe8e8"))
+        disabled_bg = QtGui.QBrush(QtGui.QColor("#30272e"))
         values = [
             str(row + 1),
             macro.name or "",
@@ -19963,9 +19867,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         btn.setFixedSize(68, 24)
         if enabled:
-            bg, border, fg, hover_bg, pressed_bg = "#16a34a", "#15803d", "#ffffff", "#22c55e", "#15803d"
+            bg, border, fg, hover_bg, pressed_bg = "#37b997", "#37b997", "#102e26", "#62d4b3", "#299c7d"
         else:
-            bg, border, fg, hover_bg, pressed_bg = "#f1f5f9", "#cbd5e1", "#475569", "#e2e8f0", "#cbd5e1"
+            bg, border, fg, hover_bg, pressed_bg = "#2a3441", "#46556a", "#b2bfd0", "#354558", "#202935"
         btn.setStyleSheet(
             f"""
             QToolButton {{
@@ -19988,8 +19892,8 @@ class MacroWindow(QtWidgets.QMainWindow):
 
     def _apply_macro_run_button_style(self, btn: QtWidgets.QToolButton, tone: str):
         palette = {
-            "once": ("#f8fafc", "#cbd5e1", "#1f2937", "#eef4ff", "#bfdbfe", "#e2e8f0"),
-            "repeat": ("#ecfdf3", "#86c894", "#166534", "#dcfce7", "#63b875", "#bbf7d0"),
+            "once": ("#222d39", "#3b4a5c", "#dce7f3", "#304052", "#658577", "#18232c"),
+            "repeat": ("#203d36", "#3d6b5c", "#77dbbc", "#2b5045", "#5c9d86", "#182e28"),
             "stop": ("#dc2626", "#b91c1c", "#ffffff", "#b91c1c", "#991b1b", "#991b1b"),
         }.get(tone, ("#f8fafc", "#cbd5e1", "#1f2937", "#eef4ff", "#bfdbfe", "#e2e8f0"))
         bg, border, fg, hover_bg, hover_border, pressed_bg = palette
@@ -21339,9 +21243,9 @@ class MacroWindow(QtWidgets.QMainWindow):
         btn.blockSignals(False)
         btn.setText("ON" if active else "OFF")
         if active:
-            bg, border, fg, hover_bg, pressed_bg = "#16a34a", "#15803d", "#ffffff", "#22c55e", "#15803d"
+            bg, border, fg, hover_bg, pressed_bg = "#37b997", "#37b997", "#102e26", "#62d4b3", "#299c7d"
         else:
-            bg, border, fg, hover_bg, pressed_bg = "#f8fafc", "#cbd5e1", "#475569", "#eef2f7", "#e2e8f0"
+            bg, border, fg, hover_bg, pressed_bg = "#26323f", "#46556a", "#d3deea", "#354558", "#202935"
         btn.setStyleSheet(
             f"""
             QPushButton {{
@@ -21364,16 +21268,16 @@ class MacroWindow(QtWidgets.QMainWindow):
         label.setText(text)
         base = getattr(self, "_status_badge_style", "")
         if hasattr(self, "paused_label") and label is self.paused_label:
-            color = "#d98c3b" if on else "limegreen"
+            color = "#e6be78" if on else "#77dbbc"
             label.setStyleSheet(f"{base} color: {color}; font-weight: bold;")
             return
         if hasattr(self, "running_label") and label is self.running_label and on:
             label.setStyleSheet(
-                f"{base} color: #ffffff; background: #2c7a3d; border-color: #1f5f2d; font-weight: bold;"
+                f"{base} color: #9be8d0; font-size:18px; font-weight:700;"
             )
             return
         else:
-            color = "limegreen" if on else "gray"
+            color = "#77dbbc" if on else "#93a3b6"
         label.setStyleSheet(f"{base} color: {color}; font-weight: bold;")
     def _set_capture_status(self, running: bool):
         self._last_capture_running = bool(running)
