@@ -2,6 +2,37 @@
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 TYPE_LABEL_ROLE = QtCore.Qt.ItemDataRole.UserRole + 51
+
+
+def confirm_condition_deletion(owner, count, on_confirm):
+    """Show confirmation without a native message box or nested event loop."""
+    dialog = QtWidgets.QDialog(owner)
+    dialog.setWindowTitle('삭제 확인')
+    dialog.setModal(False)
+    dialog.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+    dialog.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, False)
+    dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+    layout = QtWidgets.QVBoxLayout(dialog)
+    layout.addWidget(QtWidgets.QLabel(f'선택한 조건 {count}개를 삭제할까요?'))
+    buttons = QtWidgets.QDialogButtonBox(dialog)
+    confirm = buttons.addButton('삭제', QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
+    cancel = buttons.addButton('취소', QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
+    cancel.setDefault(True)
+    confirm.setAutoDefault(False)
+    layout.addWidget(buttons)
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    owner._delete_confirmation = dialog
+
+    def finished(result):
+        owner._delete_confirmation = None
+        if result == QtWidgets.QDialog.DialogCode.Accepted:
+            on_confirm()
+
+    dialog.finished.connect(finished)
+    dialog.show()
+
+
 STRUCTURE_COLORS = {
     'all': ('#537BA6', '#EFF4FA'),
     'any': ('#8970AA', '#F5F1FA'),

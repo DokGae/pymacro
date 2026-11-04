@@ -576,6 +576,47 @@ class MacroKeyLineEdit(QtWidgets.QLineEdit):
         return super().event(event)
 
 
+class TriggerKeyLineEdit(MacroKeyLineEdit):
+    """포커스를 잡은 뒤 누르는 마우스 버튼을 트리거로 입력한다."""
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent):
+        if not self.hasFocus():
+            self.setFocus(QtCore.Qt.FocusReason.MouseFocusReason)
+            event.accept()
+            return
+        key = {
+            QtCore.Qt.MouseButton.LeftButton: "mouse1",
+            QtCore.Qt.MouseButton.RightButton: "mouse2",
+            QtCore.Qt.MouseButton.MiddleButton: "mouse3",
+            QtCore.Qt.MouseButton.BackButton: "mouse4",
+            QtCore.Qt.MouseButton.ForwardButton: "mouse5",
+        }.get(event.button())
+        if key is None:
+            super().mousePressEvent(event)
+            return
+        parts = []
+        for flag, name in (
+            (QtCore.Qt.KeyboardModifier.ControlModifier, "ctrl"),
+            (QtCore.Qt.KeyboardModifier.ShiftModifier, "shift"),
+            (QtCore.Qt.KeyboardModifier.AltModifier, "alt"),
+            (QtCore.Qt.KeyboardModifier.MetaModifier, "win"),
+        ):
+            if event.modifiers() & flag:
+                parts.append(name)
+        self.setText("+".join(parts + [key]))
+        self.setCursorPosition(len(self.text()))
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent):
+        self.mousePressEvent(event)
+
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent):
+        if event.reason() == QtGui.QContextMenuEvent.Reason.Mouse:
+            event.accept()
+            return
+        super().contextMenuEvent(event)
+
+
 class _WinPoint(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 def _current_cursor_pos() -> tuple[int, int] | None:
@@ -1785,7 +1826,7 @@ def _condition_brief(cond: Condition) -> str:
     if cond.type == 'external':
         op = {'true':'켜짐', 'false':'꺼짐', 'eq':'==', 'ne':'!=', 'gt':'>', 'ge':'>=', 'lt':'<', 'le':'<='}.get(cond.external_operator, cond.external_operator)
         value = '' if cond.external_operator in ('true','false') else ' ' + cond.external_value
-        return f'{cond.external_source}: {cond.external_key} {op}{value} (TCP {cond.external_port}){suffix}'
+        return (f'화면 숫자 OCR: {cond.external_key} {op}{value}{suffix}' if cond.external_source == 'screen-ocr' else f'{cond.external_source}: {cond.external_key} {op}{value} (TCP {cond.external_port}){suffix}')
     if cond.type == "key":
         mode = cond.key_mode or "hold"
         return f"키/마우스 {cond.key} ({mode}){suffix}"
@@ -1932,11 +1973,13 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.type_combo.addItem("타이머", "timer")
         self.type_combo.addItem("시간/날짜", "schedule")
         self.type_combo.addItem('외부 프로그램 상태 (TCP)', 'external')
+        self.type_combo.addItem('화면숫자(OCR)', 'ocr')
         self.type_combo.addItem('AION2 전용', 'aion2')
         from aion2_conditions import CHARGE_SKILLS
         self.aion2_kind=QtWidgets.QComboBox();self.aion2_kind.addItem('스킬 사용 후 대기 완료','use_wait')
         self.aion2_kind.addItem('스킬 쿨타임 확인','cooldown')
         self.aion2_kind.addItem('스킬 레벨 확인','skill_level')
+        self.aion2_kind.addItem('스킬 특화 확인','skill_specialization')
         self.aion2_kind.addItem('소모품 쿨타임','consumable_cooldown')
         from skill_combo import SkillComboBox
         self.aion2_skill=SkillComboBox()
@@ -1947,6 +1990,8 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.aion2_cooldown_op=QtWidgets.QComboBox()
         for label,op in [('사용 가능 (= 0초)','ready'),('쿨타임 중 (> 0초)','cooling'),('남은 시간 이하 (≤)','le'),('남은 시간 미만 (<)','lt'),('남은 시간 이상 (≥)','ge'),('남은 시간 초과 (>)','gt'),('남은 시간 같음 (=)','eq'),('남은 시간 다름 (≠)','ne')]:self.aion2_cooldown_op.addItem(label,op)
         self.aion2_cooldown_value=QtWidgets.QDoubleSpinBox();self.aion2_cooldown_value.setRange(0,86400);self.aion2_cooldown_value.setDecimals(3);self.aion2_cooldown_value.setSuffix(' 초')
+        from aion2_specializations import SpecializationPicker
+        self.aion2_specializations=SpecializationPicker()
         self.aion2_level_op=QtWidgets.QComboBox()
         for label,op in [('이상 (≥)','ge'),('초과 (>)','gt'),('이하 (≤)','le'),('미만 (<)','lt'),('같음 (=)','eq'),('다름 (≠)','ne')]:self.aion2_level_op.addItem(label,op)
         self.aion2_level_value=QtWidgets.QSpinBox();self.aion2_level_value.setRange(0,100);self.aion2_level_value.setValue(1);self.aion2_level_value.setSuffix(' 레벨')
@@ -1954,6 +1999,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.aion2_hint.setWordWrap(True)
         self.external_source = QtWidgets.QComboBox(); self.external_source.setEditable(True)
         self.external_source.addItem('leesangjin-monitor')
+        
         self.external_source.setToolTip('상대 프로그램이 전송하는 고정 프로그램 ID입니다. 프로세스 ID와 다릅니다.')
         self.external_port = QtWidgets.QSpinBox(); self.external_port.setRange(1,65535); self.external_port.setValue(DEFAULT_PORT)
         self.external_key = QtWidgets.QComboBox(); self.external_key.setEditable(True)
@@ -2077,6 +2123,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.group_hint.setStyleSheet("color: gray;")
         self.form.addRow("조건 타입", self.type_combo)
         self.form.addRow('AION2 조건',self.aion2_kind)
+        self.form.addRow('특화 선택',self.aion2_specializations)
         self.form.addRow('레벨 비교',self.aion2_level_op)
         self.form.addRow('기준 레벨',self.aion2_level_value)
         self.form.addRow('충전 스킬',self.aion2_skill)
@@ -2086,6 +2133,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.form.addRow('사용 후 제한 시간',self.aion2_wait)
         self.form.addRow('',self.aion2_hint)
         self.form.addRow('외부 프로그램 ID',self.external_source)
+
         self.form.addRow('TCP 포트 (같은 PC)',self.external_port)
         self.form.addRow('내용 이름',self.external_key)
         self.form.addRow('내용 판정',self.external_op)
@@ -2174,15 +2222,26 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self._saved_geometry=ActionEditorGeometry(self,'condition_node_editor')
     def _current_type(self) -> str:
         return self.type_combo.currentData()
+    def _open_ocr_manager(self):
+        from screen_ocr import show_manager
+        self.external_source.setEditText('screen-ocr')
+        self.external_key.setEditText('대상거리')
+        show_manager(self)
     def _sync_external_value(self):
-        visible = self._current_type() == 'external' and self.external_op.currentData() not in ('true','false')
+        visible = self._current_type() in ('external','ocr') and self.external_op.currentData() not in ('true','false')
         self.external_value.setVisible(visible)
         label=self.form.labelForField(self.external_value)
         if label is not None: label.setVisible(visible)
 
     def _refresh_external_state(self):
-        if self._current_type() not in ('external','aion2') or not self.isVisible(): return
+        if self._current_type() not in ('external','aion2','ocr') or not self.isVisible(): return
         source=self.external_source.currentText().strip(); key=self.external_key.currentText().strip()
+        if source == 'screen-ocr':
+            from screen_ocr import ocr_source
+            available, actual, status = ocr_source.lookup(source,key)
+            self.external_status.setText('로컬 화면 숫자 OCR · TCP 사용 안 함')
+            self.external_item_status.setText(f'{key}: {actual if available else chr(8212)} / {status}')
+            return
         try:client=state_hub.client('127.0.0.1',self.external_port.value())
         except ValueError as exc:
             self.external_status.setText(f'연결 실패 · {exc}')
@@ -2193,7 +2252,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         from communication_status import show_connection,COLORS
         show_connection(self.external_status,client,source)
         if self._current_type()=='aion2':
-            if self.aion2_skill.currentData() is None or not source:
+            if self.aion2_skill.currentData() is None or not source or (self.aion2_kind.currentData()=='skill_specialization' and self.aion2_skill.currentText()!=self.aion2_skill.itemText(self.aion2_skill.currentIndex())):
                 show_connection(self.external_status,client,source,False)
                 self.external_item_status.setText('프로그램 ID와 스킬을 선택하세요.');return
             cond=self._get_direct_condition();result,detail=state_hub.evaluate(cond)
@@ -2339,12 +2398,16 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self._sync_var_condition_fields()
         _toggle((self.timer_slot_combo, self.timer_value_wrap, self.timer_op_combo), visible=is_timer, enabled=is_timer)
         _toggle((self.schedule_mode_combo, self.schedule_value_edit, self.schedule_op_combo, self.schedule_hint_label), visible=is_schedule, enabled=is_schedule)
-        is_external=typ=='external'
+        is_ocr=typ=='ocr'
+        is_external=typ in ('external','ocr')
         _toggle((self.external_source,self.external_port,self.external_key,self.external_op,self.external_value,
                  self.external_status,self.external_item_status,self.external_hint),visible=is_external,enabled=is_external)
         is_aion2=typ=='aion2'
+        _toggle((self.external_status,self.external_item_status),visible=is_external or is_aion2,enabled=is_external or is_aion2)
         _toggle((self.aion2_kind,self.aion2_skill,self.aion2_wait,self.aion2_hint),visible=is_aion2,enabled=is_aion2)
         consumable=self.aion2_kind.currentData()=='consumable_cooldown'
+        specializing=self.aion2_kind.currentData()=='skill_specialization'
+        _toggle((self.aion2_specializations,),visible=is_aion2 and specializing,enabled=is_aion2 and specializing)
         leveling=self.aion2_kind.currentData()=='skill_level'
         _toggle((self.aion2_level_op,self.aion2_level_value),visible=is_aion2 and leveling,enabled=is_aion2 and leveling)
         cooling=self.aion2_kind.currentData() in ('cooldown','consumable_cooldown')
@@ -2352,32 +2415,53 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         _toggle((self.aion2_role,),visible=is_aion2 and cooling and not consumable,enabled=is_aion2 and cooling and not consumable)
         compare=cooling and self.aion2_cooldown_op.currentData() not in ('ready','cooling')
         _toggle((self.aion2_cooldown_value,),visible=is_aion2 and compare,enabled=is_aion2 and compare)
-        _toggle((self.aion2_wait,),visible=is_aion2 and not cooling and not leveling,enabled=is_aion2 and not cooling and not leveling)
+        _toggle((self.aion2_wait,),visible=is_aion2 and not cooling and not leveling and not specializing,enabled=is_aion2 and not cooling and not leveling and not specializing)
         if is_aion2:
             from aion2_conditions import ALL_SKILLS,CHARGE_SKILLS,LEVEL_SKILLS
+            from aion2_specializations import SKILLS as SPECIALIZATION_SKILLS
             mode=self.aion2_kind.currentData()
             if getattr(self,'_aion2_skill_mode',None)!=mode:
                 code=self.aion2_skill.currentData()
                 with QtCore.QSignalBlocker(self.aion2_skill):
                     self.aion2_skill.clear()
                     from aion2_consumables import CHOICES, group_item
-                    choices=tuple((k,v[0],'') for k,v in CHOICES.items()) if consumable else tuple((r['code'],r['label'],'') for r in LEVEL_SKILLS) if leveling else ALL_SKILLS if cooling else CHARGE_SKILLS
+                    choices=tuple((r['code'],r['label'],'') for r in SPECIALIZATION_SKILLS.values()) if specializing else tuple((k,v[0],'') for k,v in CHOICES.items()) if consumable else tuple((r['code'],r['label'],'') for r in LEVEL_SKILLS) if leveling or specializing else ALL_SKILLS if cooling else CHARGE_SKILLS
                     for skill,label,_ in choices:self.aion2_skill.addItem(label,skill)
                     self.aion2_skill.setCurrentIndex(max(0,self.aion2_skill.findData(group_item(code) if consumable else code)))
                 self._aion2_skill_mode=mode
-            self.form.labelForField(self.aion2_skill).setText('소모품 종류' if consumable else '스킬' if cooling or leveling else '충전 스킬')
+            self.form.labelForField(self.aion2_skill).setText('소모품 종류' if consumable else '스킬' if cooling or leveling or specializing else '충전 스킬')
             self.aion2_hint.setText('모니터에서 전송을 체크한 스킬의 남은 쿨타임을 확인합니다. 사용 가능은 0초이며 충전이 하나라도 남으면 0초입니다.\n내 스킬이 퀵슬롯에 없으면 미채용으로 표시하며 쿨 조건은 모두 거짓입니다.\n전송 OFF·미감지·연결 끊김은 미확인으로 처리합니다. 모니터의 스킬 관리에서 내 통신·대상 통신을 켜세요.' if cooling else
                 '실제 사용 확인 후 설정 시간 미만이면 거짓, 시간이 지나면 참입니다.\n매크로를 멈추지 않으며 다음 IF는 계속 처리합니다. 연타 간격은 press 액션에서 설정하세요.\n연결·사용 정보 미확인은 실행을 건너뜁니다. 감시 시작 후 아직 사용을 감지하지 않았다면 참으로 시작합니다.')
+        self.aion2_skill.setEditable(specializing)
+        if specializing:
+            self.aion2_skill.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+            self.aion2_skill.completer().setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
+            self.aion2_skill.completer().setCompletionMode(QtWidgets.QCompleter.CompletionMode.PopupCompletion)
+        if is_aion2 and specializing:
+            self.aion2_hint.setText('스킬을 검색하고 확인할 특화 번호를 누르세요. 여러 번호는 모두 / 하나라도로 판정합니다.\n모니터 스킬관리에서 해당 스킬의 특화 전송을 켜세요. 미수신은 선택 안 됨으로 간주하지 않습니다.')
         if is_aion2 and leveling:
             self.aion2_hint.setText('내가 배운 스킬의 레벨을 비교합니다. 미보유는 0레벨, 미감지는 조건 실패입니다.\n모니터 설정 → 스킬관리에서 해당 스킬의 레벨 전송을 체크하세요. 퀵슬롯 등록과 무관합니다.')
         if is_aion2 and consumable:
             self.aion2_hint.setText('모니터의 소모품 퀵슬롯 단축키에서 외부 전송을 켜세요. 실제 사용 패킷 이후 예상 쿨타임을 계산합니다.\n생명의 비약은 30초, 바람의 비약·치유 물약은 10초이며 각 종류의 상급·일반은 쿨타임을 공유합니다. 사용 감지 전에는 0초로 시작합니다.\n슬롯 미등록은 조건 거짓, 연결·슬롯 미수신은 미확인으로 처리합니다.')
         if is_aion2:
             _toggle((self.external_source,self.external_port,self.external_status,self.external_item_status),visible=True,enabled=True)
+        if typ == 'ocr':
+            if self.external_op.currentData() in ('true','false'):
+                self.external_op.setCurrentIndex(self.external_op.findData('ge'))
+            from screen_ocr import registered_name
+            current_key = self.external_key.currentText()
+            self.external_key.clear()
+            self.external_key.addItem(registered_name())
+            self.external_key.setEditable(False)
+            if current_key == registered_name(): self.external_key.setCurrentIndex(0)
+            self.external_source.setEditText('screen-ocr')
+            _toggle((self.external_source,self.external_port,self.external_status,self.external_hint),visible=False,enabled=False)
+        else:
+            self.external_key.setEditable(True)
         self._sync_external_value()
         self.group_hint.setVisible(is_group)
     def _load(self, cond: Condition):
-        self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(cond.type)))
+        self.type_combo.setCurrentIndex(max(0, self.type_combo.findData('ocr' if cond.type == 'external' and cond.external_source == 'screen-ocr' else cond.type)))
         if cond.type == 'aion2':
             self.aion2_kind.setCurrentIndex(self.aion2_kind.findData(cond.aion2_kind))
             self.external_source.setEditText(cond.external_source)
@@ -2388,6 +2472,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             self.aion2_role.setCurrentIndex(self.aion2_role.findData(cond.aion2_role))
             self.aion2_cooldown_op.setCurrentIndex(self.aion2_cooldown_op.findData(cond.aion2_cooldown_operator))
             self.aion2_cooldown_value.setValue(cond.aion2_cooldown_seconds)
+            self.aion2_specializations.load(cond)
             self.aion2_level_value.setValue(cond.aion2_level)
             self.aion2_level_op.setCurrentIndex(self.aion2_level_op.findData(cond.aion2_level_operator))
         if cond.type == 'external':
@@ -2468,13 +2553,16 @@ class ConditionNodeDialog(QtWidgets.QDialog):
             source=self.external_source.currentText().strip()
             if not source or len(source)>200:raise ValueError('외부 프로그램 ID를 1~200자로 입력하세요.')
             code=self.aion2_skill.currentData()
+            if self.aion2_kind.currentData()=='skill_specialization' and self.aion2_skill.currentText()!=self.aion2_skill.itemText(self.aion2_skill.currentIndex()):
+                raise ValueError('검색 결과에서 스킬을 선택하세요.')
             if code is None:raise ValueError('충전 스킬을 선택하세요.')
             return Condition(type='aion2',name=name,external_source=source,external_port=self.external_port.value(),
                              aion2_skill=code if self.aion2_kind.currentData()!='consumable_cooldown' else 18120000,aion2_item=code if self.aion2_kind.currentData()=='consumable_cooldown' else 530116010,aion2_wait_seconds=self.aion2_wait.value(),aion2_kind=self.aion2_kind.currentData(),
                              aion2_role=self.aion2_role.currentData(),aion2_cooldown_operator=self.aion2_cooldown_op.currentData(),
                              aion2_cooldown_seconds=self.aion2_cooldown_value.value(),
+                             **self.aion2_specializations.fields(),
                              aion2_level=self.aion2_level_value.value(),aion2_level_operator=self.aion2_level_op.currentData())
-        if typ == 'external':
+        if typ in ('external','ocr'):
             source=self.external_source.currentText().strip();key=self.external_key.currentText().strip()
             if not source or len(source)>200:raise ValueError('외부 프로그램 ID를 1~200자로 입력하세요.')
             if not key or len(key)>300:raise ValueError('내용 이름을 1~300자로 입력하세요.')
@@ -2725,11 +2813,14 @@ class ConditionTreeWidget(ConditionStructureTreeMixin, QtWidgets.QTreeWidget):
         return False
     def _top_level_selected(self, items: List[QtWidgets.QTreeWidgetItem]) -> List[QtWidgets.QTreeWidgetItem]:
         """Return selected items without their descendants (ordered by tree path)."""
+        selected = {id(item) for item in items}
         result: List[QtWidgets.QTreeWidgetItem] = []
-        for it in items:
-            if any(self._is_descendant(it, other) for other in items if other is not it):
-                continue
-            result.append(it)
+        for item in items:
+            parent = item.parent()
+            while parent is not None and id(parent) not in selected:
+                parent = parent.parent()
+            if parent is None:
+                result.append(item)
         return sorted(result, key=self._item_path_key)
 class ConditionDialog(QtWidgets.QDialog):
     condition_changed = QtCore.pyqtSignal()
@@ -3503,34 +3594,37 @@ class ConditionDialog(QtWidgets.QDialog):
             self._replace_condition(current_cond, new_cond)
             self._refresh_condition_tree()
     def _delete_condition_node(self):
+        pending = getattr(self, '_delete_confirmation', None)
+        if pending is not None:
+            pending.raise_()
+            pending.activateWindow()
+            return
         items = self.condition_tree._top_level_selected(self.condition_tree.selectedItems())
         if not items:
             QtWidgets.QMessageBox.information(self, "선택 없음", "삭제할 조건을 선택하세요.")
             return
+        # Retain model objects, not tree items: the tree may be rebuilt while
+        # this non-modal confirmation is open.
+        targets = [item.data(0, QtCore.Qt.ItemDataRole.UserRole) for item in items]
+        from condition_editor_ui import confirm_condition_deletion
+        confirm_condition_deletion(self, len(items), lambda: self._delete_condition_targets(targets))
 
-        count = len(items)
-        reply = QtWidgets.QMessageBox.question(
-            self,
-            "삭제 확인",
-            f"선택한 조건 {count}개를 삭제할까요?",
-            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-        )
-        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
-            return
-
-        for item in reversed(items):
-            cond = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+    def _delete_condition_targets(self, targets):
+        changed = False
+        for cond in reversed(targets):
             if cond is self.root_condition:
                 self.root_condition = None
+                changed = True
                 continue
             info = self._find_container_info(cond)
-            if not info:
-                continue
-            lst, idx, _parent = info
-            if 0 <= idx < len(lst):
-                lst.pop(idx)
+            if info:
+                lst, idx, _parent = info
+                if 0 <= idx < len(lst):
+                    lst.pop(idx)
+                    changed = True
+        if changed:
+            self._refresh_condition_tree()
 
-        self._refresh_condition_tree()
     def _validate_group_children(self, cond: Condition):
         if cond.shared_ref:
             from shared_ui import controller_for
@@ -9537,8 +9631,9 @@ class MacroDialog(QtWidgets.QDialog):
         trigger_page_layout.setContentsMargins(12, 12, 12, 12)
         trigger_form = QtWidgets.QFormLayout()
         self.name_edit = QtWidgets.QLineEdit()
-        self.trigger_edit = MacroKeyLineEdit()
-        self.trigger_edit.setPlaceholderText("예: w 또는 mouse4 (조합은 아래 체크박스로 설정 후 추가)")
+        self.trigger_edit = TriggerKeyLineEdit()
+        self.trigger_edit.setPlaceholderText("클릭해 포커스를 둔 뒤 키보드 키나 마우스 버튼을 누르세요")
+        self.trigger_edit.setToolTip("입력란 위에서 마우스 버튼을 누르면 감지합니다.\n왼쪽=mouse1, 오른쪽=mouse2, 휠 클릭=mouse3, X1=mouse4, X2=mouse5\n감지한 키는 ‘추가’ 또는 ‘선택 저장’으로 적용하세요.")
         self.trigger_menu_btn = QtWidgets.QToolButton()
         self.trigger_menu_btn.setText("목록")
         self.trigger_menu_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -9549,8 +9644,8 @@ class MacroDialog(QtWidgets.QDialog):
         self.trigger_mod_shift = QtWidgets.QCheckBox("Shift")
         self.trigger_mod_alt = QtWidgets.QCheckBox("Alt")
         self.trigger_mod_win = QtWidgets.QCheckBox("Win")
-        self.trigger_main_edit = MacroKeyLineEdit()
-        self.trigger_main_edit.setPlaceholderText("주 키 (예: w, f1, mouse1)")
+        self.trigger_main_edit = TriggerKeyLineEdit()
+        self.trigger_main_edit.setPlaceholderText("주 키: 포커스를 둔 뒤 키보드 / 마우스 입력")
         self.trigger_main_edit.setClearButtonEnabled(True)
         self.trigger_mode_combo = QtWidgets.QComboBox()
         self.trigger_mode_combo.addItem("hold", "hold")
@@ -18172,6 +18267,8 @@ class MacroWindow(QtWidgets.QMainWindow):
         for act in (new_action, load_action, save_action, save_as_action):
             file_menu.addAction(act)
         feature_menu = menu_bar.addMenu("기능(&G)")
+        ocr_action = feature_menu.addAction('화면숫자(OCR)')
+        ocr_action.triggered.connect(lambda: __import__('screen_ocr').show_manager(self))
         quick_toggle_action = feature_menu.addAction('빠른 토글')
         quick_toggle_action.triggered.connect(self._open_quick_toggle)
         status_popup_action = QtGui.QAction("매크로 상태 팝업", self)

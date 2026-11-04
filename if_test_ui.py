@@ -33,8 +33,12 @@ def tree_paths(tree, root_offset=0):
 
 
 def add_test_panel(dialog, layout):
-    panel = QtWidgets.QGroupBox('IF 실행 테스트')
-    box = QtWidgets.QVBoxLayout(panel)
+    from action_editor_ui import FoldSection
+
+    panel = FoldSection('IF 실행 테스트')
+    panel.toggle.setToolTip('필요할 때 펼쳐서 IF 강제 판정과 실행 테스트를 사용합니다.')
+    box = QtWidgets.QVBoxLayout(panel.body)
+    box.setContentsMargins(8, 4, 8, 4)
     row = QtWidgets.QHBoxLayout()
     row.addWidget(QtWidgets.QLabel('조건 판정'))
     combo = QtWidgets.QComboBox()

@@ -165,7 +165,8 @@ class StateHub:
 
     def evaluate(self, cond):
         try:
-            client = self.client(cond.external_host, cond.external_port)
+            from screen_ocr import ocr_source
+            client = ocr_source if cond.external_source == 'screen-ocr' else self.client(cond.external_host, cond.external_port)
             if getattr(cond,'type',None) == 'aion2':
                 from aion2_conditions import evaluate_aion2
                 return evaluate_aion2(client,cond)
@@ -220,7 +221,11 @@ class StateHub:
             elif hasattr(node, '__dict__'):
                 if (getattr(node, 'type', None) in ('external','aion2')
                         or getattr(node, 'key_source', None) == 'aion2'):
-                    try: self.client(node.external_host, node.external_port)
+                    try:
+                        if getattr(node,'external_source','') == 'screen-ocr':
+                            from screen_ocr import ocr_source
+                            ocr_source.start()
+                        else: self.client(node.external_host, node.external_port)
                     except ValueError: pass
                 for field in ('macros','actions','stop_actions','else_actions','transition_actions','elif_blocks',
                               'condition','conditions','on_true','on_false'):
@@ -229,6 +234,8 @@ class StateHub:
         visit(profile)
 
     def close(self):
+        from screen_ocr import ocr_source
+        ocr_source.stop()
         with self._lock: clients = list(self._clients.values()); self._clients.clear()
         for client in clients: client.close()
 

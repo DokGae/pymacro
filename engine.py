@@ -1310,6 +1310,9 @@ class Condition:
     aion2_skill: int = 18120000
     aion2_item: int = 530116010
     aion2_wait_seconds: float = 1.0
+    aion2_specializations: tuple = (5,)
+    aion2_specialization_match: str = 'all'
+    aion2_specialization_selected: bool = True
     aion2_level: int = 1
     aion2_level_operator: str = 'ge'
     aion2_kind: str = 'use_wait'
@@ -1484,6 +1487,9 @@ class Condition:
             aion2_skill=int(data.get('aion2_skill',18120000)),
             aion2_item=int(data.get('aion2_item',530116010)),
             aion2_wait_seconds=float(data.get('aion2_wait_seconds',1.0)),
+            aion2_specializations=tuple(data.get('aion2_specializations', (5,))),
+            aion2_specialization_match=data.get('aion2_specialization_match', 'all'),
+            aion2_specialization_selected=data.get('aion2_specialization_selected', True),
             aion2_level=int(data.get('aion2_level',1)),
             aion2_level_operator=str(data.get('aion2_level_operator','ge')),
             aion2_kind=str(data.get('aion2_kind','use_wait')),
@@ -1563,6 +1569,8 @@ class Condition:
                            external_operator=self.external_operator, external_value=self.external_value)
         if self.type == 'aion2':
             payload.update(aion2_skill=self.aion2_skill,aion2_item=self.aion2_item,aion2_wait_seconds=self.aion2_wait_seconds)
+            if self.aion2_kind == 'skill_specialization':
+                payload.update(aion2_specializations=list(self.aion2_specializations), aion2_specialization_match=self.aion2_specialization_match, aion2_specialization_selected=self.aion2_specialization_selected)
             payload.update(aion2_level=self.aion2_level,aion2_level_operator=self.aion2_level_operator,aion2_kind=self.aion2_kind,aion2_role=self.aion2_role,
                            aion2_cooldown_operator=self.aion2_cooldown_operator,aion2_cooldown_seconds=self.aion2_cooldown_seconds)
         if self.on_true:

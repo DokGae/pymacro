@@ -31,6 +31,9 @@ LEVEL_SKILLS=tuple(json.loads((Path(__file__).parent/"assets/aion2_skill_levels.
 
 
 def condition_summary(cond):
+    if cond.aion2_kind=='skill_specialization':
+        from aion2_specializations import summary
+        return summary(cond)
     if cond.aion2_kind=="skill_level":
         skill=next((r["label"] for r in LEVEL_SKILLS if r["code"]==cond.aion2_skill),"미지원 스킬")
         op={"ge":"≥","gt":">","le":"≤","lt":"<","eq":"=","ne":"≠"}.get(cond.aion2_level_operator,"?")
@@ -50,6 +53,9 @@ def condition_summary(cond):
 
 
 def evaluate_aion2(client,cond):
+    if cond.aion2_kind=='skill_specialization':
+        from aion2_specializations import evaluate
+        return evaluate(client,cond)
     if cond.aion2_kind=="skill_level":return evaluate_skill_level(client,cond)
     if cond.aion2_kind == 'consumable_cooldown':
         from aion2_consumables import evaluate_item_cooldown
