@@ -21,6 +21,39 @@ def controller_for(widget):
     return None
 
 
+def copy_portable_conditions(dialog, conditions, value_roots=None):
+    controller = controller_for(dialog)
+    payload = dict(format='macro-shared-conditions-v1', conditions=conditions, value_roots=value_roots or [],
+                   entries=controller.entries if controller else {},
+                   values=controller.owner._variable_items if controller else {})
+    QtWidgets.QApplication.clipboard().setText(json.dumps(payload, ensure_ascii=False))
+
+
+def paste_portable_conditions(dialog):
+    from lib.shared_settings import import_settings, import_values
+    try:
+        payload = json.loads(QtWidgets.QApplication.clipboard().text())
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or payload.get('format') != 'macro-shared-conditions-v1':
+        return None
+    controller = controller_for(dialog)
+    if controller is None:
+        from lib.shared_settings import materialize_macros
+        return materialize_macros(payload['conditions'], payload['entries'])
+    before = controller.snapshot()
+    entries = copy.deepcopy(controller.entries)
+    values = copy.deepcopy(controller.owner._variable_items)
+    result = import_settings(payload['conditions'], payload['entries'], entries)
+    added = {key: value for key, value in entries.items() if key not in controller.entries}
+    import_values([result, payload.get('value_roots', [])], added, payload.get('values', {}), values)
+    entries.update(added)
+    controller.entries.update(entries)
+    controller.owner._variable_items = values
+    controller.commit(before, '공용 설정 붙여넣기')
+    return result
+
+
 def brief(data):
     if data.get('type') == 'pixel':
         color = data.get('color')
@@ -221,6 +254,10 @@ class SharedController(QtCore.QObject):
             ('왼쪽에 붙이기', lambda: self.dock_to(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea), False),
             ('별도 창으로 분리', lambda: self.dock.setFloating(True), False),
         ])
+        for label, callback in [('복사', self.copy_selected), ('붙여넣기', self.paste_selected)]:
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(callback)
+            toolbar.addWidget(button)
         toolbar.addStretch()
         layout.addLayout(toolbar)
         footer = QtWidgets.QHBoxLayout()
@@ -905,6 +942,29 @@ class SharedController(QtCore.QObject):
             entry['name'] = name
             self.commit(before, '이름 변경 · 연결 유지')
 
+    def copy_selected(self):
+        conditions = []
+        value_roots = []
+        from lib.shared_settings import FIELDS
+        for kind, key in self.selected_keys():
+            if kind != 'condition':
+                field = next((field for field, category in FIELDS.items() if category == kind), None)
+                if field:
+                    value_roots.append({field: '${' + key + '}'})
+            if kind == 'condition' and key in self.entries:
+                from engine import Condition
+                node = Condition.from_dict(self.entries[key]['condition']).to_dict()
+                node['shared_ref'] = key
+                conditions.append(node)
+        if conditions or value_roots:
+            copy_portable_conditions(self.owner, conditions, value_roots)
+
+    def paste_selected(self):
+        try:
+            paste_portable_conditions(self.owner)
+        except (ValueError, KeyError, TypeError) as exc:
+            self.error(str(exc))
+
     def duplicate_selected(self):
         key = self.selected()
         if key and key[0] == 'condition' and key[1] in self.entries:
@@ -1307,6 +1367,7 @@ def attach_condition(dialog, condition):
     controller = controller_for(dialog)
     if controller:
         dialog._shared_binding = ConditionBinding(dialog, controller, condition)
+        dialog._shared_binding.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum)
         dialog.layout().insertWidget(0, dialog._shared_binding)
         attach_value_fields(dialog)
         dialog.finished.connect(lambda *_: QtCore.QTimer.singleShot(0, lambda: controller.refresh(True)))

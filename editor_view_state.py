@@ -58,7 +58,9 @@ def restore_editor_view(dialog, state, *, restore_tree_views=True):
     for tree, view in zip(editor_trees(dialog), state.get('trees', [])):
         tree.hide_disabled_button.setChecked(bool(view.get('hide_disabled', False)))
         for index, width in enumerate(view.get('columns', [])[:tree.columnCount()]):
-            tree.setColumnWidth(index, width)
+            if index != 5:
+                tree.setColumnWidth(index, width)
+        tree.setColumnWidth(5, 28)
         if restore_tree_views:
             _restore_tree(tree, view)
 

@@ -241,6 +241,7 @@ def arrange_compact_action(dialog):
     add_row(primary, ('window_class_edit', '클래스', None), full=True)
     add_row(primary, ('window_restore_check', None, None), ('window_fail_stop_check', None, None))
     add_row(primary, ('window_wait_spin', '포커스 후 대기', 110))
+    add_row(primary, ('var_keep_check', '', 260))
     add_row(primary, ('var_name_edit', '변수', 170), ('var_update_mode_combo', '동작', 160))
     add_row(primary, ('var_value_edit', '값', None), full=True)
     add_row(primary, ('telegram_token_edit', '봇 토큰', None), full=True)
@@ -277,6 +278,7 @@ def arrange_compact_action(dialog):
     add_test_panel(dialog, primary)
     dialog.if_confirm_spin.setSuffix(' 회 연속')
     add_row(primary, ('if_confirm_spin', '거짓 확정', 110))
+    add_row(primary, ('reaction_delay_widget', '반응 지연 (최소~최대)', 260))
     add_row(transition_layout, ('transition_check', None, None))
     add_row(transition_layout, ('transition_target_combo', '감지 기준', None), full=True)
     add_row(transition_layout, ('transition_confirm_combo', '확정 방식', 190))
@@ -433,6 +435,13 @@ def refresh_compact_action(dialog):
 
 def install_action_tooltips(dialog):
     descriptions = {
+        'reaction_delay_widget': (
+            '조건이 참이 되면 최소~최대 사이의 시간을 무작위로 정해 기다린 뒤 실행합니다.\n'
+            '예: 0.5초 ~ 1초 → 매번 0.5~1초 사이에서 대기 시간을 정합니다.\n'
+            '기다리는 동안 다른 동작은 계속 처리하며, 조건이 거짓이 되면 대기를 취소합니다.\n'
+            '시간이 지난 후 이 조건을 다시 검사할 때 실행하므로 실제 지연은 더 길어질 수 있습니다.\n'
+            '두 값을 모두 0으로 설정하면 즉시 실행합니다.'
+        ),
         'type_combo': '실행할 동작 종류를 선택합니다. 종류에 따라 필요한 설정이 표시됩니다.',
         'name_edit': '액션 목록에 표시할 이름입니다. 비워 두어도 실행할 수 있습니다.',
         'enabled_check': '체크하면 이 액션을 실행합니다. 해제하면 실행 순서에서 건너뜁니다.',

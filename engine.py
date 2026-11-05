@@ -1630,6 +1630,7 @@ class Action:
     var_value: Optional[str] = None
     var_value_raw: Optional[str] = None
     var_update_mode: str = "set"
+    var_keep_between_runs: bool = False
     confirm_fails: int = 1
     sleep_ms: int = 0
     sleep_range: Optional[tuple[int, int]] = None
@@ -1639,6 +1640,8 @@ class Action:
     elif_blocks: List[tuple[Condition, List["Action"], str | None]] = field(default_factory=list)
     actions: List["Action"] = field(default_factory=list)
     else_actions: List["Action"] = field(default_factory=list)
+    reaction_delay_min: float = 0.0
+    reaction_delay_max: float = 0.0
     transition_enabled: bool = False
     transition_target: List[int] = field(default_factory=list)
     transition_target_key: str = ''
@@ -2080,6 +2083,9 @@ class Action:
             elif_blocks=elif_blocks,
             actions=actions,
             else_actions=else_actions,
+            reaction_delay_min=max(0.0, float(data.get('reaction_delay_min', 0) or 0)),
+            reaction_delay_max=max(0.0, float(data.get('reaction_delay_max', 0) or 0)),
+            var_keep_between_runs=bool(data.get('var_keep_between_runs', False)),
             transition_enabled=bool(data.get('transition_enabled', False)) and typ == 'if',
             transition_target=list(transition_target),
             transition_target_key=str(data.get('transition_target_key') or ''),
@@ -2230,6 +2236,11 @@ class Action:
             payload["has_else_branch"] = True
         if not self.else_enabled:
             payload["else_enabled"] = False
+        if self.var_keep_between_runs:
+            payload['var_keep_between_runs'] = True
+        if self.reaction_delay_min or self.reaction_delay_max:
+            payload['reaction_delay_min'] = self.reaction_delay_min
+            payload['reaction_delay_max'] = self.reaction_delay_max
         if self.else_name:
             payload["else_name"] = self.else_name
         if self.skip_if_pressed:
@@ -3329,6 +3340,9 @@ class MacroRunner:
         self._parallel_entry: Optional[Action] = None
         self._cond_key_states: Dict[str, bool] = {}
         self._vars = copy.deepcopy(getattr(engine._profile, "variables", MacroVariables()))
+        if not hasattr(engine, '_retained_macro_vars'):
+            engine._retained_macro_vars = {}
+        self._vars.var.update(engine._retained_macro_vars.get(index, {}))
         self._vars_lock = threading.RLock()
         self._resolver = VariableResolver(self._vars)
         self._sent_stop_event = False
@@ -3342,6 +3356,7 @@ class MacroRunner:
         self._held_mouse_policy: Dict[str, bool] = {m: False for m in self._held_mouse}
         self._held_lock = threading.Lock()
         self._if_false_streaks: Dict[tuple[int, ...], int] = {}
+        self._reaction_deadlines = {}
         self._if_transitions: Dict[tuple[int, ...], dict] = {}
         self._transition_states: Dict[tuple[int, ...], tuple] = {}
         self._polling_if_transitions = False
@@ -3789,6 +3804,7 @@ class MacroRunner:
         self._seq_counter = 1
         self._build_seq_map(self._root_macro.actions, [])
         self._if_false_streaks = {}
+        self._reaction_deadlines = {}
         self._if_transitions = {}
         self._transition_states = {}
         self._transition_poll_at = 0.0
@@ -3904,6 +3920,7 @@ class MacroRunner:
         self._seq_counter = 1
         self._build_seq_map(actions, [])
         self._if_false_streaks = {}
+        self._reaction_deadlines = {}
         self._if_transitions = {}
         self._transition_states = {}
         self._cond_key_states = {}
@@ -4788,6 +4805,7 @@ class MacroRunner:
             self._seq_counter = 1
             self._build_seq_map(target_macro.actions, [])
             self._if_false_streaks = {}
+            self._reaction_deadlines = {}
             self._if_transitions = {}
             self._transition_states = {}
             self._polling_if_transitions = False
@@ -4967,6 +4985,9 @@ class MacroRunner:
                 next_value = _format_var_numeric_value(next_num)
                 log_text = f"변수 연산: {name} {op_text} {_format_var_numeric_value(delta)} -> {next_value}"
             self._vars.var[name] = next_value
+            if action.var_keep_between_runs:
+                with self._vars_lock:
+                    self.engine._retained_macro_vars.setdefault(self._root_index, {})[name] = next_value
             ts = time.time()
             self.engine._emit_event(
                 {
@@ -5073,6 +5094,17 @@ class MacroRunner:
                                 ('강제 참' if test_mode != 'actual' else '실제 참' if cond_true else '실제 거짓'))
             self._analysis_record("condition", idx_path, value=bool(cond_true),
                                   condition_detail=evidence, evidence_generation=evidence_generation)
+            deadlines = self._reaction_deadlines
+            if not cond_true:
+                deadlines.pop(path_key, None)
+            elif test_mode == 'actual' and max(action.reaction_delay_min, action.reaction_delay_max) > 0:
+                now = time.monotonic()
+                if path_key not in deadlines:
+                    low, high = sorted((action.reaction_delay_min, action.reaction_delay_max))
+                    deadlines[path_key] = now + random.uniform(low, high)
+                if now < deadlines[path_key]:
+                    return end_result(status="reaction_wait", condition_hit=False)
+                deadlines.pop(path_key, None)
             if cond_true:
                 self._if_false_streaks[path_key] = 0
                 self._arm_if_transition(action, path, idx_path)
@@ -5234,6 +5266,7 @@ class MacroEngine:
         self.paused = False
 
         self._profile = profile or MacroProfile()
+        self._retained_macro_vars = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -5669,6 +5702,8 @@ class MacroEngine:
                 self.execution_analysis.stop('설정이 변경되어 측정을 멈췄습니다. 다시 시작하세요.')
             if preserve_running and getattr(self, 'if_test_state', None) is not None:
                 self.if_test_state.reconcile(profile)
+            if not preserve_running:
+                self._retained_macro_vars.clear()
             self._profile = copy.deepcopy(profile)
             from action_controls import macro_actions
             self._quick_toggle_states = {

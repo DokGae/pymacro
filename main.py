@@ -1963,6 +1963,8 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self._child_conditions: List[Condition] = []
         layout = QtWidgets.QVBoxLayout(self)
         self.form = QtWidgets.QFormLayout()
+        self.form.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.type_combo = QtWidgets.QComboBox()
         if allow_group:
             self.type_combo.addItem("AND 그룹 (모두 참)", "all")
@@ -2187,6 +2189,7 @@ class ConditionNodeDialog(QtWidgets.QDialog):
         self.form.addRow("", self.schedule_hint_label)
         self.form.addRow(self.group_hint)
         layout.addLayout(self.form)
+        layout.addStretch(1)
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         self.test_btn = QtWidgets.QPushButton("테스트")
@@ -3519,8 +3522,19 @@ class ConditionDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "선택 없음", "조건을 선택하세요.")
             return
         ConditionDialog._condition_clipboard = copied
+        from shared_ui import copy_portable_conditions
+        copy_portable_conditions(self, [cond.to_dict() for cond in copied])
 
     def _paste_condition_nodes(self):
+        from shared_ui import paste_portable_conditions
+        try:
+            portable = paste_portable_conditions(self)
+        except (ValueError, KeyError, TypeError) as exc:
+            QtWidgets.QMessageBox.warning(self, '붙여넣기', str(exc))
+            return
+        if portable is not None:
+            ConditionDialog._condition_clipboard = [Condition.from_dict(data, self._resolver) for data in portable]
+
         if not ConditionDialog._condition_clipboard:
             QtWidgets.QMessageBox.information(self, "복사본 없음", "먼저 조건을 복사하세요.")
             return
@@ -6169,7 +6183,9 @@ class _VariableHeader(QtWidgets.QHeaderView):
 class _ActionTreeWidget(QtWidgets.QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setHeaderLabels(["순번", "타입", "이름", "값", "설명", "활성"])
+        self.setHeaderLabels(["순번", "타입", "이름", "값", "설명", "활성", "특이사항"])
+        self.header().setSectionResizeMode(6, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.header().moveSection(6, 6)
         self.header().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.header().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
@@ -6890,6 +6906,10 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
         return getattr(act, "description", "") or ""
 
     def _apply_once_style(self, item: QtWidgets.QTreeWidgetItem, act: Action):
+        from action_notes import action_notes
+        notes = action_notes(act)
+        item.setText(6, " · ".join(notes))
+        item.setToolTip(6, "\n".join(notes))
         """1회 실행/첫 입력 보장 액션을 파란색으로 구분한다."""
         default_brush = QtGui.QBrush(self.palette().color(QtGui.QPalette.ColorRole.Text))
         once_brush = QtGui.QBrush(QtGui.QColor("#1f6feb"))
@@ -8089,6 +8109,22 @@ class ActionEditDialog(QtWidgets.QDialog):
         form.addRow("병렬 실행 주기", self.parallel_interval_spin)
         form.addRow("", self.parallel_hint)
         form = self._settings_forms[2]
+        self.var_keep_check = QtWidgets.QCheckBox('버튼을 떼어도 변수 값 유지')
+        self.var_keep_check.setToolTip('다음 실행에서도 이 값을 이어서 사용합니다. 프로필을 새로 불러오거나 프로그램을 종료하면 초기화합니다.')
+        form.addRow(self.var_keep_check)
+        self.reaction_delay_widget = QtWidgets.QWidget()
+        reaction_layout = QtWidgets.QHBoxLayout(self.reaction_delay_widget)
+        reaction_layout.setContentsMargins(0, 0, 0, 0)
+        self.reaction_min = QtWidgets.QDoubleSpinBox()
+        self.reaction_max = QtWidgets.QDoubleSpinBox()
+        for spin in (self.reaction_min, self.reaction_max):
+            spin.setRange(0, 3600)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.1)
+            spin.setSuffix(' 초')
+            reaction_layout.addWidget(spin)
+        self.reaction_delay_widget.setToolTip('최소~최대 시간 후 조건이 계속 참이면 실행합니다. 모두 0이면 즉시 실행합니다. 기다리는 동안 다음 동작을 처리하며, 조건이 거짓이면 대기를 취소합니다.')
+        form.addRow('반응 지연 (최소~최대)', self.reaction_delay_widget)
         form.addRow("일반 IF 거짓 확인 횟수", self.if_confirm_spin)
         form.addRow("조건", self.cond_label)
         form.addRow(self.edit_cond_btn)
@@ -8679,6 +8715,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         if show_var:
             self._refresh_var_name_combo(self._current_var_name())
         self._set_field_visible(self.var_name_edit, show_var)
+        self._set_field_visible(self.var_keep_check, show_var)
         self._set_field_visible(self.var_update_mode_combo, show_var)
         self._set_field_visible(self.var_value_edit, show_var)
         self._set_field_visible(self.var_help_label, show_var)
@@ -8712,6 +8749,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         self.group_mode_combo.setEnabled(show_group)
         self._set_field_visible(self.group_repeat_spin, show_group_repeat)
         self.group_repeat_spin.setEnabled(show_group_repeat)
+        self._set_field_visible(self.reaction_delay_widget, show_if)
         self._set_field_visible(self.if_confirm_spin, show_if)
         self.if_confirm_spin.setEnabled(show_if)
         self._set_field_visible(self.cond_label, show_if)
@@ -8985,6 +9023,8 @@ class ActionEditDialog(QtWidgets.QDialog):
             self.group_repeat_spin.setValue(1)
         if act.type in ("if", "elif"):
             try:
+                self.reaction_min.setValue(act.reaction_delay_min)
+                self.reaction_max.setValue(act.reaction_delay_max)
                 self.if_confirm_spin.setValue(max(1, int(getattr(act, "confirm_fails", 1) or 1)))
             except Exception:
                 self.if_confirm_spin.setValue(1)
@@ -9000,6 +9040,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             self._existing_elifs = []
         if act.type == "set_var":
             self._refresh_var_name_combo(act.var_name or "")
+            self.var_keep_check.setChecked(act.var_keep_between_runs)
             idx = self.var_update_mode_combo.findData(getattr(act, "var_update_mode", "set"))
             self.var_update_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.var_value_edit.setText(act.var_value_raw or act.var_value or "")
@@ -9270,6 +9311,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             var_name = self._current_var_name()
             if not var_name:
                 raise ValueError("대상 변수를 선택하거나 입력하세요.")
+            act.var_keep_between_runs = self.var_keep_check.isChecked()
             act.var_update_mode = str(self.var_update_mode_combo.currentData() or "set")
             act.var_name = var_name
             act.var_value_raw = self.var_value_edit.text().strip()
@@ -9338,6 +9380,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             if not self._condition:
                 raise ValueError("조건을 설정하세요.")
             act.condition = copy.deepcopy(self._condition)
+            act.reaction_delay_min, act.reaction_delay_max = sorted((self.reaction_min.value(), self.reaction_max.value()))
             act.confirm_fails = max(1, int(self.if_confirm_spin.value()))
             if typ == 'if' and (act.transition_enabled or act.transition_actions):
                 from if_transition import bind_target

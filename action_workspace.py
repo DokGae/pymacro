@@ -45,7 +45,7 @@ class ActionWorkspaceMixin:
         self.setUniformRowHeights(False)
         self.setItemDelegateForColumn(5, QtWidgets.QStyledItemDelegate(self))
         self._scope_delegates = []
-        for column in range(6):
+        for column in range(self.columnCount()):
             original = self.itemDelegateForColumn(column) or self.itemDelegate()
             delegate = ScopeDelegate(self, original)
             self._scope_delegates.append(delegate)
@@ -58,12 +58,16 @@ class ActionWorkspaceMixin:
         self.setColumnWidth(0, 44)
         self.setColumnWidth(1, 142)
         self.setColumnWidth(2, 310)
-        self.header().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        self.header().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.Fixed)
         self.header().setMinimumSectionSize(28)
         self.setColumnWidth(5, 28)
+        self.setColumnWidth(6, 260)
+        self.header().setSectionResizeMode(6, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        self.header().moveSection(self.header().visualIndex(4), self.columnCount() - 1)
+        self.header().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.headerItem().setText(5, '')
         self.headerItem().setToolTip(5, '활성')
-        self.setColumnHidden(4, True)
+        self.setColumnHidden(4, False)
         self.header().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Interactive)
         self.setColumnWidth(3, 360)
         self.setStyleSheet(self.styleSheet() +
@@ -390,7 +394,7 @@ class ActionWorkspaceMixin:
         painter.setFont(font)
         text = item.text(column)
         text_rect = rect.adjusted(9, 0, -9, 0)
-        color = {0:'#8a96a6', 1:'#2d66a5', 2:'#24364e', 3:'#335f99', 4:'#8c96a4'}[column]
+        color = {0:'#8a96a6', 1:'#2d66a5', 2:'#24364e', 3:'#335f99', 4:'#8c96a4', 6:'#335f99'}.get(column, '#24364e')
         if disabled:
             color = '#c4c4c4'
         if not disabled and data == '__else__' and column in (1, 2):
