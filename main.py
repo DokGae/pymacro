@@ -7335,7 +7335,14 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
         data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if not isinstance(data, Action):
             return None
-        act = copy.deepcopy(data)
+        # Branches are rebuilt from the tree below; do not copy stale subtrees.
+        source = copy.copy(data)
+        source.actions = []
+        if data.type != 'shared_block':
+            source.else_actions = []
+            source.transition_actions = []
+            source.elif_blocks = []
+        act = copy.deepcopy(source)
         act.enabled = item.checkState(5) == QtCore.Qt.CheckState.Checked
         if act.type == 'shared_block':
             act.actions = []
@@ -10456,22 +10463,20 @@ class MacroDialog(QtWidgets.QDialog):
         return None
     def _available_labels(self, tree: ActionTreeWidget | None = None) -> list[str]:
         labels: list[str] = []
-        def walk(actions: list[Action]):
-            for act in actions or []:
-                if getattr(act, "type", None) == "label" and getattr(act, "label", None):
-                    labels.append(act.label)
-                walk(getattr(act, "actions", []) or [])
-                walk(getattr(act, "else_actions", []) or [])
-                walk(act.transition_actions)
-                for blk in getattr(act, "elif_blocks", []) or []:
-                    _, branch, _, _ = _split_elif_block(blk)
-                    walk(branch or [])
+        def walk(item):
+            act = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if isinstance(act, Action) and act.type == 'label' and act.label:
+                labels.append(act.label)
+            for index in range(item.childCount()):
+                walk(item.child(index))
         target_tree = tree or self.action_tree
         if target_tree is self.parallel_action_tree:
             root = self._selected_parallel_root()
-            walk([target_tree._action_from_item(root)] if root is not None else [])
-        else:
-            walk(target_tree.collect_actions() if target_tree else [])
+            if root is not None:
+                walk(root)
+        elif target_tree is not None:
+            for index in range(target_tree.topLevelItemCount()):
+                walk(target_tree.topLevelItem(index))
         uniq: list[str] = []
         for name in labels:
             if name and name not in uniq:

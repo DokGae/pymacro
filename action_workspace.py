@@ -1148,6 +1148,10 @@ class EditorHistory(QtCore.QObject):
                     blocks=copy.deepcopy(getattr(getattr(self.dialog, 'block_workspace', None), 'entries', {})))
 
     def schedule(self, *_):
+        # Scope labels/tooltips are presentation changes, not action edits.
+        sender = self.sender()
+        if any(tree._workspace_updating and sender is tree.model() for tree in self.trees):
+            return
         if not self.restoring:
             self.timer.start(0)
 
