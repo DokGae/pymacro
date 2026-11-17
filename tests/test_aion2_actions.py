@@ -23,7 +23,7 @@ class Aion2ActionTests(unittest.TestCase):
 
     def test_legacy_direct_and_aion2_editor_roundtrip(self):
         self.assertEqual(Action.from_dict(dict(type='press', key='r')).key_source, 'direct')
-        for action in (self.action(external_port=47654, external_source='test', repeat=3),
+        for action in (self.action(type='down'), self.action(type='up'), self.action(external_port=47654, external_source='test', repeat=3),
                        Action(type='press',key='r')):
             restored = Action.from_dict(action.to_dict())
             dialog = ActionEditDialog(action=restored)
@@ -33,7 +33,7 @@ class Aion2ActionTests(unittest.TestCase):
                 self.assertFalse(dialog.isModal())
                 self.assertFalse(dialog.windowFlags() & QtCore.Qt.WindowType.WindowStaysOnTopHint)
             finally:dialog.close()
-        for data in (dict(type='down',key_source='aion2'),
+        for data in (dict(type='sleep',key_source='aion2'),
                      dict(type='press',key_source='aion2',aion2_skill=1)):
             with self.assertRaises(ValueError):Action.from_dict(data)
 
@@ -44,6 +44,19 @@ class Aion2ActionTests(unittest.TestCase):
             self.assertEqual(portable_key(text),expected)
         for text in ('',None,'Ctrl','A, B'):
             with self.assertRaises(ValueError):portable_key(text)
+
+    def test_down_up_resolve_and_track_live_combo(self):
+        actions = [self.action(type='down'), self.action(type='up')]
+        runner, engine = make_runner(actions)
+        client = Mock()
+        client.snapshot.return_value = (packet('Ctrl+Q'), '연결됨')
+        with patch('external_state.state_hub.client', return_value=client):
+            runner._run_actions(actions[:1], {})
+            self.assertEqual(runner._held_keys, {'ctrl+q'})
+            runner._run_actions(actions[1:], {})
+        self.assertEqual([(c.args[0], c.args[1]) for c in engine._send_key.call_args_list],
+                         [('down', 'ctrl+q'), ('up', 'ctrl+q')])
+        self.assertFalse(runner._held_keys)
 
     def test_lowest_slot_chain_and_missing_information(self):
         client = Mock(); data = packet('E',8)

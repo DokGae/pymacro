@@ -4655,7 +4655,7 @@ class MacroRunner:
                 if action.type == "down":
                     policy = bool(getattr(action, "hold_keep_on_pause", False))
                     with self._held_lock:
-                        for part in MacroEngine._parse_combo_keys(self.engine, key) if guarded else [action.key]:
+                        for part in MacroEngine._parse_combo_keys(self.engine, key) if guarded else [key]:
                             self._held_keys.add(part)
                             self._held_key_policy[part] = policy
                 elif action.type == "up":

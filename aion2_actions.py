@@ -1,4 +1,4 @@
-"""Resolve live monitor quickslots for press; never cache a usable key."""
+"""Resolve live monitor quickslots for keyboard actions; never cache a usable key."""
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeySequence
 from aion2_conditions import ALL_SKILLS, skill_label
@@ -12,8 +12,8 @@ def validate_settings(data):
     if mode not in ('direct', 'aion2', 'aion2_consumable'):
         raise ValueError('지원하지 않는 키 입력 방식입니다.')
     if mode == 'direct':return
-    if data.get('type', 'press') != 'press':
-        raise ValueError('AION2 전용 스킬 단축키는 press에서 사용하세요.')
+    if data.get('type', 'press') not in ('press', 'down', 'up'):
+        raise ValueError('AION2 전용 스킬 단축키는 press, down, up에서 사용하세요.')
     skill = data.get('aion2_skill', 18120000)
     if mode == 'aion2_consumable':
         from aion2_consumables import ITEMS, canonical_item

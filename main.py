@@ -6778,7 +6778,7 @@ class _ActionTreeWidget(QtWidgets.QTreeWidget):
             rep = max(1, int(getattr(act, "repeat", 1) or 1))
             rep_txt = f" ({rep}회)" if rep > 1 else ""
             key_text = getattr(act, "key_raw", None) or act.key or ""
-            if act.type == 'press' and getattr(act, 'key_source', 'direct') in ('aion2','aion2_consumable'):
+            if act.type in ('press', 'down', 'up') and getattr(act, 'key_source', 'direct') in ('aion2','aion2_consumable'):
                 from aion2_conditions import skill_label
                 from aion2_consumables import item_label
                 key_text = 'AION2 전용 · ' + (item_label(act.aion2_item) if act.key_source=='aion2_consumable' else skill_label(act.aion2_skill))
@@ -8563,11 +8563,11 @@ class ActionEditDialog(QtWidgets.QDialog):
     def _current_type(self) -> str:
         return self.type_combo.currentData()
     def _refresh_aion2_key(self, *_):
-        if (not self.isVisible() or self._current_type() != 'press'
+        if (not self.isVisible() or self._current_type() not in ('press', 'down', 'up')
                 or self.key_source_combo.currentData() not in ('aion2','aion2_consumable')):
             return
         from aion2_actions import resolve_action_key
-        action = Action(type='press', key_source=self.key_source_combo.currentData(),
+        action = Action(type=self._current_type(), key_source=self.key_source_combo.currentData(),
                         aion2_item=self.aion2_key_item.currentData(),
                         aion2_skill=self.aion2_key_skill.currentData(),
                         external_source=self.aion2_key_source.text().strip(),
@@ -8634,11 +8634,11 @@ class ActionEditDialog(QtWidgets.QDialog):
         show_group_repeat = show_group and self.group_mode_combo.currentData() == "repeat_n"
         show_pause_keep = typ in ("down", "mouse_down")
         self._set_field_visible(self.key_edit, show_key)
-        use_aion2 = typ == 'press' and self.key_source_combo.currentData() in ('aion2','aion2_consumable')
+        use_aion2 = typ in ('press', 'down', 'up') and self.key_source_combo.currentData() in ('aion2','aion2_consumable')
         self.key_edit.setEnabled(show_key and not use_aion2)
         self._set_field_visible(self.action_key_builder_row, show_key and not use_aion2)
         self.action_key_builder_row.setEnabled(show_key and not use_aion2)
-        self._set_field_visible(self.key_source_combo, typ == 'press')
+        self._set_field_visible(self.key_source_combo, typ in ('press', 'down', 'up'))
         for widget in (self.aion2_key_skill, self.aion2_key_source, self.aion2_key_port,
                        self.aion2_key_status, self.aion2_key_hint):
             self._set_field_visible(widget, use_aion2)
@@ -9088,7 +9088,7 @@ class ActionEditDialog(QtWidgets.QDialog):
         typ = self._current_type()
         act_key: str | None = None
         if typ in ("press", "down", "up"):
-            if typ != 'press' or self.key_source_combo.currentData() not in ('aion2','aion2_consumable'):
+            if typ not in ('press', 'down', 'up') or self.key_source_combo.currentData() not in ('aion2','aion2_consumable'):
                 act_key = (self.key_edit.text() or "").strip().lower()
         elif typ in ("mouse_click", "mouse_down", "mouse_up", "mouse_move"):
             act_key = (self.mouse_button_combo.currentData() or "").strip().lower()
@@ -9156,7 +9156,7 @@ class ActionEditDialog(QtWidgets.QDialog):
             act.transition_target = list(target or [])
         if typ in ("press", "down", "up"):
             key = self.key_edit.text().strip()
-            use_aion2 = typ == 'press' and self.key_source_combo.currentData() in ('aion2','aion2_consumable')
+            use_aion2 = typ in ('press', 'down', 'up') and self.key_source_combo.currentData() in ('aion2','aion2_consumable')
             if not key and not use_aion2:
                 raise ValueError("키를 입력하세요.")
             act.key = None if use_aion2 else key
